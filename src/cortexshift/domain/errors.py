@@ -1,5 +1,7 @@
 """Domain and application exception hierarchy for CortexShift."""
 
+from pathlib import Path
+
 
 class CortexShiftError(Exception):
     """Base exception for all CortexShift domain and application errors."""
@@ -117,3 +119,68 @@ class SnapshotNotFoundError(CortexShiftError):
     def __init__(self, snapshot_id: str) -> None:
         super().__init__(f"Snapshot '{snapshot_id}' was not found.")
         self.snapshot_id = snapshot_id
+
+
+class ProviderNotFoundError(CortexShiftError):
+    """Raised when a requested provider executable is not found in PATH."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class UnknownProviderError(CortexShiftError, ValueError):
+    """Raised when an unrecognized provider ID is requested."""
+
+    def __init__(self, provider_id: str, supported: list[str]) -> None:
+        self.provider_id = provider_id
+        self.supported = supported
+        super().__init__(
+            f"Unknown provider '{provider_id}'. Supported providers: {', '.join(supported)}"
+        )
+
+
+class UnsupportedPromptError(CortexShiftError):
+    """Raised when an initial prompt is provided to a provider that does not support it."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class WorkspaceLockedError(CortexShiftError):
+    """Raised when an exclusive workspace lease cannot be acquired."""
+
+    def __init__(
+        self,
+        message: str | None = None,
+        lock_path: Path | None = None,
+    ) -> None:
+        self.lock_path = lock_path
+        if message is None:
+            message = (
+                "Another CortexShift agent session is already active for this project.\n\n"
+                "Lock file: .cortexshift/agent.lock\n\n"
+                "Wait for that session to finish and try again."
+            )
+        super().__init__(message)
+
+
+class TerminalRequiredError(CortexShiftError):
+    """Raised when an interactive provider session is attempted without a usable TTY."""
+
+    def __init__(
+        self,
+        message: str = (
+            "Interactive provider launch requires a terminal (TTY).\n\n"
+            "To simulate provider launch non-interactively, use: "
+            "cortexshift run <provider> --dry-run"
+        ),
+    ) -> None:
+        super().__init__(message)
+
+
+class SessionNotFoundError(CortexShiftError):
+    """Raised when a session with the specified identifier cannot be found."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(f"Session '{session_id}' was not found.")
+        self.session_id = session_id

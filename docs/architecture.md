@@ -270,7 +270,68 @@ RepositoryService (Application)
 
 ---
 
-## 10. Checkpoints & Resilient Recovery
+## 10. Native Provider Runtime & Session Lifecycle (Phase 4)
+
+Phase 4 introduces native provider process execution, workspace concurrency management, and session lifecycle persistence:
+
+```text
+CLI (`cortexshift run <provider> [--prompt ...] [--dry-run]`, `cortexshift session list|show`)
+ │
+ ▼
+RunService (Application)
+ │
+ ├── Validation & Context Resolution:
+ │    ├── ProjectLocator (resolves project root from any subdirectory)
+ │    ├── Active Task Check (strictly requires active task)
+ │    ├── TTY Validation (checks interactive terminal)
+ │    └── Provider Runtime Adapter Registry
+ │
+ ├── Launch Specification Flow:
+ │    │
+ │    ▼
+ │   ProviderRuntimeAdapter Port (`ClaudeRuntimeAdapter`, `CodexRuntimeAdapter`, `AntigravityRuntimeAdapter`)
+ │    │ (encapsulates CLI argv contracts & prompt rules)
+ │    ▼
+ │   LaunchSpecification (domain value object; argv, cwd=project_root, shell=False)
+ │
+ ├── Concurrency Control Flow:
+ │    │
+ │    ▼
+ │   WorkspaceLease Port (`FileWorkspaceLease`)
+ │    │ (non-blocking OS advisory lock via fcntl.flock on .cortexshift/agent.lock)
+ │    ▼
+ │   Single-Mutating-Agent Guarantee per Project
+ │
+ ├── Execution Flow:
+ │    │
+ │    ▼
+ │   InteractiveProcessRunner Port (`SubprocessInteractiveProcessRunner`)
+ │    │ (direct TTY stdio passthrough, signal trapping)
+ │    ▼
+ │   Native Provider Process (`claude`, `codex`, `agy`)
+ │
+ └── Persistence Flow:
+      │
+      ▼
+     SessionStore Port (implemented by SQLiteStateStore)
+      │ (schema v3 `sessions` table, status transitions, exit codes)
+      ▼
+     .cortexshift/state.sqlite3
+```
+
+### Runtime Invariants & Design Principles:
+- **Direct Terminal Passthrough & Strict TTY Contract**: Inherits raw terminal stdio directly without pipe wrapping, buffering, or TUI scraping, allowing coding agents to present rich TUIs and receive keyboard inputs natively. Interactive launch strictly requires both `stdin.isatty()` and `stdout.isatty()`. Non-TTY environments can safely simulate launch via `--dry-run`.
+- **Strictly `shell=False`**: Process execution uses explicitly tokenized argument arrays (`argv: list[str]`). Zero shell expansion; immune to command injection.
+- **Canonical Same-Working-Tree Execution**: Irrespective of which subdirectory invoked the command, the native provider process is launched with `cwd = project_root`.
+- **Authoritative OS Workspace Lease**: Enforces single-mutating-agent invariant per project using OS-level advisory locks (`fcntl.flock` / `msvcrt.locking` on `.cortexshift/agent.lock`). The OS file-descriptor lock is authoritative; existence of the lock file on disk does not imply an active lease, and users are never advised to delete it. Stale database session records never block acquiring a free lease. Fails cleanly with `WorkspaceLockedError` if another session holds the lock.
+- **Active Task Prerequisite**: Launch strictly requires an active Task; CortexShift never creates or activates tasks implicitly.
+- **Dry-Run Simulation**: `--dry-run` and `--dry-run --json` display launch parameters without executing processes, requiring a TTY, or mutating session tables; prompts are always redacted as `<prompt>`.
+- **Zero Prompt, Transcript, or Credential Storage**: Database never stores prompt texts, conversation transcripts, or API keys. Native provider authentication is preserved intact.
+- **Durable Session State (Schema v3)**: Tracks session lifecycle (`running`, `completed`, `failed`, `interrupted`), exit codes, and timestamps. Generic non-zero exits strictly map to `process_crashed`; spawn failures map to `spawn_failed` and immediately release the lease. Phase 4 never infers `quota_exhausted` or `rate_limited` from generic non-zero exits.
+
+---
+
+## 11. Checkpoints & Resilient Recovery
 
 AI coding sessions terminate abruptly due to rate limits, context exhaustion, network timeouts, or user interruptions. Waiting for an agent to generate an exit handoff is unreliable.
 
@@ -280,7 +341,7 @@ CortexShift's checkpointing model guarantees recovery:
 
 ---
 
-## 11. What is Explicitly Out of Scope for Initial Phases
+## 12. What is Explicitly Out of Scope for Initial Phases
 
 To maintain strict engineering focus, the following are explicitly out of scope for Phase 0 and initial milestones:
 - Parallel multi-agent editing

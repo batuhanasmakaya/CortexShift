@@ -1,8 +1,10 @@
 """Port defining the interface for AI coding agent provider adapters."""
 
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from cortexshift.domain.handoff import Handoff
+from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.provider import ProviderCapabilities, ProviderId
 from cortexshift.domain.task import Task
 
@@ -75,5 +77,50 @@ class ProviderAdapter(Protocol):
 
         Returns:
             Exit code of the process.
+        """
+        ...
+
+
+@runtime_checkable
+class ProviderRuntimeAdapter(Protocol):
+    """Port for building provider launch specifications without invoking processes directly."""
+
+    @property
+    def provider_id(self) -> ProviderId:
+        """Canonical provider identifier."""
+        ...
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable display name."""
+        ...
+
+    @property
+    def executable(self) -> str:
+        """Base name of the provider CLI executable."""
+        ...
+
+    def get_capabilities(self) -> ProviderCapabilities:
+        """Return declared operational capabilities of this provider."""
+        ...
+
+    def build_launch_spec(
+        self,
+        project_root: Path,
+        executable_path: str,
+        prompt: str | None = None,
+    ) -> LaunchSpecification:
+        """Build concrete launch specification for this provider.
+
+        Args:
+            project_root: Absolute project root directory to serve as cwd.
+            executable_path: Resolved absolute or PATH path to the executable.
+            prompt: Optional initial prompt.
+
+        Returns:
+            A validated LaunchSpecification.
+
+        Raises:
+            UnsupportedPromptError: If prompt is provided but not supported for interactive launch.
         """
         ...

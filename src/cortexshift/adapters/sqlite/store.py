@@ -14,8 +14,11 @@ from cortexshift.domain.errors import (
 )
 from cortexshift.domain.git import GitSnapshot
 from cortexshift.domain.project import Project
+from cortexshift.domain.provider import ProviderId
+from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 from cortexshift.domain.task import Task, TaskStatus
 from cortexshift.ports.repository import RepositorySnapshotStore
+from cortexshift.ports.session_store import SessionStore
 from cortexshift.ports.state_store import StateStore
 
 
@@ -27,7 +30,7 @@ def _parse_utc_datetime(iso_str: str) -> datetime:
     return dt.astimezone(UTC)
 
 
-class SQLiteStateStore(StateStore, RepositorySnapshotStore):
+class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore):
     """SQLite-backed StateStore managing project-local canonical state."""
 
     def __init__(self, db_path: Path | str, auto_migrate: bool = True) -> None:
@@ -413,5 +416,118 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore):
             working_tree_diff_summary=row["working_tree_diff_summary"],
             staged_diff_summary=row["staged_diff_summary"],
             captured_at=_parse_utc_datetime(row["captured_at"]),
+            metadata=json.loads(row["metadata"]),
+        )
+
+    # --- Session Operations (SessionStore) ---
+
+    def save_session(self, session: Session) -> None:
+        """Persist or update an agent execution Session."""
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO sessions (
+                        id, task_id, provider_id, native_session_id, status,
+                        started_at, ended_at, exit_reason, exit_code, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        task_id = excluded.task_id,
+                        provider_id = excluded.provider_id,
+                        native_session_id = excluded.native_session_id,
+                        status = excluded.status,
+                        started_at = excluded.started_at,
+                        ended_at = excluded.ended_at,
+                        exit_reason = excluded.exit_reason,
+                        exit_code = excluded.exit_code,
+                        metadata = excluded.metadata;
+                    """,
+                    (
+                        session.id,
+                        session.task_id,
+                        str(session.provider_id),
+                        session.native_session_id,
+                        session.status.value,
+                        session.started_at.isoformat(),
+                        session.ended_at.isoformat() if session.ended_at else None,
+                        session.exit_reason.value if session.exit_reason else None,
+                        session.exit_code,
+                        json.dumps(session.metadata),
+                    ),
+                )
+        except sqlite3.IntegrityError as err:
+            raise DatabaseStateError(f"Failed to persist session '{session.id}': {err}") from err
+        except sqlite3.Error as err:
+            raise DatabaseStateError(f"Failed to save session '{session.id}': {err}") from err
+
+    def get_session(self, session_id: str) -> Session | None:
+        """Retrieve a Session by its unique identifier."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, task_id, provider_id, native_session_id, status,
+                       started_at, ended_at, exit_reason, exit_code, metadata
+                FROM sessions WHERE id = ?;
+                """,
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return self._row_to_session(row)
+        except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
+            msg = f"Failed to retrieve session '{session_id}': {err}"
+            raise StateCorruptionError(msg) from err
+
+    def list_sessions(
+        self,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        limit: int = 20,
+    ) -> list[Session]:
+        """List sessions, ordered newest first."""
+        try:
+            cursor = self._conn.cursor()
+            conditions: list[str] = []
+            params: list[Any] = []
+
+            if task_id is not None:
+                conditions.append("s.task_id = ?")
+                params.append(task_id)
+
+            if project_id is not None:
+                conditions.append("t.project_id = ?")
+                params.append(project_id)
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+                SELECT s.id, s.task_id, s.provider_id, s.native_session_id, s.status,
+                       s.started_at, s.ended_at, s.exit_reason, s.exit_code, s.metadata
+                FROM sessions s
+                JOIN tasks t ON s.task_id = t.id
+                {where_clause}
+                ORDER BY s.started_at DESC
+                LIMIT ?;
+            """
+            params.append(max(1, limit))
+            cursor.execute(query, params)
+            return [self._row_to_session(row) for row in cursor.fetchall()]
+        except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
+            msg = f"Failed to list sessions: {err}"
+            raise StateCorruptionError(msg) from err
+
+    def _row_to_session(self, row: sqlite3.Row) -> Session:
+        """Convert a database row into a Session domain entity."""
+        return Session(
+            id=row["id"],
+            task_id=row["task_id"],
+            provider_id=ProviderId(row["provider_id"]),
+            native_session_id=row["native_session_id"],
+            status=SessionStatus(row["status"]),
+            started_at=_parse_utc_datetime(row["started_at"]),
+            ended_at=_parse_utc_datetime(row["ended_at"]) if row["ended_at"] else None,
+            exit_reason=SessionExitReason(row["exit_reason"]) if row["exit_reason"] else None,
+            exit_code=row["exit_code"],
             metadata=json.loads(row["metadata"]),
         )

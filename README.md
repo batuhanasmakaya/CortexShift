@@ -42,9 +42,19 @@ Claude Code      Codex        Antigravity
 ## Status: Pre-Alpha
 
 > [!NOTE]
-> CortexShift is currently in **Phase 3 (Git Context & Repository Awareness)**. It provides read-only repository inspection, working tree status parsing, durable Git snapshots, project-local task persistence, and native provider discovery, but does not yet launch agents or switch tasks.
+> CortexShift is currently in **Phase 4 (Native Provider Launch & CortexShift Session Lifecycle)**. It supports launching native interactive provider sessions (`claude`, `codex`, `antigravity`) with raw terminal passthrough, workspace concurrency leasing, session tracking, dry-run simulation, durable Git snapshots, persistent task models, and safe provider discovery.
 
-### What Works Today (Phase 3)
+### What Works Today (Phase 4)
+- **Native Provider Launch & Session Lifecycle (Phase 4)**:
+  - Launch native coding agent interactive CLIs directly (`cortexshift run claude`, `cortexshift run codex`, `cortexshift run antigravity`).
+  - Raw TTY direct passthrough without scraping, buffering, pipe-wrapping, or modifying provider TUIs.
+  - Same-working-tree model enforcement: launches provider process with `cwd = project_root` even when invoked from deep nested subdirectories.
+  - Task-centric prerequisite: strictly requires an active Task; never silently guesses or launches without a task.
+  - Workspace leasing via OS-level exclusive advisory locks (`.cortexshift/agent.lock`) enforcing the single-mutating-agent invariant per project.
+  - Clean dry-run preview mode (`cortexshift run <provider> --dry-run` and `--dry-run --json`) with automatic prompt redaction (`<prompt>`).
+  - Durable session history persisted in SQLite schema v3 (`sessions` table), tracking status (`running`, `completed`, `failed`, `interrupted`), exit codes, and timestamps.
+  - Zero prompt, transcript, or credential storage.
+  - CLI session inspection: `cortexshift session list` and `cortexshift session show <id>` with tabular and `--json` outputs.
 - **Git Context & Repository Awareness (Phase 3)**:
   - Safe, strictly read-only repository inspection using native `git` CLI subprocesses with bounded timeouts and sanitized execution environments (`GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_OPTIONAL_LOCKS=0`).
   - NUL-safe (`-z`) porcelain v1 parser handling spaces, unicode, renames, conflicts, and untracked files.
@@ -68,16 +78,16 @@ Claude Code      Codex        Antigravity
   - Run environment health check via `cortexshift doctor` and `cortexshift doctor --json`.
   - Zero model prompt executions and zero credential inspections.
 - **Foundational Architecture (Phase 0)**:
-  - Core domain models (`Project`, `Task`, `Session`, `Checkpoint`, `Handoff`, `GitSnapshot`).
-  - Strict abstract ports (`CommandRunner`, `ProviderDiscoveryPort`, `ProviderAdapter`, `RepositoryInspector`, `StateStore`).
+  - Core domain models (`Project`, `Task`, `Session`, `Checkpoint`, `Handoff`, `GitSnapshot`, `LaunchSpecification`).
+  - Strict abstract ports (`CommandRunner`, `ProviderDiscoveryPort`, `ProviderRuntimeAdapter`, `InteractiveProcessRunner`, `WorkspaceLeaseManager`, `SessionStore`, `RepositoryInspector`, `StateStore`).
   - Multi-agent development contract ([`AGENTS.md`](AGENTS.md)).
-  - Architecture specifications, ADRs ([`ADR-0001`](docs/decisions/ADR-0001-core-architecture.md), [`ADR-0002`](docs/decisions/ADR-0002-safe-provider-discovery.md), [`ADR-0003`](docs/decisions/ADR-0003-project-local-persistence.md), [`ADR-0004`](docs/decisions/ADR-0004-git-repository-context.md)).
+  - Architecture specifications, ADRs ([`ADR-0001`](docs/decisions/ADR-0001-core-architecture.md), [`ADR-0002`](docs/decisions/ADR-0002-safe-provider-discovery.md), [`ADR-0003`](docs/decisions/ADR-0003-project-local-persistence.md), [`ADR-0004`](docs/decisions/ADR-0004-git-repository-context.md), [`ADR-0005`](docs/decisions/ADR-0005-native-provider-runtime.md)).
   - 100% type-checked code via strict `mypy`, formatted via `ruff`, with comprehensive unit and integration tests.
 
 ### What Does NOT Work Yet
-- ✗ Launching coding agents in interactive or headless modes (planned for Phase 4).
 - ✗ Agent switching or executing multi-agent workflows (`cortexshift switch`) (planned for Phase 5).
 - ✗ Automatic context handoffs between agents (planned for Phase 5).
+- ✗ Headless/batch provider executions (planned for Phase 6).
 - ✗ Resuming native agent sessions (planned for Phase 6).
 - ✗ Checkpoint automation and disaster recovery (planned for Phase 7).
 - ✗ Model Context Protocol (MCP) server integration (planned for Phase 8).
@@ -203,6 +213,24 @@ uv run cortexshift repo snapshots --limit 5
 # Show specific snapshot details
 uv run cortexshift repo show snap_<id>
 uv run cortexshift repo show snap_<id> --json
+
+# Launch native provider interactive session on active task (Phase 4)
+uv run cortexshift run claude
+uv run cortexshift run codex --prompt "Investigate failing tests"
+uv run cortexshift run antigravity
+
+# Preview launch specification without executing (dry run)
+uv run cortexshift run claude --dry-run
+uv run cortexshift run claude --prompt "Sensitive instruction" --dry-run --json
+
+# List historical provider execution sessions
+uv run cortexshift session list
+uv run cortexshift session list --json
+uv run cortexshift session list --limit 5
+
+# Show specific session details
+uv run cortexshift session show sess_<id>
+uv run cortexshift session show sess_<id> --json
 ```
 
 ### Running Tests and Quality Checks
@@ -216,7 +244,7 @@ uv run ruff check .
 uv run ruff format --check .
 
 # Run Mypy strict type checking
-uv run mypy src
+uv run mypy
 ```
 
 ---
@@ -227,6 +255,10 @@ uv run mypy src
 - [Canonical Handoff Protocol](docs/handoff-protocol.md)
 - [Roadmap](docs/roadmap.md)
 - [ADR-0001: Core Architecture](docs/decisions/ADR-0001-core-architecture.md)
+- [ADR-0002: Safe Provider Discovery](docs/decisions/ADR-0002-safe-provider-discovery.md)
+- [ADR-0003: Project-Local Persistence](docs/decisions/ADR-0003-project-local-persistence.md)
+- [ADR-0004: Git Repository Context](docs/decisions/ADR-0004-git-repository-context.md)
+- [ADR-0005: Native Provider Launch & Session Lifecycle](docs/decisions/ADR-0005-native-provider-runtime.md)
 - [Agent Contributor Contract](AGENTS.md)
 - [Contributing Guide](CONTRIBUTING.md)
 

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from cortexshift.domain.errors import DatabaseStateError, UnsupportedSchemaVersionError
 from cortexshift.domain.identifiers import utc_now
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 def _migrate_v1(conn: sqlite3.Connection) -> None:
@@ -85,10 +85,34 @@ def _migrate_v2(conn: sqlite3.Connection) -> None:
     )
 
 
-# Ordered registry of migration functions: index 0 is v1, index 1 is v2, etc.
+def _migrate_v3(conn: sqlite3.Connection) -> None:
+    """Apply Schema Version 3: sessions table for agent execution history."""
+    conn.execute(
+        """
+        CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            provider_id TEXT NOT NULL,
+            native_session_id TEXT,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            exit_reason TEXT,
+            exit_code INTEGER,
+            metadata TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute("CREATE INDEX idx_sessions_task_id ON sessions(task_id);")
+    conn.execute("CREATE INDEX idx_sessions_started_at ON sessions(started_at DESC);")
+    conn.execute("CREATE INDEX idx_sessions_provider_id ON sessions(provider_id);")
+
+
+# Ordered registry of migration functions: index 0 is v1, index 1 is v2, index 2 is v3, etc.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1,
     _migrate_v2,
+    _migrate_v3,
 ]
 
 

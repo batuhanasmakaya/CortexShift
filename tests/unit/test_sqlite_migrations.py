@@ -38,6 +38,7 @@ def test_fresh_database_migrates_to_latest_version(tmp_path: Path) -> None:
         assert "tasks" in tables
         assert "project_runtime" in tables
         assert "git_snapshots" in tables
+        assert "sessions" in tables
     finally:
         conn.close()
 
@@ -97,9 +98,10 @@ def test_migrate_v1_to_v2_preserves_state(tmp_path: Path) -> None:
 
     # 3. Open through Phase 3 SQLiteStateStore (which runs auto_migrate)
     with SQLiteStateStore(db_file, auto_migrate=True) as store:
-        assert store.get_schema_version() == 2
+        assert store.get_schema_version() == CURRENT_SCHEMA_VERSION
 
         # 4. Verify project, task, and active task survived
+
         project = store.get_project(proj_id)
         assert project is not None
         assert project.name == "v1-project"

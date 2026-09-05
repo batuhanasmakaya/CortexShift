@@ -4,11 +4,14 @@ import json
 import re
 import shutil
 from collections.abc import Callable
+from pathlib import Path
 
 from cortexshift.domain.doctor import AuthenticationStatus, ProviderDiagnostic
+from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.provider import PROVIDER_CODEX, ProviderCapabilities, ProviderId
 from cortexshift.ports.command_runner import CommandRunner
 from cortexshift.ports.discovery import ProviderProbe
+from cortexshift.ports.provider import ProviderRuntimeAdapter
 
 _VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?(?:[-.][a-zA-Z0-9]+)?)")
 
@@ -151,4 +154,55 @@ class CodexProviderProbe(ProviderProbe):
             authentication_status=auth_status,
             capabilities=capabilities,
             diagnostics=diagnostics,
+        )
+
+
+class CodexRuntimeAdapter(ProviderRuntimeAdapter):
+    """Runtime adapter for launching OpenAI Codex interactive sessions."""
+
+    @property
+    def provider_id(self) -> ProviderId:
+        return PROVIDER_CODEX
+
+    @property
+    def display_name(self) -> str:
+        return "Codex"
+
+    @property
+    def executable(self) -> str:
+        return "codex"
+
+    def get_capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            provider_id=self.provider_id,
+            display_name=self.display_name,
+            supports_interactive=True,
+            supports_headless=True,
+            supports_native_resume=True,
+            supports_structured_output=True,
+            supports_mcp=False,
+            supports_usage_metrics=True,
+        )
+
+    def build_launch_spec(
+        self,
+        project_root: Path,
+        executable_path: str,
+        prompt: str | None = None,
+    ) -> LaunchSpecification:
+        """Build argument vector for native Codex launch."""
+        argv = [executable_path]
+        prompt_supplied = False
+        if prompt is not None and prompt.strip():
+            argv.append(prompt)
+            prompt_supplied = True
+
+        return LaunchSpecification(
+            provider_id=self.provider_id,
+            executable=executable_path,
+            cwd=project_root,
+            argv=argv,
+            interactive=True,
+            initial_prompt_supported=True,
+            prompt_supplied=prompt_supplied,
         )

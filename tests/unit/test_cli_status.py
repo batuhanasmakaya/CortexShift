@@ -66,8 +66,9 @@ def test_status_json_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
     data = json.loads(result.stdout)
     assert data["name"] == "Jupiter"
-    assert data["schema_version"] == 2
+    assert data["schema_version"] == 3
     assert data["state_file"] == ".cortexshift/state.sqlite3"
+
     assert data["active_task"] is not None
     assert data["active_task"]["id"] == task.id
     assert data["active_task"]["title"] == "Orbit Jupiter"

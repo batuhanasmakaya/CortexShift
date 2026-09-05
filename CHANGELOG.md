@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 4: Native Provider Launch & Session Lifecycle**:
+  - Segregated runtime ports `ProviderRuntimeAdapter`, `InteractiveProcessRunner`, `WorkspaceLease`, `WorkspaceLeaseManager`, and `SessionStore`.
+  - Concrete provider runtime adapters for Claude Code (`ClaudeRuntimeAdapter`), Codex (`CodexRuntimeAdapter`), and Antigravity (`AntigravityRuntimeAdapter`).
+  - Interactive process runner (`SubprocessInteractiveProcessRunner`) launching native provider CLIs with direct raw TTY stdio passthrough, finite signal handling, and zero subprocess output scraping or buffering.
+  - Prohibition of shell execution (`shell=False`) across all provider invocations with pre-tokenized argument vectors.
+  - Canonical same-working-tree model enforcement (`cwd = project_root`) from any invocation subdirectory.
+  - Project-local exclusive workspace lease (`FileWorkspaceLease`) utilizing POSIX `fcntl.flock` and Windows `msvcrt.locking` on `.cortexshift/agent.lock`, enforcing the single-mutating-agent invariant per project with authoritative OS file-descriptor semantics (lock file existence on disk never blocks acquisition; deletion advice prohibited; stale DB running records do not block acquisition).
+  - Strict TTY contract requiring both stdin and stdout to be interactive for native launches (`stdin.isatty() and stdout.isatty()`), while permitting headless dry runs (`--dry-run`).
+  - Active task prerequisite enforcement (`NoActiveTaskError`) preventing launches without a clear task context.
+  - SQLite schema migration v3 adding the `sessions` table and indexes on `task_id`, `started_at`, and `provider_id`.
+  - Session lifecycle tracking and state transitions (`running`, `completed`, `failed`, `interrupted`) with preserved exit codes and timestamps.
+  - Hardened lifecycle contracts: generic non-zero exits strictly map to `PROCESS_CRASHED` without inferring quota/rate limits; spawn failures map to `SPAWN_FAILED` and immediately release the workspace lease.
+  - Strict privacy guarantees: zero prompts, conversations, transcripts, or auth credentials stored in SQLite.
+  - Dry-run preview capability (`cortexshift run <provider> --dry-run` and `--dry-run --json`) with prompt argument redaction (`<prompt>`).
+  - CLI command `cortexshift run <provider>` with `--prompt`, `--dry-run`, and `--json` flags.
+  - CLI command group `cortexshift session` with subcommands `list` and `show <id>` supporting formatted tables and machine-readable `--json` output.
+  - Domain models `LaunchSpecification`, `SessionStatus`, `SessionExitReason`, and domain error hierarchy (`ProviderNotFoundError`, `UnknownProviderError`, `UnsupportedPromptError`, `WorkspaceLockedError`, `TerminalRequiredError`, `SessionNotFoundError`).
+  - Architectural Decision Record `ADR-0005-native-provider-runtime.md`.
+  - Comprehensive unit and integration test suite covering process lifecycle, dry-run redaction, cross-process concurrency locks, nested directory scoping, spawn failures, stale DB resilience, and persistence durability.
+
 - **Phase 3: Git Context & Repository Awareness**:
   - Pure NUL-safe (`-z`) porcelain v1 parser (`parse_porcelain_status`) handling spaces, unicode, renames, conflicts, untracked files, and excluding `.cortexshift/` internal state.
   - Native `git` CLI repository inspector adapter (`GitRepositoryInspector`) adhering to strictly read-only execution with sanitized environment (`GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_OPTIONAL_LOCKS=0`) and 10s timeouts.

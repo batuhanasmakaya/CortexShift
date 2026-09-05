@@ -18,17 +18,24 @@ from cortexshift.domain.errors import (
     ProjectAlreadyInitializedError,
     ProjectConflictError,
     ProjectNotInitializedError,
+    ProviderNotFoundError,
     RepositoryInspectionError,
+    SessionNotFoundError,
     SnapshotNotFoundError,
     StateCorruptionError,
     TaskAlreadyCompletedError,
     TaskNotActivatableError,
     TaskNotFoundError,
+    TerminalRequiredError,
+    UnknownProviderError,
+    UnsupportedPromptError,
     UnsupportedSchemaVersionError,
+    WorkspaceLockedError,
 )
 from cortexshift.domain.git import GitSnapshot, RepositoryInspection, RepositoryInspectionStatus
 from cortexshift.domain.handoff import Handoff
 from cortexshift.domain.identifiers import generate_id, utc_now
+from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import (
     PROVIDER_ANTIGRAVITY,
@@ -53,6 +60,7 @@ __all__ = [
     "GitProbeTimeoutError",
     "GitSnapshot",
     "Handoff",
+    "LaunchSpecification",
     "NoActiveTaskError",
     "NotAGitRepositoryError",
     "PlatformInfo",
@@ -65,11 +73,13 @@ __all__ = [
     "ProviderCapabilities",
     "ProviderDiagnostic",
     "ProviderId",
+    "ProviderNotFoundError",
     "RepositoryInspection",
     "RepositoryInspectionError",
     "RepositoryInspectionStatus",
     "Session",
     "SessionExitReason",
+    "SessionNotFoundError",
     "SessionStatus",
     "SnapshotNotFoundError",
     "StateCorruptionError",
@@ -78,7 +88,11 @@ __all__ = [
     "TaskNotActivatableError",
     "TaskNotFoundError",
     "TaskStatus",
+    "TerminalRequiredError",
+    "UnknownProviderError",
+    "UnsupportedPromptError",
     "UnsupportedSchemaVersionError",
+    "WorkspaceLockedError",
     "PROVIDER_ANTIGRAVITY",
     "PROVIDER_CLAUDE",
     "PROVIDER_CODEX",

@@ -17,6 +17,8 @@ from cortexshift.application.doctor import DoctorService, UnknownProviderError
 from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.application.locator import DATABASE_FILE_NAME, STATE_DIR_NAME, ProjectLocator
 from cortexshift.application.repository_service import RepositoryService
+from cortexshift.application.run_service import RunService
+from cortexshift.application.session_service import SessionService
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.task_service import TaskService
 from cortexshift.domain.doctor import AuthenticationStatus, DoctorReport
@@ -26,19 +28,26 @@ from cortexshift.domain.errors import (
     NoActiveTaskError,
     ProjectConflictError,
     ProjectNotInitializedError,
+    ProviderNotFoundError,
     RepositoryInspectionError,
+    SessionNotFoundError,
     SnapshotNotFoundError,
     StateCorruptionError,
     TaskAlreadyCompletedError,
     TaskNotActivatableError,
     TaskNotFoundError,
+    TerminalRequiredError,
+    UnsupportedPromptError,
     UnsupportedSchemaVersionError,
+    WorkspaceLockedError,
 )
 from cortexshift.domain.git import (
     RepositoryInspectionStatus,
 )
+from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import ProviderId
+from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.status import ProjectStatus
 from cortexshift.domain.task import Task, TaskStatus
 
@@ -65,6 +74,13 @@ repo_app = typer.Typer(
 )
 app.add_typer(repo_app, name="repo")
 
+session_app = typer.Typer(
+    name="session",
+    help="Inspect agent execution session history.",
+    no_args_is_help=True,
+)
+app.add_typer(session_app, name="session")
+
 
 def print_version() -> None:
     """Print the version string."""
@@ -76,11 +92,29 @@ def _handle_error(err: Exception) -> None:
     if isinstance(err, ProjectNotInitializedError):
         err_console.print("\nCortexShift is not initialized here.\n\nRun:\n  cortexshift init\n")
         raise typer.Exit(code=1)
+    if isinstance(err, NoActiveTaskError):
+        err_console.print(
+            "\nNo active task.\n\n"
+            "No active CortexShift task.\n\n"
+            "Create or activate one first:\n\n  cortexshift task start ...\n"
+        )
+        raise typer.Exit(code=1)
+
+    if isinstance(
+        err,
+        (
+            UnsupportedPromptError,
+            ProviderNotFoundError,
+            WorkspaceLockedError,
+            TerminalRequiredError,
+        ),
+    ):
+        err_console.print(f"\n{err}\n")
+        raise typer.Exit(code=1)
     if isinstance(
         err,
         (
             TaskNotFoundError,
-            NoActiveTaskError,
             TaskNotActivatableError,
             TaskAlreadyCompletedError,
             ProjectConflictError,
@@ -89,6 +123,8 @@ def _handle_error(err: Exception) -> None:
             DatabaseStateError,
             RepositoryInspectionError,
             SnapshotNotFoundError,
+            SessionNotFoundError,
+            UnknownProviderError,
         ),
     ):
         err_console.print(f"[red]Error:[/red] {err}")
@@ -1046,6 +1082,241 @@ def repo_show(
         console.print()
         _render_file_list("Conflicted", snapshot.conflicted_files)
 
+    console.print()
+
+
+# --- Provider Run Command ---
+
+
+@app.command("run", no_args_is_help=False)
+def run_command(
+    provider: Annotated[
+        str,
+        typer.Argument(
+            help="Canonical provider identifier to launch (claude, codex, antigravity).",
+        ),
+    ],
+    prompt: Annotated[
+        str | None,
+        typer.Option(
+            "--prompt",
+            "-p",
+            help="Optional initial prompt to pass to the provider.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Simulate launch and display specification without starting process.",
+        ),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output machine-readable JSON (only valid with --dry-run).",
+        ),
+    ] = False,
+) -> None:
+    """Launch an interactive native coding agent session on the active task."""
+    if json_output and not dry_run:
+        err_console.print("[red]Error:[/red] --json is only supported with --dry-run.")
+        raise typer.Exit(code=1)
+
+    run_service = RunService()
+
+    if dry_run:
+        try:
+            result = run_service.dry_run(provider_name=provider, prompt=prompt)
+        except Exception as err:
+            _handle_error(err)
+            return
+
+        if json_output:
+            sys.stdout.write(json.dumps(result.to_dict(), indent=2) + "\n")
+            return
+
+        console.print("\n[bold]CortexShift Provider Launch (Dry Run)[/bold]\n")
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="bold cyan", justify="left")
+        grid.add_column(style="default", justify="left")
+        grid.add_row("Provider", result.display_name)
+        grid.add_row("Executable", result.executable)
+        grid.add_row("Project", f"{result.project_name} ({result.project_id})")
+        grid.add_row("Task", f"{result.task_title} ({result.task_id})")
+        grid.add_row("Directory", str(result.cwd))
+        grid.add_row("Mode", result.mode)
+        grid.add_row("Prompt", "supplied" if result.prompt_supplied else "none")
+        console.print(grid)
+        console.print(f"\n[bold]Command:[/bold] {' '.join(result.argv)}\n")
+        return
+
+    def _on_launch(
+        _spec: LaunchSpecification,
+        session: Session,
+        task: Task,
+        _project: Project,
+    ) -> None:
+
+        console.print("\n[bold]CortexShift[/bold]")
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="bold cyan", justify="left")
+        grid.add_column(style="default", justify="left")
+        grid.add_row("Task", task.title)
+        adapter = run_service._registry.get(provider)
+        display_name = adapter.display_name if adapter else provider
+        grid.add_row("Provider", display_name)
+        grid.add_row("Session", session.id)
+        console.print(grid)
+        console.print("\n[dim]Launching native provider...[/dim]\n")
+
+    try:
+        session = run_service.run(
+            provider_name=provider,
+            prompt=prompt,
+            on_launch=_on_launch,
+        )
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if session.status == SessionStatus.COMPLETED:
+        console.print("\nSession completed.")
+    elif session.status == SessionStatus.INTERRUPTED:
+        console.print("\nSession interrupted.")
+    else:
+        console.print("\nSession failed.")
+        if session.exit_code:
+            raise typer.Exit(code=session.exit_code)
+        raise typer.Exit(code=1)
+
+
+# --- Session Commands ---
+
+
+@session_app.command("list")
+def session_list_command(
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit",
+            help="Maximum number of sessions to return.",
+        ),
+    ] = 20,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output machine-readable JSON format.",
+        ),
+    ] = False,
+) -> None:
+    """List historical agent execution sessions."""
+    service = SessionService()
+    try:
+        sessions = service.list_sessions(limit=limit)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        data = [s.model_dump(mode="json") for s in sessions]
+        sys.stdout.write(json.dumps(data, indent=2) + "\n")
+        return
+
+    if not sessions:
+        console.print("\nNo sessions found.\n")
+        return
+
+    table = Table(
+        title="Agent Sessions",
+        box=box.ROUNDED,
+        header_style="bold cyan",
+    )
+    table.add_column("Session", style="bold")
+    table.add_column("Provider")
+    table.add_column("Status")
+    table.add_column("Started (UTC)")
+    table.add_column("Task")
+
+    provider_names = {
+        "claude": "Claude Code",
+        "codex": "Codex",
+        "antigravity": "Antigravity",
+    }
+
+    for s in sessions:
+        p_name = provider_names.get(str(s.provider_id).lower(), str(s.provider_id))
+        status_style = (
+            "green"
+            if s.status == SessionStatus.COMPLETED
+            else ("yellow" if s.status == SessionStatus.RUNNING else "red")
+        )
+        table.add_row(
+            s.id,
+            p_name,
+            f"[{status_style}]{s.status.value}[/{status_style}]",
+            s.started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            s.task_id,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@session_app.command("show")
+def session_show_command(
+    session_id: Annotated[
+        str,
+        typer.Argument(
+            help="Identifier of the session to inspect.",
+        ),
+    ],
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output machine-readable JSON format.",
+        ),
+    ] = False,
+) -> None:
+    """Show details of a specific agent execution session."""
+    service = SessionService()
+    try:
+        session = service.get_session(session_id)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(json.dumps(session.model_dump(mode="json"), indent=2) + "\n")
+        return
+
+    provider_names = {
+        "claude": "Claude Code",
+        "codex": "Codex",
+        "antigravity": "Antigravity",
+    }
+    p_name = provider_names.get(str(session.provider_id).lower(), str(session.provider_id))
+
+    console.print(f"\n[bold]Session: {session.id}[/bold]\n")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+    grid.add_row("Task ID", session.task_id)
+    grid.add_row("Provider", p_name)
+    grid.add_row("Status", session.status.value)
+    grid.add_row("Native Session ID", session.native_session_id or "—")
+    grid.add_row("Started (UTC)", session.started_at.strftime("%Y-%m-%d %H:%M:%S"))
+    grid.add_row(
+        "Ended (UTC)",
+        session.ended_at.strftime("%Y-%m-%d %H:%M:%S") if session.ended_at else "—",
+    )
+    grid.add_row("Exit Reason", session.exit_reason.value if session.exit_reason else "—")
+    grid.add_row("Exit Code", str(session.exit_code) if session.exit_code is not None else "—")
+    console.print(grid)
     console.print()
 
 

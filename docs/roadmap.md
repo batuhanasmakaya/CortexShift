@@ -12,7 +12,7 @@ Each phase builds systematically upon the previous phase without premature compl
 Phase 0  ──▶  Phase 1  ──▶  Phase 2  ──▶  Phase 3  ──▶  Phase 4  ──▶  Phase 5
 Foundation    Provider      Task State    Git Context   Native        Manual
 & Arch        Discovery     & SQLite                    Launch        Handoff
-(Complete)    (Complete)    (Complete)    (Complete)    (Next)
+(Complete)    (Complete)    (Complete)    (Complete)    (Complete)    (Next)
 
 Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
 Native        Checkpoints   MCP Server    TUI           Public        Experimental
@@ -84,18 +84,26 @@ Connect live Git repositories to CortexShift's context engine with read-only ins
 
 ---
 
-## Phase 4 — Native Provider Launch
+## Phase 4 — Native Provider Launch & Session Lifecycle *(Completed)*
 
-Launch external coding agents through non-invasive adapters.
+Launch external coding agents through non-invasive adapters with raw terminal passthrough, workspace concurrency leasing, and session lifecycle tracking.
 
-- **Goals**:
-  - Implement concrete adapters for Claude Code, Codex, and Antigravity.
-  - Orchestrate interactive terminal sessions and headless runs.
-  - Pass initial workspace context to launched CLIs.
+- **Deliverables**:
+  - Segregated runtime ports (`ProviderRuntimeAdapter`, `InteractiveProcessRunner`, `WorkspaceLeaseManager`, `SessionStore`).
+  - Native interactive execution with raw TTY passthrough (`SubprocessInteractiveProcessRunner`), no buffering or scraping.
+  - Prohibition of shell execution (`shell=False`) across all provider invocations.
+  - Same-working-tree model: provider processes launch with `cwd = project_root` regardless of invocation subdirectory.
+  - Project-local exclusive workspace leasing (`FileWorkspaceLease` via `fcntl.flock` on `.cortexshift/agent.lock`) enforcing the single-mutating-agent invariant.
+  - Task-centric prerequisite: launch strictly requires an active task (`NoActiveTaskError`).
+  - Dry-run preview mode (`cortexshift run <provider> --dry-run` and `--dry-run --json`) with prompt redaction.
+  - SQLite schema v3 migration adding `sessions` table and indexes.
+  - Session lifecycle tracking (`running`, `completed`, `failed`, `interrupted`), exit code capture, and zero prompt/transcript storage.
+  - CLI commands: `cortexshift run <provider>`, `cortexshift session list`, `cortexshift session show <id>`.
+  - ADR-0005 documentation and comprehensive unit/integration test suite.
 
 ---
 
-## Phase 5 — Manual Handoff
+## Phase 5 — Manual Handoff *(Next)*
 
 Complete the first end-to-end multi-agent workflow.
 

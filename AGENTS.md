@@ -32,6 +32,8 @@ Every agent working on CortexShift must preserve the following architectural inv
 8. **Structured Canonical State over Transcripts**: Context handoff uses distilled structured state (objective, requirements, decisions, touched files, test status). Transcript capture is disabled by default (`capture_transcripts = false`).
 9. **Git Snapshot Authority vs. Reality**: Stored `GitSnapshot` records are immutable historical observations of what was true at capture time. They are never proof of current working tree reality once subsequent changes occur. Live inspection via `git status` outranks any stored snapshot.
 10. **Strictly Read-Only Git Execution**: CortexShift's repository inspection must never mutate the repository's version control state. All repository inspection commands (`git status`, `git branch`, `git rev-parse`, `git diff --shortstat`) must be strictly read-only (no `git add`, `git commit`, `git checkout`, `git reset`, `git clean`, etc.).
+11. **Direct Terminal Passthrough & Zero Prompt Storage**: Native provider interactive sessions directly inherit terminal stdio without pipe-wrapping, buffering, or TUI scraping. CortexShift must never persist user prompts, conversational transcripts, or provider auth tokens.
+12. **Mandatory Workspace Lease**: All mutating agent operations strictly require an exclusive project workspace lease (`FileWorkspaceLease` via OS advisory locking on `.cortexshift/agent.lock`) to enforce single-mutating-agent execution. The OS advisory lock (`fcntl.flock` / `msvcrt.locking`) on the open file descriptor is authoritative; the mere existence of the lock file on disk does not imply an active lease, and users must never be instructed to delete the lock file. Stale database session records never impede acquiring a free OS lock.
 
 ---
 
@@ -56,3 +58,8 @@ Every agent working on CortexShift must preserve the following architectural inv
 - [Canonical Handoff Protocol](docs/handoff-protocol.md)
 - [Project Roadmap](docs/roadmap.md)
 - [Architecture Decisions (ADRs)](docs/decisions/ADR-0001-core-architecture.md)
+  - [ADR-0001: Core Architecture](docs/decisions/ADR-0001-core-architecture.md)
+  - [ADR-0002: Safe Provider Discovery](docs/decisions/ADR-0002-safe-provider-discovery.md)
+  - [ADR-0003: Project-Local Persistence](docs/decisions/ADR-0003-project-local-persistence.md)
+  - [ADR-0004: Git Repository Context](docs/decisions/ADR-0004-git-repository-context.md)
+  - [ADR-0005: Native Provider Launch & Session Lifecycle](docs/decisions/ADR-0005-native-provider-runtime.md)
