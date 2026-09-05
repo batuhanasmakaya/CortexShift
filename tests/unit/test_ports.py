@@ -2,13 +2,11 @@
 
 from cortexshift.domain import (
     PROVIDER_CLAUDE,
-    Checkpoint,
     GitSnapshot,
     Handoff,
     Project,
     ProviderCapabilities,
     ProviderId,
-    Session,
     Task,
 )
 from cortexshift.ports import ProviderAdapter, RepositoryInspector, StateStore
@@ -62,6 +60,9 @@ class DummyStateStore:
     def get_project(self, project_id: str) -> Project | None:
         return None
 
+    def get_default_project(self) -> Project | None:
+        return None
+
     def save_task(self, task: Task) -> None:
         pass
 
@@ -71,26 +72,14 @@ class DummyStateStore:
     def list_tasks(self, project_id: str) -> list[Task]:
         return []
 
-    def save_session(self, session: Session) -> None:
-        pass
-
-    def get_session(self, session_id: str) -> Session | None:
+    def get_active_task_id(self, project_id: str) -> str | None:
         return None
 
-    def list_sessions(self, task_id: str) -> list[Session]:
-        return []
-
-    def save_checkpoint(self, checkpoint: Checkpoint) -> None:
+    def set_active_task_id(self, project_id: str, task_id: str | None) -> None:
         pass
 
-    def get_latest_checkpoint(self, task_id: str) -> Checkpoint | None:
-        return None
-
-    def save_handoff(self, handoff: Handoff) -> None:
-        pass
-
-    def get_latest_handoff(self, task_id: str) -> Handoff | None:
-        return None
+    def get_schema_version(self) -> int:
+        return 1
 
 
 def test_provider_adapter_protocol() -> None:

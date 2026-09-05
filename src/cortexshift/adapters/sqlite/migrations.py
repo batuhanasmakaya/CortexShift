@@ -1,0 +1,131 @@
+"""Lightweight deterministic schema migration system for CortexShift SQLite database."""
+
+import contextlib
+import sqlite3
+from collections.abc import Callable
+
+from cortexshift.domain.errors import DatabaseStateError, UnsupportedSchemaVersionError
+from cortexshift.domain.identifiers import utc_now
+
+CURRENT_SCHEMA_VERSION = 1
+
+
+def _migrate_v1(conn: sqlite3.Connection) -> None:
+    """Apply Schema Version 1: initial Project, Task, and ProjectRuntime tables."""
+    conn.execute(
+        """
+        CREATE TABLE projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            repo_path TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            metadata TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            requirements TEXT NOT NULL,
+            constraints TEXT NOT NULL,
+            status TEXT NOT NULL,
+            completed_items TEXT NOT NULL,
+            current_work TEXT,
+            remaining_items TEXT NOT NULL,
+            known_issues TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            metadata TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute("CREATE INDEX idx_tasks_project_id ON tasks(project_id);")
+    conn.execute(
+        """
+        CREATE TABLE project_runtime (
+            project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+            active_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL
+        );
+        """
+    )
+
+
+# Ordered registry of migration functions: index 0 is v1, index 1 is v2, etc.
+MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
+    _migrate_v1,
+]
+
+
+def get_current_schema_version(conn: sqlite3.Connection) -> int:
+    """Inspect the database and return the highest applied schema version, or 0 if unversioned."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_metadata';"
+        )
+        if cursor.fetchone() is None:
+            return 0
+
+        cursor.execute("SELECT MAX(schema_version) FROM schema_metadata;")
+        row = cursor.fetchone()
+        if row is None or row[0] is None:
+            return 0
+        return int(row[0])
+    except sqlite3.Error as err:
+        raise DatabaseStateError(f"Failed to inspect database schema version: {err}") from err
+
+
+def run_migrations(conn: sqlite3.Connection) -> int:
+    """Run all pending schema migrations up to CURRENT_SCHEMA_VERSION in a transaction.
+
+    Returns:
+        The final schema version after migration.
+
+    Raises:
+        UnsupportedSchemaVersionError: If the database is at a higher version than supported.
+        DatabaseStateError: If any migration step fails.
+    """
+    current_version = get_current_schema_version(conn)
+
+    if current_version > CURRENT_SCHEMA_VERSION:
+        raise UnsupportedSchemaVersionError(current_version, CURRENT_SCHEMA_VERSION)
+
+    if current_version == CURRENT_SCHEMA_VERSION:
+        return current_version
+
+    prev_isolation = conn.isolation_level
+    try:
+        conn.isolation_level = None
+        conn.execute("BEGIN;")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_metadata (
+                schema_version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            );
+            """
+        )
+
+        for target_ver in range(current_version + 1, CURRENT_SCHEMA_VERSION + 1):
+            migration_fn = MIGRATIONS[target_ver - 1]
+            migration_fn(conn)
+            conn.execute(
+                "INSERT INTO schema_metadata (schema_version, applied_at) VALUES (?, ?);",
+                (target_ver, utc_now().isoformat()),
+            )
+
+        conn.execute("COMMIT;")
+    except sqlite3.Error as err:
+        with contextlib.suppress(sqlite3.Error):
+            conn.execute("ROLLBACK;")
+        msg = f"Migration to schema v{current_version + 1} failed: {err}"
+        raise DatabaseStateError(msg) from err
+    finally:
+        conn.isolation_level = prev_isolation
+
+    return CURRENT_SCHEMA_VERSION

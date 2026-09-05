@@ -2,10 +2,7 @@
 
 from typing import Protocol, runtime_checkable
 
-from cortexshift.domain.checkpoint import Checkpoint
-from cortexshift.domain.handoff import Handoff
 from cortexshift.domain.project import Project
-from cortexshift.domain.session import Session
 from cortexshift.domain.task import Task
 
 
@@ -14,7 +11,7 @@ class StateStore(Protocol):
     """Abstract port for persisting and querying CortexShift entities.
 
     Isolates domain and application logic from the underlying storage mechanism
-    (e.g., local SQLite, in-memory test store, filesystem JSON).
+    (e.g., local SQLite, in-memory test store).
     """
 
     # Project operations
@@ -24,6 +21,10 @@ class StateStore(Protocol):
 
     def get_project(self, project_id: str) -> Project | None:
         """Retrieve a Project by its stable identifier."""
+        ...
+
+    def get_default_project(self) -> Project | None:
+        """Retrieve the canonical project associated with this project-local store."""
         ...
 
     # Task operations
@@ -39,33 +40,16 @@ class StateStore(Protocol):
         """List all tasks associated with a given project."""
         ...
 
-    # Session operations
-    def save_session(self, session: Session) -> None:
-        """Persist or update an agent Session."""
+    # Runtime / Active Task state
+    def get_active_task_id(self, project_id: str) -> str | None:
+        """Retrieve the identifier of the active task for the project, if any."""
         ...
 
-    def get_session(self, session_id: str) -> Session | None:
-        """Retrieve a Session by its stable identifier."""
+    def set_active_task_id(self, project_id: str, task_id: str | None) -> None:
+        """Set or clear the active task identifier for the project."""
         ...
 
-    def list_sessions(self, task_id: str) -> list[Session]:
-        """List all sessions executed against a given task."""
-        ...
-
-    # Checkpoint operations
-    def save_checkpoint(self, checkpoint: Checkpoint) -> None:
-        """Persist a task Checkpoint."""
-        ...
-
-    def get_latest_checkpoint(self, task_id: str) -> Checkpoint | None:
-        """Retrieve the most recent checkpoint for a given task."""
-        ...
-
-    # Handoff operations
-    def save_handoff(self, handoff: Handoff) -> None:
-        """Persist a task Handoff."""
-        ...
-
-    def get_latest_handoff(self, task_id: str) -> Handoff | None:
-        """Retrieve the most recent handoff for a given task."""
+    # Schema inspection
+    def get_schema_version(self) -> int:
+        """Retrieve the current applied database schema version."""
         ...

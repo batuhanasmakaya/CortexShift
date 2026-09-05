@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 2: Persistent Project & Task State**:
+  - Project-local runtime directory `.cortexshift/` with SQLite persistence (`state.sqlite3`).
+  - Standard-library `sqlite3` adapter (`SQLiteStateStore`) with WAL mode, foreign key enforcement, and busy timeouts without third-party ORMs.
+  - Lightweight deterministic schema migration runner (`schema_metadata`) with forward-safety and rollback protection.
+  - Filesystem-based ancestor project root locator (`ProjectLocator`) supporting nested subdirectories without Git dependencies.
+  - Idempotent project initialization service and `cortexshift init` command.
+  - Task lifecycle service (`TaskService`) managing durable creation, progression updates, activation, and completion.
+  - Single active task pointer management in `project_runtime` table with foreign key constraints.
+  - Project status service and `cortexshift status` command with Rich human table and machine-readable `--json` format.
+  - Task CLI commands: `cortexshift task start`, `list`, `show`, `update`, `activate`, `complete` with machine-readable `--json` surfaces on `status`, `task list`, and `task show`.
+  - Canonical task contract preservation: durable storage and restart survival of `objective`, `requirements`, `constraints`, `completed`, `remaining`, `known_issues`, and `current_work` as future handoff inputs.
+  - Domain error hierarchy (`ProjectNotInitializedError`, `TaskNotFoundError`, `NoActiveTaskError`, `TaskNotActivatableError`, `UnsupportedSchemaVersionError`, `StateCorruptionError`).
+  - Invariant enforcement: zero credential persistence, zero transcript storage, zero destructive auto-reset.
+  - Architectural Decision Record `ADR-0003-project-local-persistence.md`.
+  - Comprehensive unit and integration test suite covering process restart persistence, isolation, and migrations.
+
 - **Phase 1: Native Provider Discovery & `cortexshift doctor`**:
   - Safe subprocess command execution abstraction (`CommandRunner` port, `SubprocessCommandRunner` adapter) with argument lists, finite timeouts, and error handling without `shell=True`.
   - Passive native provider probes for Claude Code (`claude`), OpenAI Codex (`codex`), and Google Antigravity (`agy`).

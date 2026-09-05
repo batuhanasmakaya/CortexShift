@@ -37,6 +37,9 @@ Every agent working on CortexShift must preserve the following architectural inv
 
 - **Read Before Modifying**: Review [`docs/architecture.md`](docs/architecture.md) and relevant ADRs in [`docs/decisions/`](docs/decisions/) before initiating significant architectural modifications.
 - **Strict Layering**: Enforce dependency flow: `domain` ← `ports` ← `application` ← `cli` / `adapters`. Domain must never import CLI, concrete adapters, or third-party infrastructure frameworks.
+- **Persistence Boundaries**: Domain, application, and CLI layers must NEVER contain SQL statements or SQLite dependencies. All persistence logic belongs strictly behind ports in adapters (`SQLiteStateStore`).
+- **Data Integrity & Non-Destruction**: Never automatically wipe, reset, or silently overwrite user database state. Migrations must be forward-safe, deterministic, and transactional. If state is incompatible, fail safely.
+- **Private State Area**: `.cortexshift/` is local private runtime state. It must never store provider credentials, auth tokens, or conversational transcripts.
 - **Minimal Dependencies**: Do not introduce heavy frameworks (no LangChain, LlamaIndex, vector DBs, Redis, ORMs, or cloud SDKs). Rely on Python stdlib, Pydantic, Typer, and Rich.
 - **Tests Are Mandatory**: Every new domain behavior, CLI command, and adapter must include automated, deterministic unit tests. Run `pytest`, `ruff check .`, and `mypy src` before declaring work complete.
 - **Scope Discipline**: Strictly keep changes scoped to the current phase and requested task. Do NOT prematurely implement future roadmap phases (e.g., do not add provider execution or database schemas until requested).

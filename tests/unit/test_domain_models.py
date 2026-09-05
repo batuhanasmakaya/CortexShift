@@ -117,6 +117,33 @@ class TestTaskModel:
         json_data = task.model_dump_json()
         restored = Task.model_validate_json(json_data)
         assert restored == task
+        assert restored.completed == ["JWT validation"]
+        assert restored.remaining == ["Revocation list"]
+
+    def test_task_completed_and_remaining_aliases(self) -> None:
+        task = Task.model_validate(
+            {
+                "project_id": "proj_123",
+                "title": "Aliases Test",
+                "objective": "Verify aliases",
+                "completed": ["Item 1", "Item 2"],
+                "remaining": ["Item 3"],
+            }
+        )
+        assert task.completed_items == ["Item 1", "Item 2"]
+        assert task.completed == ["Item 1", "Item 2"]
+        assert task.remaining_items == ["Item 3"]
+        assert task.remaining == ["Item 3"]
+
+        # Check model_dump contains both
+        dump = task.model_dump()
+        assert dump["completed"] == ["Item 1", "Item 2"]
+        assert dump["remaining"] == ["Item 3"]
+
+        # Check method aliases
+        updated = task.add_completed(["Item 4"]).add_remaining(["Item 5"])
+        assert updated.completed == ["Item 1", "Item 2", "Item 4"]
+        assert updated.remaining == ["Item 3", "Item 5"]
 
 
 class TestSessionModel:

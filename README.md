@@ -42,32 +42,39 @@ Claude Code      Codex        Antigravity
 ## Status: Pre-Alpha
 
 > [!NOTE]
-> CortexShift is currently in **Phase 1 (Native Provider Discovery & `cortexshift doctor`)**. It is in active early development and not yet ready for production task execution.
+> CortexShift is currently in **Phase 2 (Persistent Project & Task State)**. It provides durable project-local task persistence and native provider discovery, but does not yet launch agents or switch tasks.
 
-### What Works Today (Phase 1)
-- **Native Provider Discovery**:
+### What Works Today (Phase 2)
+- **Persistent Project & Task State (Phase 2)**:
+  - Initialize project-local state area (`.cortexshift/state.sqlite3`) via `cortexshift init`.
+  - Persist canonical project identity, root path, and metadata.
+  - Create and manage durable tasks via `cortexshift task start`, `list`, `show`, `update`, `activate`, `complete`.
+  - Maintain exactly one active task pointer per project.
+  - Inspect project status, active task, and progress counters via `cortexshift status` and `cortexshift status --json`.
+  - Discover project roots automatically from nested child subdirectories without relying on Git.
+  - Versioned SQLite database schema with forward-safe migrations.
+  - Complete state durability across terminal exits and process restarts.
+- **Native Provider Discovery (Phase 1)**:
   - Discover supported native coding-agent CLIs (`claude`, `codex`, `agy` for Antigravity).
-  - Best-effort version inspection without launching full agent TUIs.
-  - Conservative, passive authentication status inspection where safely supported (`claude auth status`, `codex login status`).
-  - Strict preservation of privacy and quotas: never sends model prompts, never reads vendor credential storage, never leaks auth tokens.
-- **`cortexshift doctor` Command**:
-  - Polished Rich terminal table with environment summary, installation status, versions, and auth checks.
-  - Clean, machine-readable JSON output via `cortexshift doctor --json`.
-  - Provider filtering via `--provider` / `-p` (e.g. `cortexshift doctor --provider claude`).
+  - Safely inspect provider versions and passive authentication status where supported.
+  - Run environment health check via `cortexshift doctor` and `cortexshift doctor --json`.
+  - Zero model prompt executions and zero credential inspections.
 - **Foundational Architecture (Phase 0)**:
-  - Core domain model definitions (`Project`, `Task`, `Session`, `Checkpoint`, `Handoff`, `GitSnapshot`, `ProviderCapabilities`, `DoctorReport`).
-  - Pure abstract ports (`CommandRunner`, `ProviderDiscoveryPort`, `ProviderAdapter`, `RepositoryInspector`, `StateStore`).
+  - Core domain models (`Project`, `Task`, `Session`, `Checkpoint`, `Handoff`, `GitSnapshot`).
+  - Strict abstract ports (`CommandRunner`, `ProviderDiscoveryPort`, `ProviderAdapter`, `RepositoryInspector`, `StateStore`).
   - Multi-agent development contract ([`AGENTS.md`](AGENTS.md)).
-  - Architecture specifications, ADRs ([`ADR-0001`](docs/decisions/ADR-0001-core-architecture.md), [`ADR-0002`](docs/decisions/ADR-0002-safe-provider-discovery.md)), and canonical handoff protocol ([`docs/`](docs/)).
+  - Architecture specifications, ADRs ([`ADR-0001`](docs/decisions/ADR-0001-core-architecture.md), [`ADR-0002`](docs/decisions/ADR-0002-safe-provider-discovery.md), [`ADR-0003`](docs/decisions/ADR-0003-project-local-persistence.md)).
   - 100% type-checked code via strict `mypy`, formatted via `ruff`, with comprehensive unit and integration tests.
 
 ### What Does NOT Work Yet
-- ✗ Starting tasks or managing task lifecycles (planned for Phase 2).
-- ✗ Persisting project state or local SQLite database (`cortexshift init`, `cortexshift task`) (planned for Phase 2).
-- ✗ Inspecting Git context, diffs, or repository snapshots (planned for Phase 3).
+- ✗ Git context capture, diff analysis, and repository snapshots (planned for Phase 3).
 - ✗ Launching coding agents in interactive or headless modes (planned for Phase 4).
-- ✗ Switching agents or executing multi-agent workflows (`cortexshift switch`) (planned for Phase 5).
-- ✗ Handing off context between agents (planned for Phase 5).
+- ✗ Agent switching or executing multi-agent workflows (`cortexshift switch`) (planned for Phase 5).
+- ✗ Automatic context handoffs between agents (planned for Phase 5).
+- ✗ Resuming native agent sessions (planned for Phase 6).
+- ✗ Checkpoint automation and disaster recovery (planned for Phase 7).
+- ✗ Model Context Protocol (MCP) server integration (planned for Phase 8).
+
 
 ---
 
@@ -141,15 +148,38 @@ uv run cortexshift version
 
 # Inspect installed coding agents (Phase 1)
 uv run cortexshift doctor
-
-# Output diagnostics as machine-readable JSON
 uv run cortexshift doctor --json
 
-# Filter to specific provider(s)
-uv run cortexshift doctor --provider claude
+# Initialize project-local state (Phase 2)
+uv run cortexshift init
 
-# Run via python module
-uv run python -m cortexshift --help
+# Start a persistent task with objective, requirements, and constraints
+uv run cortexshift task start \
+  --title "Implement screen understanding" \
+  --objective "Add screen-understanding support while preserving provider boundaries." \
+  --requirement "Support standard image formats" \
+  --constraint "No direct cloud API calls"
+
+# Check durable project status
+uv run cortexshift status
+uv run cortexshift status --json
+
+# Update task progress
+uv run cortexshift task update \
+  --work "Developing SQLite adapter" \
+  --add-completed "Created schema migrations" \
+  --add-remaining "Add integration tests"
+
+# List all tasks
+uv run cortexshift task list
+uv run cortexshift task list --json
+
+# Inspect active task details
+uv run cortexshift task show
+uv run cortexshift task show --json
+
+# Mark active task completed
+uv run cortexshift task complete
 ```
 
 ### Running Tests and Quality Checks

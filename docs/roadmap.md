@@ -12,7 +12,7 @@ Each phase builds systematically upon the previous phase without premature compl
 Phase 0  ──▶  Phase 1  ──▶  Phase 2  ──▶  Phase 3  ──▶  Phase 4  ──▶  Phase 5
 Foundation    Provider      Task State    Git Context   Native        Manual
 & Arch        Discovery     & SQLite                    Launch        Handoff
-(Complete)    (Complete)    (Next)
+(Complete)    (Complete)    (Complete)    (Next)
 
 Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
 Native        Checkpoints   MCP Server    TUI           Public        Experimental
@@ -51,14 +51,20 @@ Implement non-invasive local detection of installed AI coding agent CLIs.
 
 ---
 
-## Phase 2 — Project & Task State *(Next Phase)*
+## Phase 2 — Project & Task State *(Completed)*
 
-Introduce local persistence and complete task lifecycle management.
+Introduce durable local persistence, schema migrations, and complete task lifecycle management.
 
-- **Goals**:
-  - SQLite database in `.cortexshift/state.db`.
-  - Commands: `cortexshift init`, `cortexshift task create`, `cortexshift task list`, `cortexshift status`.
-  - Task state transitions (`PENDING`, `IN_PROGRESS`, `BLOCKED`, `COMPLETED`).
+- **Deliverables**:
+  - Project-local `.cortexshift/state.sqlite3` with standard-library SQLite and WAL mode.
+  - Explicit deterministic schema migrations with forward-safety (`schema_metadata`).
+  - Nearest ancestor project locator (`ProjectLocator`) without Git dependencies.
+  - Idempotent project initialization (`cortexshift init`).
+  - Active task pointer mechanics in `project_runtime`.
+  - Task lifecycle operations: `cortexshift task start`, `list`, `show`, `update`, `activate`, `complete`.
+  - Project and task status overview: `cortexshift status` and `cortexshift status --json`.
+  - Process restart durability and workspace isolation verification.
+  - ADR-0003 documentation and comprehensive automated test suite.
 
 ---
 

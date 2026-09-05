@@ -1,6 +1,8 @@
 """CortexShift Typer CLI application."""
 
+import json
 import sys
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -9,9 +11,29 @@ from rich.console import Console
 from rich.table import Table
 
 from cortexshift import __version__
+from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.doctor import DoctorService, UnknownProviderError
+from cortexshift.application.init_service import ProjectInitializationService
+from cortexshift.application.locator import DATABASE_FILE_NAME, STATE_DIR_NAME, ProjectLocator
+from cortexshift.application.status_service import ProjectStatusService
+from cortexshift.application.task_service import TaskService
 from cortexshift.domain.doctor import AuthenticationStatus, DoctorReport
+from cortexshift.domain.errors import (
+    CortexShiftError,
+    DatabaseStateError,
+    NoActiveTaskError,
+    ProjectConflictError,
+    ProjectNotInitializedError,
+    StateCorruptionError,
+    TaskAlreadyCompletedError,
+    TaskNotActivatableError,
+    TaskNotFoundError,
+    UnsupportedSchemaVersionError,
+)
+from cortexshift.domain.project import Project
 from cortexshift.domain.provider import ProviderId
+from cortexshift.domain.status import ProjectStatus
+from cortexshift.domain.task import Task, TaskStatus
 
 console = Console()
 err_console = Console(stderr=True)
@@ -22,10 +44,60 @@ app = typer.Typer(
     add_completion=False,
 )
 
+task_app = typer.Typer(
+    name="task",
+    help="Manage persistent development tasks.",
+    no_args_is_help=True,
+)
+app.add_typer(task_app, name="task")
+
 
 def print_version() -> None:
     """Print the version string."""
     console.print(f"CortexShift {__version__}")
+
+
+def _handle_error(err: Exception) -> None:
+    """Render friendly domain errors without Python tracebacks and exit."""
+    if isinstance(err, ProjectNotInitializedError):
+        err_console.print("\nCortexShift is not initialized here.\n\nRun:\n  cortexshift init\n")
+        raise typer.Exit(code=1)
+    if isinstance(
+        err,
+        (
+            TaskNotFoundError,
+            NoActiveTaskError,
+            TaskNotActivatableError,
+            TaskAlreadyCompletedError,
+            ProjectConflictError,
+            UnsupportedSchemaVersionError,
+            StateCorruptionError,
+            DatabaseStateError,
+        ),
+    ):
+        err_console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(code=1)
+    if isinstance(err, CortexShiftError):
+        err_console.print(f"[red]Error:[/red] {err}")
+        raise typer.Exit(code=1)
+    err_console.print(f"[red]Unexpected error:[/red] {err}")
+    raise typer.Exit(code=1)
+
+
+def _get_project_and_store() -> tuple[Project, SQLiteStateStore]:
+    """Discover initialized project root and return canonical Project and SQLiteStateStore."""
+    project_root = ProjectLocator.find_project_root()
+    if project_root is None:
+        raise ProjectNotInitializedError()
+
+    db_path = ProjectLocator.get_database_path(project_root)
+    store = SQLiteStateStore(db_path, auto_migrate=False)
+    project = store.get_default_project()
+    if project is None:
+        store.close()
+        raise ProjectNotInitializedError()
+
+    return project, store
 
 
 @app.callback(invoke_without_command=True)
@@ -53,6 +125,9 @@ def main(
 def version_cmd() -> None:
     """Display the installed CortexShift version."""
     print_version()
+
+
+# --- Doctor Command ---
 
 
 def _render_rich_doctor(report: DoctorReport) -> None:
@@ -155,6 +230,514 @@ def doctor_cmd(
         sys.stdout.write(report.model_dump_json(indent=2) + "\n")
     else:
         _render_rich_doctor(report)
+
+
+# --- Init Command ---
+
+
+@app.command(name="init")
+def init_cmd(
+    path: Annotated[
+        str | None,
+        typer.Argument(
+            help="Target repository directory to initialize. Defaults to current directory.",
+        ),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            "-n",
+            help="Custom project name. Defaults to directory name.",
+        ),
+    ] = None,
+) -> None:
+    """Initialize a project-local CortexShift workspace."""
+    service = ProjectInitializationService()
+    target_path = Path(path) if path else Path.cwd()
+
+    try:
+        result = service.initialize(target_path=target_path, name=name)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if result.already_initialized:
+        console.print(f"CortexShift is already initialized for {result.project.name}.")
+    else:
+        console.print("\n[bold]Initialized CortexShift[/bold]\n")
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="dim", min_width=10)
+        table.add_column()
+        table.add_row("Project", result.project.name)
+        table.add_row("Path", result.project.repo_path)
+        table.add_row("State", f"{STATE_DIR_NAME}/{DATABASE_FILE_NAME}")
+        console.print(table)
+        console.print()
+
+
+# --- Status Command ---
+
+
+def _render_rich_status(status: ProjectStatus) -> None:
+    """Render ProjectStatus using Rich formatting."""
+    console.print("\n[bold]CortexShift Status[/bold]\n")
+
+    console.print("[bold]Project[/bold]")
+    console.print(f"  {status.name}")
+    console.print(f"  [dim]{status.project_id}[/dim]\n")
+
+    console.print("[bold]State[/bold]")
+    console.print(f"  {status.state_file}")
+    console.print(f"  [dim]Schema v{status.schema_version}[/dim]\n")
+
+    console.print("[bold]Active Task[/bold]")
+    if status.active_task is None:
+        console.print("  [dim]None[/dim]\n")
+    else:
+        task = status.active_task
+        console.print(f"  [dim]{task.id}[/dim]")
+        console.print(f"  {task.title}")
+        console.print(f"  [cyan]{task.status.value}[/cyan]\n")
+
+        console.print("[bold]Progress[/bold]")
+        console.print(f"  Completed   {task.progress.completed}")
+        console.print(f"  Remaining   {task.progress.remaining}")
+        console.print(f"  Issues      {task.progress.issues}\n")
+
+
+@app.command(name="status")
+def status_cmd(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output status as clean, machine-readable JSON.",
+        ),
+    ] = False,
+) -> None:
+    """Display project identity, state location, active task, and progress."""
+    service = ProjectStatusService()
+
+    try:
+        status = service.get_status()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(status.model_dump_json(indent=2) + "\n")
+    else:
+        _render_rich_status(status)
+
+
+# --- Task Commands ---
+
+
+@task_app.command(name="start")
+def task_start_cmd(
+    title_arg: Annotated[
+        str | None,
+        typer.Argument(
+            help="Title of the task (can also be passed via --title).",
+        ),
+    ] = None,
+    title: Annotated[
+        str | None,
+        typer.Option(
+            "--title",
+            "-t",
+            help="Title of the task.",
+        ),
+    ] = None,
+    objective: Annotated[
+        str | None,
+        typer.Option(
+            "--objective",
+            "-o",
+            help="High-level objective and requirements for the task.",
+        ),
+    ] = None,
+    requirement: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--requirement",
+            "-r",
+            help="Requirement for the task. Can be specified multiple times.",
+        ),
+    ] = None,
+    constraint: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--constraint",
+            "-c",
+            help="Constraint for the task. Can be specified multiple times.",
+        ),
+    ] = None,
+    set_active: Annotated[
+        bool,
+        typer.Option(
+            "--set-active/--no-set-active",
+            help="Set the newly created task as active immediately.",
+        ),
+    ] = True,
+) -> None:
+    """Create a new task and optionally set it as active."""
+    effective_title = title or title_arg
+    if not effective_title:
+        if sys.stdin.isatty():
+            effective_title = typer.prompt("Task title")
+        else:
+            err_console.print(
+                "[red]Error:[/red] Missing required option '--title' (or positional title)."
+            )
+            raise typer.Exit(code=2)
+
+    if not objective:
+        if sys.stdin.isatty():
+            objective = typer.prompt("Task objective")
+        else:
+            err_console.print("[red]Error:[/red] Missing required option '--objective'.")
+            raise typer.Exit(code=2)
+
+    try:
+        project, store = _get_project_and_store()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    try:
+        with store:
+            service = TaskService(store)
+            task = service.start_task(
+                project_id=project.id,
+                title=effective_title,
+                objective=objective,
+                requirements=requirement,
+                constraints=constraint,
+                set_active=set_active,
+            )
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    active_tag = " [green](active)[/green]" if set_active else ""
+    console.print(f"\n[bold]Started task[/bold] [cyan]{task.id}[/cyan]{active_tag}\n")
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="dim", min_width=14)
+    table.add_column()
+    table.add_row("Title", task.title)
+    table.add_row("Status", task.status.value)
+    table.add_row("Objective", task.objective)
+    if task.requirements:
+        table.add_row("Requirements", f"{len(task.requirements)} item(s)")
+    if task.constraints:
+        table.add_row("Constraints", f"{len(task.constraints)} item(s)")
+    console.print(table)
+    console.print()
+
+
+@task_app.command(name="list")
+def task_list_cmd(
+    status: Annotated[
+        str | None,
+        typer.Option(
+            "--status",
+            "-s",
+            help="Filter tasks by status (e.g. in_progress, completed).",
+        ),
+    ] = None,
+    all_tasks: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            "-a",
+            help="Include all tasks (default behavior).",
+        ),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output task list as clean, machine-readable JSON.",
+        ),
+    ] = False,
+) -> None:
+    """List all persisted tasks for the current project."""
+    try:
+        project, store = _get_project_and_store()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    try:
+        with store:
+            service = TaskService(store)
+            tasks = service.list_tasks(project.id)
+            active_id = store.get_active_task_id(project.id)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if status and not all_tasks:
+        norm_status = status.strip().lower()
+        valid_statuses = {s.value for s in TaskStatus}
+        if norm_status not in valid_statuses:
+            allowed = ", ".join(sorted(valid_statuses))
+            err_console.print(
+                f"[red]Error:[/red] Invalid status '{status}'. Valid options: {allowed}."
+            )
+            raise typer.Exit(code=2)
+        tasks = [t for t in tasks if t.status.value == norm_status]
+
+    if json_output:
+        tasks_data = [
+            {
+                **t.model_dump(mode="json"),
+                "is_active": (t.id == active_id),
+            }
+            for t in tasks
+        ]
+        sys.stdout.write(json.dumps(tasks_data, indent=2) + "\n")
+        return
+
+    if not tasks:
+        console.print("\nNo tasks found. Create one with `cortexshift task start`.\n")
+        return
+
+    table = Table(box=box.ROUNDED, show_header=True, header_style="bold")
+    table.add_column("ID", min_width=16)
+    table.add_column("Status", min_width=12)
+    table.add_column("Active", justify="center", min_width=8)
+    table.add_column("Title", min_width=24)
+
+    for t in tasks:
+        is_active = t.id == active_id
+        active_str = "[green]yes[/green]" if is_active else "[dim]no[/dim]"
+        table.add_row(
+            t.id,
+            t.status.value,
+            active_str,
+            t.title,
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+def _render_rich_task_details(task: Task, is_active: bool) -> None:
+    """Render comprehensive task details in Rich format."""
+    console.print(f"\n[bold]Task Details[/bold] — [cyan]{task.id}[/cyan]\n")
+
+    active_tag = " [green](active)[/green]" if is_active else ""
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="dim", min_width=16)
+    table.add_column()
+    table.add_row("Title", task.title)
+    table.add_row("Status", f"{task.status.value}{active_tag}")
+    table.add_row("Objective", task.objective)
+
+    if task.current_work:
+        table.add_row("Current Work", task.current_work)
+
+    table.add_row("Created", task.created_at.isoformat())
+    table.add_row("Updated", task.updated_at.isoformat())
+    console.print(table)
+
+    def _render_list_section(title: str, items: list[str]) -> None:
+        console.print(f"\n[bold]{title}[/bold]")
+        if not items:
+            console.print("  [dim]—[/dim]")
+        else:
+            for item in items:
+                console.print(f"  • {item}")
+
+    _render_list_section("Requirements", task.requirements)
+    _render_list_section("Constraints", task.constraints)
+    _render_list_section("Completed Items", task.completed_items)
+    _render_list_section("Remaining Items", task.remaining_items)
+    _render_list_section("Known Issues", task.known_issues)
+    console.print()
+
+
+@task_app.command(name="show")
+def task_show_cmd(
+    task_id: Annotated[
+        str | None,
+        typer.Argument(
+            help="Identifier of task to show. If omitted, shows the active task.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output task details as clean, machine-readable JSON.",
+        ),
+    ] = False,
+) -> None:
+    """Inspect full details of a task (or active task if none specified)."""
+    try:
+        project, store = _get_project_and_store()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    try:
+        with store:
+            service = TaskService(store)
+            active_id = store.get_active_task_id(project.id)
+
+            if task_id is None:
+                if active_id is None:
+                    raise NoActiveTaskError("No active task for this project.")
+                target_id = active_id
+            else:
+                target_id = task_id
+
+            task = service.get_task(target_id)
+            if task.project_id != project.id:
+                raise TaskNotFoundError(target_id)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        task_data = {
+            **task.model_dump(mode="json"),
+            "is_active": (task.id == active_id),
+        }
+        sys.stdout.write(json.dumps(task_data, indent=2) + "\n")
+    else:
+        _render_rich_task_details(task, is_active=(task.id == active_id))
+
+
+@task_app.command(name="activate")
+def task_activate_cmd(
+    task_id: Annotated[
+        str,
+        typer.Argument(
+            help="Identifier of the task to make active.",
+        ),
+    ],
+) -> None:
+    """Set an existing task as the active task."""
+    try:
+        project, store = _get_project_and_store()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    try:
+        with store:
+            service = TaskService(store)
+            task = service.activate_task(project.id, task_id)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    console.print(f"Activated task {task.id}")
+
+
+@task_app.command(name="complete")
+def task_complete_cmd(
+    task_id: Annotated[
+        str | None,
+        typer.Argument(
+            help="Identifier of the task to complete. Defaults to active task.",
+        ),
+    ] = None,
+) -> None:
+    """Mark the active task (or specified task) as completed."""
+    try:
+        project, store = _get_project_and_store()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    try:
+        with store:
+            service = TaskService(store)
+            task = service.complete_task(project.id, task_id)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    console.print(f"Completed task {task.id}")
+
+
+@task_app.command(name="update")
+def task_update_cmd(
+    task_id: Annotated[
+        str | None,
+        typer.Argument(
+            help="Identifier of the task to update. Defaults to active task.",
+        ),
+    ] = None,
+    current_work: Annotated[
+        str | None,
+        typer.Option(
+            "--current-work",
+            "--work",
+            "-w",
+            help="Description of currently active work in flight.",
+        ),
+    ] = None,
+    clear_current_work: Annotated[
+        bool,
+        typer.Option(
+            "--clear-current-work",
+            help="Clear in-flight work description.",
+        ),
+    ] = False,
+    add_completed: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--add-completed",
+            help="Add item to completed list. Can be repeated.",
+        ),
+    ] = None,
+    add_remaining: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--add-remaining",
+            help="Add item to remaining list. Can be repeated.",
+        ),
+    ] = None,
+    add_issue: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--add-issue",
+            "--add-known-issue",
+            help="Add item to known issues list. Can be repeated.",
+        ),
+    ] = None,
+) -> None:
+    """Update progress, current work, and issues on a task."""
+    try:
+        project, store = _get_project_and_store()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    try:
+        with store:
+            service = TaskService(store)
+            task = service.update_task(
+                project_id=project.id,
+                task_id=task_id,
+                current_work=current_work,
+                clear_current_work=clear_current_work,
+                add_completed=add_completed,
+                add_remaining=add_remaining,
+                add_issues=add_issue,
+            )
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    console.print(f"Updated task {task.id}")
 
 
 if __name__ == "__main__":

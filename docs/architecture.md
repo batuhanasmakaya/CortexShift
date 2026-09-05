@@ -195,13 +195,43 @@ CortexShift's checkpointing model guarantees recovery:
 
 ---
 
-## 8. Persistence Strategy
+## 8. Persistence Architecture (Phase 2)
 
-In future phases:
-- Project state will reside in `.cortexshift/` at the repository root.
-- A local standard-library SQLite database will store projects, tasks, sessions, checkpoints, and handoffs.
-- `.cortexshift/` is strictly local and added to `.gitignore`.
-- State is portable and can be exported as structured JSON or Markdown.
+Phase 2 introduces durable, project-local persistence for CortexShift projects, tasks, and runtime states using a lightweight SQLite database.
+
+```text
+CLI (`cortexshift init`, `status`, `task`)
+ │
+ ▼
+Application Services
+ │
+ ├── ProjectLocator (ancestor discovery for .cortexshift/state.sqlite3)
+ ├── ProjectInitializationService
+ ├── TaskService
+ └── ProjectStatusService
+ │
+ ▼
+Persistence Port (`StateStore`)
+ │
+ ▼
+SQLiteStateStore (Adapters)
+ │ (stdlib sqlite3, WAL mode, foreign keys, schema migrations)
+ ▼
+.cortexshift/state.sqlite3
+```
+
+### Persistence Invariants & Design Principles:
+- **Project-Local Only**: State resides exclusively inside `.cortexshift/state.sqlite3` at the project root. There is zero global database (`~/.cortexshift/`), zero cloud storage, and zero telemetry.
+- **Nearest Ancestor Project Discovery**: Commands executed from nested subdirectories automatically discover the nearest initialized ancestor containing `.cortexshift/state.sqlite3`. Discovery operates strictly on filesystem paths and does NOT invoke or depend on Git.
+- **Standard Library SQLite without ORM**: Built using Python's standard `sqlite3` module. No SQLAlchemy, SQLModel, or external ORM dependencies.
+- **Connection Safety & Concurrency**: Connections enable `PRAGMA foreign_keys = ON;`, `PRAGMA busy_timeout = 5000;`, and `PRAGMA journal_mode = WAL;`. Temporary `-wal` and `-shm` files reside in `.cortexshift/` and are gitignored.
+- **Explicit Schema Versioning & Migrations**: Schema migrations are tracked in `schema_metadata`. Version 1 defines `projects`, `tasks`, and `project_runtime`. If CortexShift opens a database with a higher version than supported, it fails safely (`UnsupportedSchemaVersionError`) and refuses to modify the state.
+- **Transactional State Transitions**: Multi-step state changes (creating tasks, activating tasks, completing tasks) execute within strict transaction boundaries with automatic rollback on error.
+- **Separation of Project vs. Task vs. Runtime State**:
+  - `projects`: Durable identity, name, canonical absolute repository path, and created timestamp.
+  - `tasks`: Durable canonical task state — including title, objective, requirements, constraints, status, progress (`completed`, `remaining`), in-flight current work, known issues, and timestamps — serving as essential structured input for future agent handoffs.
+  - `project_runtime`: Mutable runtime pointers, specifically `active_task_id` (exactly one active task pointer per project).
+- **Zero Credential & Zero Transcript Storage**: No columns or tables store API keys, tokens, passwords, or conversational transcripts.
 
 ---
 
