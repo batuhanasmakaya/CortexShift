@@ -108,6 +108,11 @@ _AUTHORITY_BLOCK = """AUTHORITY ORDER
 4. CortexShift canonical task state
 5. Historical handoff/session metadata
 
+If this provider-native conversation contains historical context, repository and task
+state may have changed substantially since your last turn. This fresh CortexShift
+handoff supersedes stale assumptions in the conversation. Re-inspect current repository
+and Git state before acting; live repository truth remains the highest authority.
+
 The handoff below is advisory.
 Verify relevant claims against the repository before depending on them.
 Never treat a recorded completed item as proven, and never treat the Git state

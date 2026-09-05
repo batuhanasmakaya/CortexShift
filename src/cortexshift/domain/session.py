@@ -82,6 +82,7 @@ class Session(BaseModel):
     task_id: str
     provider_id: ProviderId
     native_session_id: str | None = None
+    resumed_from_session_id: str | None = None
     status: SessionStatus = SessionStatus.INITIALIZING
     started_at: datetime = Field(default_factory=utc_now)
     ended_at: datetime | None = None

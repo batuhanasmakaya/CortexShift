@@ -300,11 +300,11 @@ Engineering context does not differ per provider; only transport does. All launc
 
 | Provider | Strategy | Bootstrap model turn |
 | :--- | :--- | :--- |
-| Claude Code | `direct_initial_prompt` — `[claude, <handoff-context>]` | No |
-| Codex | `direct_initial_prompt` — `[codex, <handoff-context>]` | No |
+| Claude Code | `direct_initial_prompt` — `claude --session-id UUID <context>` or `claude --resume ID <context>` | No |
+| Codex | `read_only_bootstrap_then_resume` — `exec --sandbox read-only --json <context>` (or exact `exec resume`), then `resume ID` | Yes — one read-only turn |
 | Antigravity | `plan_bootstrap_then_resume` (below) | Yes — one read-only planning turn |
 
-CortexShift never overrides the user's model, permission mode, sandbox, or reasoning-effort settings, never uses `claude -p` or `codex exec` for ordinary handoff delivery, and never imports a transcript.
+Interactive launches pass no model, permission, sandbox, or reasoning-effort overrides. Codex handoff bootstrap explicitly uses a read-only sandbox; Antigravity uses plan mode. CortexShift never imports a transcript or uses permission bypass flags.
 
 ### Antigravity: read-only bootstrap, then conversation resume
 
@@ -390,3 +390,14 @@ cortexshift handoff show HANDOFF_ID --json
 - [ADR-0006: Canonical Agent Handoff & Manual Provider Switching](decisions/ADR-0006-canonical-agent-handoff.md) — the decisions, consequences, and alternatives behind this protocol.
 - [Architecture Overview](architecture.md) — where `SwitchService`, `HandoffBuilder`, `HandoffRenderer`, `HandoffStore`, and the delivery strategies sit in the hexagonal layering.
 - [Agent Contributor Contract](../AGENTS.md) — the durable invariants every contributing agent must preserve.
+
+
+## Phase 6: Fresh handoff into a returning native conversation
+
+Switch now reuses the newest eligible target-provider native conversation on the active Task. Every switch still builds a new immutable HandoffRecord from canonical state and live Git; its target Session is a new invocation with `resumed_from_session_id` linking to the selected prior target. `--new-session` disables reuse; `--resume-session` selects an explicit target invocation.
+
+The authority preamble warns that an existing provider-native conversation contains historical assumptions. Repository and task state may have changed; the fresh handoff supersedes those assumptions and requires renewed live inspection. Plain `cortexshift resume` does not create or inject a handoff.
+
+Codex uses `codex exec --sandbox read-only --json <bootstrap-context>` for new managed handoffs, or `codex exec --sandbox read-only resume --json ID <bootstrap-context>` on return. JSONL must report a native thread, completed turn and no failure. Only the ID leaves the adapter; response data is discarded. Antigravity adds `--conversation ID` to its existing plan bootstrap on return. Both providers must confirm the requested ID before interactive resume. Bootstrap failure marks the new handoff failed without altering the old native reference or falling back to a fresh chat.
+
+Codex and Antigravity bootstrap model turns are explicit transport costs. Dry-run exposes the selected native mode, prior target Session, native-ID availability, delivery strategy and model-turn requirement without running that transport. See [ADR-0007](decisions/ADR-0007-native-session-continuity.md).

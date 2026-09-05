@@ -35,12 +35,14 @@ class ProviderSessionLauncher:
         provider_id: ProviderId,
         native_session_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        resumed_from_session_id: str | None = None,
     ) -> Session:
         """Create and persist a running Session immediately before provider work begins."""
         session = Session(
             task_id=task_id,
             provider_id=provider_id,
             native_session_id=native_session_id,
+            resumed_from_session_id=resumed_from_session_id,
             status=SessionStatus.RUNNING,
             started_at=utc_now(),
             metadata=metadata or {},

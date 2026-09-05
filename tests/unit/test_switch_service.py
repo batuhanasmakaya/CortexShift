@@ -33,7 +33,7 @@ from cortexshift.domain.session import SessionExitReason, SessionStatus
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
 from cortexshift.ports.repository import RepositoryInspector
-from tests.factories import make_inspection, seed_project, seed_session
+from tests.factories import FakeCodexBootstrap, make_inspection, seed_project, seed_session
 
 
 class FakeProcessRunner(InteractiveProcessRunner):
@@ -253,7 +253,9 @@ def test_stale_running_db_session_does_not_block_switch(tmp_path: Path) -> None:
 # --- Successful switch ---
 
 
-def test_switch_delivers_context_and_creates_target_session(tmp_path: Path) -> None:
+def test_switch_delivers_context_and_creates_target_session(
+    tmp_path: Path, codex_bootstrap: FakeCodexBootstrap
+) -> None:
     """Verify a successful switch persists a delivered handoff bound to a target session."""
     project, task = seed_project(
         tmp_path,
@@ -274,12 +276,12 @@ def test_switch_delivers_context_and_creates_target_session(tmp_path: Path) -> N
     assert result.handoff.delivered_at is not None
     assert result.handoff.git_snapshot_id is not None
     assert result.target_session.status == SessionStatus.COMPLETED
-    assert result.bootstrap_performed is False
+    assert result.bootstrap_performed is True
 
     argv = runner.invocations[0]["argv"]
     assert argv[0] == "/bin/codex"
-    assert len(argv) == 2
-    context = argv[1]
+    assert argv[1:] == ["resume", "test-codex-native-id"]
+    context = codex_bootstrap.invocations[-1][-1]
     assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in context
     assert task.objective in context
     assert "Wire token refresh" in context
@@ -318,7 +320,9 @@ def test_switch_does_not_mutate_task_progress(tmp_path: Path) -> None:
         assert store.get_active_task_id(project.id) == task.id
 
 
-def test_outgoing_provider_is_never_required(tmp_path: Path) -> None:
+def test_outgoing_provider_is_never_required(
+    tmp_path: Path, codex_bootstrap: FakeCodexBootstrap
+) -> None:
     """Regression: a missing outgoing provider must not block handing off to another.
 
     This protects the core product use case: Claude's quota is exhausted, Claude may no
@@ -342,7 +346,7 @@ def test_outgoing_provider_is_never_required(tmp_path: Path) -> None:
     assert "claude" not in resolved
     assert result.handoff.status == HandoffStatus.DELIVERED
     assert result.handoff.source_provider_id == PROVIDER_CLAUDE
-    assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in runner.invocations[0]["argv"][1]
+    assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in codex_bootstrap.invocations[-1][-1]
 
 
 def test_switch_makes_no_outgoing_model_call(tmp_path: Path) -> None:
@@ -384,7 +388,9 @@ def test_switch_captures_git_snapshot_under_lease(tmp_path: Path) -> None:
     assert lease_states == [True]
 
 
-def test_git_missing_continues_with_explicit_marker(tmp_path: Path) -> None:
+def test_git_missing_continues_with_explicit_marker(
+    tmp_path: Path, codex_bootstrap: FakeCodexBootstrap
+) -> None:
     """Verify a non-Git project still hands off, with no fake snapshot row."""
     _, task = seed_project(tmp_path)
     seed_session(tmp_path, task.id)
@@ -398,7 +404,7 @@ def test_git_missing_continues_with_explicit_marker(tmp_path: Path) -> None:
     assert result.handoff.status == HandoffStatus.DELIVERED
     assert result.handoff.git_snapshot_id is None
     assert result.handoff.payload.git_state.available is False
-    assert "not inside a Git repository" in runner.invocations[0]["argv"][1]
+    assert "not inside a Git repository" in codex_bootstrap.invocations[-1][-1]
 
     with _store(tmp_path) as store:
         assert store.list_snapshots(project_id=result.handoff.project_id) == []
@@ -423,7 +429,9 @@ def test_git_probe_error_fails_switch_safely(tmp_path: Path) -> None:
     assert FileWorkspaceLeaseManager().get_lease(tmp_path).is_locked() is False
 
 
-def test_files_touched_reaches_the_receiving_agent(tmp_path: Path) -> None:
+def test_files_touched_reaches_the_receiving_agent(
+    tmp_path: Path, codex_bootstrap: FakeCodexBootstrap
+) -> None:
     """Verify Git-derived changed paths appear in the delivered context."""
     _, task = seed_project(tmp_path)
     seed_session(tmp_path, task.id)
@@ -439,12 +447,14 @@ def test_files_touched_reaches_the_receiving_agent(tmp_path: Path) -> None:
 
     _service(inspector=inspector, process_runner=runner).switch("codex", start_dir=tmp_path)
 
-    context = runner.invocations[0]["argv"][1]
+    context = codex_bootstrap.invocations[-1][-1]
     for path in ("src/staged.py", "src/modified.py", "notes.md"):
         assert path in context
 
 
-def test_operator_note_included_with_provenance(tmp_path: Path) -> None:
+def test_operator_note_included_with_provenance(
+    tmp_path: Path, codex_bootstrap: FakeCodexBootstrap
+) -> None:
     """Verify an optional operator note is delivered as clearly attributed context."""
     _, task = seed_project(tmp_path)
     seed_session(tmp_path, task.id)
@@ -455,12 +465,12 @@ def test_operator_note_included_with_provenance(tmp_path: Path) -> None:
     )
 
     assert result.handoff.payload.operator_note == "Mind the flaky integration test"
-    context = runner.invocations[0]["argv"][1]
+    context = codex_bootstrap.invocations[-1][-1]
     assert "## OPERATOR NOTE" in context
     assert "Mind the flaky integration test" in context
 
 
-def test_command_injection_stays_inert(tmp_path: Path) -> None:
+def test_command_injection_stays_inert(tmp_path: Path, codex_bootstrap: FakeCodexBootstrap) -> None:
     """Verify hostile canonical task content never escapes the argv boundary."""
     marker = tmp_path / "hacked"
     _, task = seed_project(
@@ -477,8 +487,8 @@ def test_command_injection_stays_inert(tmp_path: Path) -> None:
     _service(inspector=inspector, process_runner=runner).switch("codex", start_dir=tmp_path)
 
     argv = runner.invocations[0]["argv"]
-    assert len(argv) == 2
-    assert "$(touch" in argv[1]
+    assert argv[1:] == ["resume", "test-codex-native-id"]
+    assert "$(touch" in codex_bootstrap.invocations[-1][-1]
     assert not marker.exists()
 
 
@@ -730,8 +740,8 @@ def test_dry_run_reports_no_bootstrap_for_direct_providers(tmp_path: Path) -> No
     seed_session(tmp_path, task.id, provider_id=PROVIDER_CLAUDE)
 
     result = _service(is_tty=False).dry_run("codex", start_dir=tmp_path)
-    assert result.delivery_strategy == "direct_initial_prompt"
-    assert result.bootstrap_model_turn_required is False
+    assert result.delivery_strategy == "read_only_bootstrap_then_resume"
+    assert result.bootstrap_model_turn_required is True
 
 
 def test_dry_run_exposes_no_credentials(tmp_path: Path) -> None:

@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from cortexshift.adapters.providers.codex import CODEX_BOOTSTRAP_PREFIX
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.switch_service import SwitchService
 from cortexshift.cli.app import app
@@ -31,7 +32,7 @@ from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY, PROVIDER_CLAUDE, P
 from cortexshift.domain.session import SessionStatus
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
-from tests.factories import patch_which, seed_session
+from tests.factories import FakeCodexBootstrap, patch_which, seed_session
 
 runner = CliRunner()
 
@@ -140,6 +141,7 @@ def _db(repo: Path) -> SQLiteStateStore:
 def test_flagship_claude_to_codex_to_antigravity(
     repo: Path,
     fake_providers: tuple[RecordingProcessRunner, RecordingHeadlessRunner],
+    codex_bootstrap: FakeCodexBootstrap,
 ) -> None:
     """One task moves Claude -> Codex -> Antigravity carrying full canonical context."""
     process_runner, headless_runner = fake_providers
@@ -215,10 +217,10 @@ def test_flagship_claude_to_codex_to_antigravity(
     assert len(process_runner.invocations) == 2
     codex_call = process_runner.invocations[1]
     assert codex_call["argv"][0] == "/fake/bin/codex"
-    assert len(codex_call["argv"]) == 2
+    assert codex_call["argv"][1:] == ["resume", "test-codex-native-id"]
     assert codex_call["cwd"] == str(repo)
 
-    context = codex_call["argv"][1]
+    context = codex_bootstrap.invocations[-1][-1]
     assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in context
     assert task_id in context
     assert "Add OAuth2 PKCE support to the auth layer." in context
@@ -296,8 +298,8 @@ def test_flagship_claude_to_codex_to_antigravity(
 
         # Antigravity's native conversation identifier is bound to its CortexShift session.
         assert sessions[0].native_session_id == BOOTSTRAP_CONVERSATION_ID
-        assert sessions[1].native_session_id is None
-        assert sessions[2].native_session_id is None
+        assert sessions[1].native_session_id == "test-codex-native-id"
+        assert sessions[2].native_session_id is not None
 
         # Each switch captured its own Git snapshot.
         snapshots = store.list_snapshots(project_id=project.id, limit=50)
@@ -325,9 +327,10 @@ def test_flagship_claude_to_codex_to_antigravity(
 def test_flagship_state_survives_full_restart(
     repo: Path,
     fake_providers: tuple[RecordingProcessRunner, RecordingHeadlessRunner],
+    codex_bootstrap: FakeCodexBootstrap,
 ) -> None:
     """All task, session, snapshot, handoff, and native-ID links survive a fresh process."""
-    test_flagship_claude_to_codex_to_antigravity(repo, fake_providers)
+    test_flagship_claude_to_codex_to_antigravity(repo, fake_providers, codex_bootstrap)
 
     with _db(repo) as store:
         project = store.get_default_project()
@@ -341,7 +344,7 @@ def test_flagship_state_survives_full_restart(
         reopened_project = store.get_default_project()
         assert reopened_project is not None
         assert reopened_project.id == project.id
-        assert store.get_schema_version() == 4
+        assert store.get_schema_version() == 5
         assert store.get_active_task_id(reopened_project.id) == expected_task
 
         handoffs = store.list_handoffs(project_id=reopened_project.id)
@@ -429,7 +432,7 @@ def test_historical_handoff_is_not_current_repository_truth(
 
 
 def test_outgoing_provider_missing_does_not_block_handoff(
-    repo: Path, monkeypatch: pytest.MonkeyPatch
+    repo: Path, monkeypatch: pytest.MonkeyPatch, codex_bootstrap: FakeCodexBootstrap
 ) -> None:
     """Regression: Claude being gone must not stop the task from moving to Codex.
 
@@ -490,7 +493,7 @@ def test_outgoing_provider_missing_does_not_block_handoff(
     assert "claude" not in resolved
     assert "codex" in resolved
 
-    context = process_runner.invocations[0]["argv"][1]
+    context = codex_bootstrap.invocations[-1][-1]
     assert "Finish the auth refactor after Claude's quota ran out." in context
     assert "Finish the token exchange" in context
     assert "auth.py" in context
@@ -506,6 +509,7 @@ def test_outgoing_provider_missing_does_not_block_handoff(
 def test_context_budget_bounds_transport_but_not_canonical_payload(
     repo: Path,
     fake_providers: tuple[RecordingProcessRunner, RecordingHeadlessRunner],
+    codex_bootstrap: FakeCodexBootstrap,
 ) -> None:
     """A huge task is delivered bounded, while the persisted payload stays complete."""
     process_runner, _ = fake_providers
@@ -544,8 +548,8 @@ def test_context_budget_bounds_transport_but_not_canonical_payload(
     assert runner.invoke(app, ["run", "claude"]).exit_code == 0
     assert runner.invoke(app, ["switch", "codex"]).exit_code == 0
 
-    context = process_runner.invocations[1]["argv"][1]
-    assert len(context) <= 48_000
+    context = codex_bootstrap.invocations[-1][-1]
+    assert len(context.removeprefix(CODEX_BOOTSTRAP_PREFIX)) <= 48_000
     assert "omitted from injected context." in context
     assert "cortexshift handoff show handoff_" in context
     # Mandatory context survives.
@@ -568,6 +572,7 @@ def test_context_budget_bounds_transport_but_not_canonical_payload(
 def test_switch_argv_stays_inert_under_hostile_task_content(
     repo: Path,
     fake_providers: tuple[RecordingProcessRunner, RecordingHeadlessRunner],
+    codex_bootstrap: FakeCodexBootstrap,
 ) -> None:
     """Hostile canonical content and filenames never escape the argv boundary."""
     process_runner, headless_runner = fake_providers
@@ -595,8 +600,8 @@ def test_switch_argv_stays_inert_under_hostile_task_content(
     assert runner.invoke(app, ["switch", "antigravity"]).exit_code == 0
 
     codex_argv = process_runner.invocations[1]["argv"]
-    assert len(codex_argv) == 2
-    assert "$(touch" in codex_argv[1]
+    assert codex_argv[1:] == ["resume", "test-codex-native-id"]
+    assert "$(touch" in codex_bootstrap.invocations[-1][-1]
 
     bootstrap_argv = headless_runner.invocations[0]["argv"]
     assert sum(1 for arg in bootstrap_argv if "$(touch" in arg) == 1

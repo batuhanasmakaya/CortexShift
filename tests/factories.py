@@ -23,6 +23,7 @@ from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX, ProviderId
 from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 from cortexshift.domain.task import Task
+from cortexshift.ports.headless_runner import HeadlessResult
 
 
 def make_inspection(
@@ -208,3 +209,35 @@ def patch_which(
 ) -> None:
     """Scope provider executable resolution to a single application module."""
     monkeypatch.setattr(f"{module}.shutil", FakeShutil(resolver))
+
+
+class FakeCodexBootstrap:
+    """Deterministic native CLI event stream; records transport only in test memory."""
+
+    def __init__(self) -> None:
+        self.invocations: list[list[str]] = []
+
+    def run_headless(
+        self,
+        argv: list[str],
+        cwd: Path | str,
+        timeout: float = 300.0,
+        env: dict[str, str] | None = None,
+    ) -> "HeadlessResult":
+        import json
+
+        from cortexshift.ports.headless_runner import HeadlessResult
+
+        self.invocations.append(argv)
+        native_id = argv[argv.index("--json") + 1] if "resume" in argv else "test-codex-native-id"
+        return HeadlessResult(
+            exit_code=0,
+            stdout="\n".join(
+                [
+                    json.dumps({"type": "thread.started", "thread_id": native_id}),
+                    json.dumps({"type": "item.completed", "response": "CODEX-RESPONSE-PRIVATE"}),
+                    json.dumps({"type": "turn.completed"}),
+                ]
+            ),
+            stderr="",
+        )

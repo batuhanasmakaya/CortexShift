@@ -18,8 +18,10 @@ from cortexshift.application.handoff_renderer import RenderedHandoffContext
 from cortexshift.application.handoff_service import HandoffService
 from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.application.locator import DATABASE_FILE_NAME, STATE_DIR_NAME, ProjectLocator
+from cortexshift.application.native_session import is_native_resumable, native_capabilities
 from cortexshift.application.repository_service import RepositoryService
-from cortexshift.application.run_service import RunService
+from cortexshift.application.resume_service import ResumeDryRunResult, ResumeService
+from cortexshift.application.run_service import ProviderRuntimeRegistry, RunService
 from cortexshift.application.session_service import SessionService
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.switch_service import SwitchService
@@ -30,6 +32,7 @@ from cortexshift.domain.errors import (
     DatabaseStateError,
     HandoffDeliveryError,
     HandoffNotFoundError,
+    NativeResumeError,
     NoActiveTaskError,
     NoSourceSessionError,
     ProjectConflictError,
@@ -127,6 +130,7 @@ def _handle_error(err: Exception) -> None:
             SameProviderSwitchError,
             SessionTaskMismatchError,
             HandoffDeliveryError,
+            NativeResumeError,
         ),
     ):
         err_console.print(f"\n{err}\n")
@@ -1213,6 +1217,50 @@ def run_command(
         raise typer.Exit(code=1)
 
 
+@app.command("resume")
+def resume_command(
+    provider: Annotated[str, typer.Argument(help="Provider to resume exactly.")],
+    session_id: Annotated[
+        str | None, typer.Option("--session", help="Source CortexShift Session ID.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Preview without side effects.")
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Requires --dry-run.")] = False,
+) -> None:
+    """Resume a known native conversation on the active task, without a handoff."""
+    if json_output and not dry_run:
+        err_console.print("[red]Error:[/red] --json is only supported with --dry-run.")
+        raise typer.Exit(code=1)
+    try:
+        result = ResumeService().resume(provider, session_id, dry_run=dry_run)
+    except Exception as err:
+        _handle_error(err)
+        return
+    if isinstance(result, ResumeDryRunResult):
+        if json_output:
+            sys.stdout.write(json.dumps(result.to_dict(), indent=2) + "\n")
+        else:
+            console.print("\n[bold]CortexShift Resume (Dry Run)[/bold]")
+            grid = Table.grid(padding=(0, 2))
+            for key, value in result.to_dict().items():
+                grid.add_row(key, escape(str(value)))
+            console.print(grid)
+        return
+    console.print(f"\nSession {result.id}: {result.status.value}.")
+    if result.status == SessionStatus.FAILED:
+        console.print(
+            "Exact native resume failed. Provider-owned state may no longer exist. "
+            "The historical ID is preserved; no fresh session was started."
+        )
+        raise typer.Exit(code=result.exit_code or 1)
+
+
+def _native_resumable(session: Session) -> bool:
+    adapter = ProviderRuntimeRegistry().get(str(session.provider_id))
+    return is_native_resumable(session, native_capabilities(adapter))
+
+
 # --- Session Commands ---
 
 
@@ -1242,7 +1290,10 @@ def session_list_command(
         return
 
     if json_output:
-        data = [s.model_dump(mode="json") for s in sessions]
+        data = [
+            {**s.model_dump(mode="json"), "native_resumable": _native_resumable(s)}
+            for s in sessions
+        ]
         sys.stdout.write(json.dumps(data, indent=2) + "\n")
         return
 
@@ -1255,9 +1306,10 @@ def session_list_command(
         box=box.ROUNDED,
         header_style="bold cyan",
     )
-    table.add_column("Session", style="bold")
+    table.add_column("Session", style="bold", min_width=12)
     table.add_column("Provider")
     table.add_column("Status")
+    table.add_column("Native Resume", max_width=6)
     table.add_column("Started (UTC)")
     table.add_column("Task")
 
@@ -1278,6 +1330,7 @@ def session_list_command(
             s.id,
             p_name,
             f"[{status_style}]{s.status.value}[/{status_style}]",
+            "yes" if _native_resumable(s) else "no",
             s.started_at.strftime("%Y-%m-%d %H:%M:%S"),
             s.task_id,
         )
@@ -1312,7 +1365,13 @@ def session_show_command(
         return
 
     if json_output:
-        sys.stdout.write(json.dumps(session.model_dump(mode="json"), indent=2) + "\n")
+        sys.stdout.write(
+            json.dumps(
+                {**session.model_dump(mode="json"), "native_resumable": _native_resumable(session)},
+                indent=2,
+            )
+            + "\n"
+        )
         return
 
     provider_names = {
@@ -1329,7 +1388,9 @@ def session_show_command(
     grid.add_row("Task ID", session.task_id)
     grid.add_row("Provider", p_name)
     grid.add_row("Status", session.status.value)
-    grid.add_row("Native Session ID", session.native_session_id or "—")
+    grid.add_row("Native Session ID", escape(session.native_session_id or "—"))
+    grid.add_row("Native resumable", "yes" if _native_resumable(session) else "no")
+    grid.add_row("Resumed from CortexShift Session", session.resumed_from_session_id or "—")
     grid.add_row("Started (UTC)", session.started_at.strftime("%Y-%m-%d %H:%M:%S"))
     grid.add_row(
         "Ended (UTC)",
@@ -1602,6 +1663,12 @@ def switch_command(
             help="Canonical target provider identifier (claude, codex, antigravity).",
         ),
     ],
+    new_session: Annotated[
+        bool, typer.Option("--new-session", help="Force a fresh native conversation.")
+    ] = False,
+    resume_session: Annotated[
+        str | None, typer.Option("--resume-session", help="Prior target CortexShift Session ID.")
+    ] = None,
     from_session: Annotated[
         str | None,
         typer.Option(
@@ -1633,10 +1700,9 @@ def switch_command(
     CortexShift builds the handoff deterministically from durable local state, so the
     outgoing agent does not need to be available, running, or even installed.
 
-    Claude Code and Codex receive the context directly as their native interactive
-    initial prompt. Antigravity first runs one read-only plan-mode bootstrap turn to
-    ingest the context (which consumes Antigravity usage), then resumes that same
-    conversation in its native interactive UI. `--dry-run` never performs that turn.
+    Claude receives a fresh context prompt. Codex and Antigravity ingest context in
+    one read-only bootstrap model turn, then resume the same native conversation.
+    Known target conversations are reused by default. --dry-run runs no model turn.
     """
     if json_output and not dry_run:
         err_console.print("[red]Error:[/red] --json is only supported with --dry-run.")
@@ -1650,6 +1716,8 @@ def switch_command(
                 target_provider_name=provider,
                 from_session_id=from_session,
                 note=note,
+                new_session=new_session,
+                resume_session_id=resume_session,
             )
         except Exception as err:
             _handle_error(err)
@@ -1672,6 +1740,9 @@ def switch_command(
             f"({preview.source_session_id}, {preview.source_session_status})",
         )
         grid.add_row("To", f"{preview.target_provider_name} ({preview.target_executable})")
+        grid.add_row("Target native mode", preview.target_native_mode)
+        grid.add_row("Prior target Session", preview.selected_prior_target_session_id or "—")
+        grid.add_row("Native session known", "yes" if preview.native_session_known else "no")
         grid.add_row("Delivery", preview.delivery_strategy)
         grid.add_row(
             "Bootstrap model turn",
@@ -1718,14 +1789,14 @@ def switch_command(
         adapter = service._registry.get(provider)
         if adapter is not None and adapter.bootstrap_model_turn_required:
             console.print(
-                "\n[dim]Delivering the handoff to Antigravity in read-only plan mode...[/dim]"
+                "\n[dim]Delivering the handoff in a read-only bootstrap model turn...[/dim]"
             )
 
     def _on_launch(_spec: LaunchSpecification, session: Session) -> None:
         adapter = service._registry.get(provider)
         if adapter is not None and adapter.bootstrap_model_turn_required:
             console.print(
-                "\nHandoff delivered to Antigravity in read-only plan mode.\n"
+                "\nHandoff delivered in a read-only bootstrap turn.\n"
                 "Opening the same conversation in the native TUI.\n"
                 "Review the prepared continuation plan and continue from there."
             )
@@ -1736,6 +1807,8 @@ def switch_command(
             target_provider_name=provider,
             from_session_id=from_session,
             note=note,
+            new_session=new_session,
+            resume_session_id=resume_session,
             on_prepared=_on_prepared,
             on_launch=_on_launch,
         )

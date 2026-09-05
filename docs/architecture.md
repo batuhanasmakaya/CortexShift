@@ -411,8 +411,8 @@ SwitchService ──────────┼── Live Git Inspection
 
 | Provider | Strategy | Bootstrap model turn |
 | :--- | :--- | :--- |
-| Claude Code | `direct_initial_prompt` — `[claude, <handoff-context>]` | No |
-| Codex | `direct_initial_prompt` — `[codex, <handoff-context>]` | No |
+| Claude Code | `direct_initial_prompt` — `claude --session-id UUID <context>` or `claude --resume ID <context>` | No |
+| Codex | `read_only_bootstrap_then_resume` — `exec --sandbox read-only --json <context>` (or exact `exec resume`), then `resume ID` | Yes — one read-only turn |
 | Antigravity | `plan_bootstrap_then_resume` | Yes — one read-only planning turn |
 
 Antigravity uses two documented native capabilities in sequence: a read-only headless plan turn (`agy --mode=plan -p <context> --output-format json`) that ingests the context, followed by an interactive resume of that same conversation (`agy --conversation <id>`). Only `conversation_id` and `status` are parsed; the response is discarded. Permission-bypass flags are never used, and CortexShift never automates TUI keystrokes — so the user may need to approve continuation in the resumed UI, which the CLI states plainly.
@@ -441,3 +441,31 @@ To maintain strict engineering focus, the following are explicitly out of scope 
 - Vector databases, semantic search, or RAG frameworks
 - Electron or GUI applications (CLI/TUI first)
 - Non-Git version control systems
+
+
+## 12. Native Session Continuity (Phase 6)
+
+```text
+                    CortexShift Task
+                          │
+             ┌────────────┼────────────┐
+             ▼            ▼            ▼
+          Claude        Codex     Antigravity
+          native A      native B      native C
+             │            │            │
+             ▼            ▼            ▼
+        CS Sessions   CS Sessions   CS Sessions
+        1 → 7 → 12    2 → 8 → 13   4 → 9 → 14
+```
+
+A provider-native conversation is not a CortexShift Session. The Task owns canonical work state; handoffs carry that state across providers; native IDs add same-provider history continuity. One native ID can belong to many sequential invocation records. Schema v5 adds nullable `Session.resumed_from_session_id`, a self-referencing FK with `ON DELETE SET NULL`. It does not manufacture IDs for legacy records or store a redundant resumability flag.
+
+`ResumeService` resolves project/task/runtime adapter through the existing run infrastructure, selects exact native history, acquires the workspace lease, creates a linked invocation, and delegates lifecycle finalization to `ProviderSessionLauncher`. No handoff builder or repository inspector is involved in plain resume. Provider-specific argv is built behind the optional `ProviderNativeSessionAdapter` port. A small immutable `NativeSessionCapabilities` value describes partial provider support; unsupported runtimes need no placeholder operations.
+
+`SwitchService` uses native capabilities to select a prior target invocation on the same active Task. The newest eligible `started_at` wins across the complete Session history. Exact resumability requires a safe ID, exact-resume support, and finalized process exit evidence; spawn failures and unfinished records are excluded. The default auto policy resumes eligible targets with a fresh handoff; absent eligible history it uses managed-new delivery. `--new-session` and `--resume-session` provide mutually exclusive overrides. Every invocation remains distinct and the outgoing source is still the latest meaningful work Session.
+
+All provider transport variance remains behind runtime and handoff adapters. Claude preallocates UUID4; Codex captures JSONL identity during a read-only turn; Antigravity captures the plan-bootstrap conversation ID. Returning Codex/Antigravity bootstraps must confirm the same requested ID. Errors never trigger a fresh-conversation fallback. Old Session rows remain unchanged.
+
+Fresh canonical handoff context explicitly supersedes stale native assumptions while preserving the repository/Git/test truth hierarchy. Native conversation memory cannot replace the Task. No private provider storage is read; no transcripts, rendered context, bootstrap responses, credentials, or SDKs are introduced. Interactive stdio passes through directly and both stdin/stdout must be TTYs. All actual runs hold the OS advisory workspace lease; dry runs create no canonical state and perform no provider work.
+
+Plain Codex and Antigravity launches may have unknown IDs. App Server empty-thread-to-CLI continuity is not assumed; arbitrary user prompts never trigger hidden bootstrap turns. See [ADR-0007](decisions/ADR-0007-native-session-continuity.md) for exact contracts and limitations.

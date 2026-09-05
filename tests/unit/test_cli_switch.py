@@ -12,7 +12,7 @@ from cortexshift.application.switch_service import SwitchService
 from cortexshift.cli.app import app
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.session import SessionExitReason, SessionStatus
-from tests.factories import patch_which, seed_project, seed_session
+from tests.factories import FakeCodexBootstrap, patch_which, seed_project, seed_session
 
 runner = CliRunner()
 
@@ -52,7 +52,7 @@ def test_switch_help() -> None:
     assert "--dry-run" in output
     assert "--json" in output
     # The Antigravity bootstrap model turn must be documented, not hidden.
-    assert "plan" in output.lower()
+    assert "read-only" in output.lower()
     assert "read-only" in output.lower()
 
 
@@ -150,7 +150,7 @@ def test_switch_dry_run_human_output(switchable_project: Path, stub_executables:
     assert "CortexShift Handoff Protocol v1" in output
     assert "Claude Code" in output
     assert "Codex" in output
-    assert "direct_initial_prompt" in output
+    assert "read_only_bootstrap_then_resume" in output
     assert "Bootstrap model turn" in output
     assert "Context size" in output
     assert "nothing was persisted and nothing was launched" in output
@@ -168,8 +168,8 @@ def test_switch_dry_run_json_contract(switchable_project: Path, stub_executables
     assert data["source_session_id"].startswith("sess_")
     assert data["task_id"].startswith("task_")
     assert data["project_id"].startswith("proj_")
-    assert data["delivery_strategy"] == "direct_initial_prompt"
-    assert data["bootstrap_model_turn_required"] is False
+    assert data["delivery_strategy"] == "read_only_bootstrap_then_resume"
+    assert data["bootstrap_model_turn_required"] is True
     assert data["context_truncated"] is False
     assert "\x1b[" not in result.stdout
 
@@ -233,7 +233,10 @@ def test_switch_workspace_locked(
 
 
 def test_switch_note_reaches_the_receiving_agent(
-    switchable_project: Path, stub_executables: None, monkeypatch: pytest.MonkeyPatch
+    switchable_project: Path,
+    stub_executables: None,
+    monkeypatch: pytest.MonkeyPatch,
+    codex_bootstrap: FakeCodexBootstrap,
 ) -> None:
     """Verify `--note` is delivered as attributed advisory context."""
     captured: list[list[str]] = []
@@ -259,7 +262,7 @@ def test_switch_note_reaches_the_receiving_agent(
     assert result.exit_code == 0
     assert "Session completed." in result.stdout
     assert len(captured) == 1
-    context = captured[0][1]
+    context = codex_bootstrap.invocations[-1][-1]
     assert "## OPERATOR NOTE" in context
     assert "Mind the flaky integration test" in context
 

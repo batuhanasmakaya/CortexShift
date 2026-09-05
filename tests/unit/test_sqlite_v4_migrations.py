@@ -112,7 +112,7 @@ def test_migrate_v3_to_v4_preserves_all_prior_state(tmp_path: Path) -> None:
     ids = _build_v3_database(db_file)
 
     with SQLiteStateStore(db_file, auto_migrate=True) as store:
-        assert store.get_schema_version() == 4
+        assert store.get_schema_version() == CURRENT_SCHEMA_VERSION
         assert store.get_schema_version() == CURRENT_SCHEMA_VERSION
 
         project = store.get_project(ids["project"])
@@ -239,9 +239,9 @@ def test_full_migration_chain_v1_to_v4(tmp_path: Path) -> None:
     conn.commit()
     assert get_current_schema_version(conn) == 1
 
-    assert run_migrations(conn) == 4
+    assert run_migrations(conn) == CURRENT_SCHEMA_VERSION
     versions = {row[0] for row in conn.execute("SELECT schema_version FROM schema_metadata;")}
-    assert versions == {1, 2, 3, 4}
+    assert versions == set(range(1, CURRENT_SCHEMA_VERSION + 1))
     conn.close()
 
 
@@ -249,11 +249,11 @@ def test_v4_migration_is_idempotent(tmp_path: Path) -> None:
     """Verify reopening an already-v4 database applies no further migration."""
     db_file = tmp_path / "noop.sqlite3"
     with SQLiteStateStore(db_file, auto_migrate=True) as store:
-        assert store.get_schema_version() == 4
+        assert store.get_schema_version() == CURRENT_SCHEMA_VERSION
 
     with SQLiteStateStore(db_file, auto_migrate=True) as store:
-        assert store.get_schema_version() == 4
-        assert store.migrate() == 4
+        assert store.get_schema_version() == CURRENT_SCHEMA_VERSION
+        assert store.migrate() == CURRENT_SCHEMA_VERSION
 
 
 def test_handoff_survives_migrated_database(tmp_path: Path) -> None:

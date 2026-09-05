@@ -42,9 +42,9 @@ Claude Code      Codex        Antigravity
 ## Status: Pre-Alpha
 
 > [!NOTE]
-> CortexShift is currently in **Phase 5 (Canonical Manual Handoff & Agent Switching)**. A single Task can now move between Claude Code, Codex, and Antigravity through `cortexshift switch`, carrying deterministic canonical context. Crucially, the outgoing agent does **not** need to still be available: handoffs are derived from durable local state and live Git, never from an outgoing model call.
+> CortexShift is currently in **Phase 6 (Native Session Identity, Resume & Return-to-Provider Continuity)**. A single Task can now move between Claude Code, Codex, and Antigravity through `cortexshift switch`, carrying deterministic canonical context. Crucially, the outgoing agent does **not** need to still be available: handoffs are derived from durable local state and live Git, never from an outgoing model call.
 
-### What Works Today (Phase 5)
+### What Works Today (Phase 6)
 
 ```text
 ✓ native provider discovery
@@ -58,17 +58,22 @@ Claude Code      Codex        Antigravity
 ✓ Codex → Claude switching
 ✓ Antigravity handoff bootstrap + native conversation resume
 ✓ persisted handoff history
+✓ Claude managed UUIDs and exact native resume
+✓ Codex managed handoff ID capture and exact resume
+✓ Antigravity exact resume when its conversation ID is known
+✓ return-to-provider continuity with fresh handoff injection
+✓ new CortexShift Session and durable lineage on every resume
 ```
 
 - **Canonical Handoff & Agent Switching (Phase 5)**:
   - Move the active task to another coding agent with `cortexshift switch claude|codex|antigravity`.
   - **The outgoing agent is never required.** Handoffs are built deterministically from the canonical Project, canonical Task, previous CortexShift Session metadata, live Git inspection, and a Git snapshot captured at switch time. CortexShift makes **no outgoing model call** and never even resolves the outgoing provider's executable — so switching works after Claude's quota is exhausted, its process is gone, or its CLI is uninstalled.
-  - CortexShift Handoff Protocol v1: a provider-neutral canonical payload (project, objective, requirements, constraints, completed, current work, remaining, decisions, files touched, test status, known issues, Git state, do-not-redo, recommended next action) plus orchestration metadata, persisted in SQLite schema v4.
+  - CortexShift Handoff Protocol v1: a provider-neutral canonical payload (project, objective, requirements, constraints, completed, current work, remaining, decisions, files touched, test status, known issues, Git state, do-not-redo, recommended next action) plus orchestration metadata, persisted in SQLite schema v5.
   - Every receiving agent is given the CortexShift authority order (repository files → live Git → verified test results → canonical task state → historical summaries) and an explicit startup contract: read `AGENTS.md`, inspect `git status` and `git diff`, verify recorded completed work rather than trusting it, run relevant tests, and continue rather than restart.
   - Honest unknown state: absent decisions and unverified test status are stated as unknown, never invented. A provider exiting with code 0 is never read as "tests pass".
   - Deterministic bounded context (48,000 characters) with reported truncation counts; the persisted canonical payload is never truncated and stays retrievable via `cortexshift handoff show ID --json`.
   - Live Git captured under the exclusive workspace lease, held continuously from repository observation through receiving-provider runtime. Non-Git projects hand off with an explicit marker; an unexpected Git probe error fails the switch safely instead of shipping an unreliable observation.
-  - Claude Code and Codex receive the context directly as their native interactive initial prompt (argument arrays, `shell=False`, one argument, no `-p` / `codex exec`, no model or permission overrides).
+  - Claude receives a fresh context prompt with a managed UUID or exact `--resume` ID. Codex now uses one read-only `exec --json` bootstrap model turn to capture or continue its native thread, then opens the same thread interactively. See the Phase 6 continuity contract below.
   - Antigravity uses a two-stage documented native flow: one **read-only plan-mode bootstrap** that ingests the context, then an interactive resume of that same conversation (`agy --conversation <id>`). Only `conversation_id` and `status` are parsed; the response is discarded. No permission bypass, no TUI keystroke automation.
   - Zero-cost inspection: `cortexshift handoff preview <target>` and `cortexshift switch <target> --dry-run` persist nothing, launch nothing, and consume no model quota — including for Antigravity, where the dry run never performs the bootstrap turn.
   - Durable handoff history: `cortexshift handoff list` and `cortexshift handoff show <id>`, with `--json` on every surface.
@@ -112,10 +117,37 @@ Claude Code      Codex        Antigravity
   - Architecture specifications, ADRs ([`ADR-0001`](docs/decisions/ADR-0001-core-architecture.md), [`ADR-0002`](docs/decisions/ADR-0002-safe-provider-discovery.md), [`ADR-0003`](docs/decisions/ADR-0003-project-local-persistence.md), [`ADR-0004`](docs/decisions/ADR-0004-git-repository-context.md), [`ADR-0005`](docs/decisions/ADR-0005-native-provider-runtime.md)).
   - 100% type-checked code via strict `mypy`, formatted via `ruff`, with comprehensive unit and integration tests.
 
+### Native continuity (Phase 6)
+
+```bash
+cortexshift resume claude
+cortexshift resume codex --session sess_...
+cortexshift resume antigravity --dry-run --json
+cortexshift switch claude                  # reuse the previous Claude native conversation
+cortexshift switch codex --new-session     # intentionally start a fresh native conversation
+cortexshift switch claude --resume-session sess_...
+cortexshift switch codex --dry-run --json
+cortexshift session list --json
+cortexshift session show sess_... --json
+```
+
+`resume PROVIDER` selects the newest exact eligible Session on the active Task for that provider. Every invocation creates a new CortexShift Session with the same native ID and `resumed_from_session_id` pointing to the selected invocation. Plain resume creates no handoff or Git snapshot. Switch always sends a fresh canonical handoff, captures fresh Git state when available, and reuses the target's known conversation by default. The fresh handoff tells the returning provider to re-inspect the repository and discard stale assumptions.
+
+| Provider | New ID tracking | Exact resume | Fresh handoff on return |
+|---|---|---|---|
+| Claude Code | UUID4 via `--session-id` on every new run/switch | `claude --resume ID` | Same ID plus fresh context prompt; no extra bootstrap |
+| Codex | `thread.started.thread_id` from managed handoff JSONL bootstrap | `codex resume ID` | Read-only `exec resume` turn on same ID, then TUI |
+| Antigravity | `conversation_id` from managed handoff plan bootstrap | `agy --conversation ID` | Plan turn with `--conversation ID`, then TUI |
+
+Codex and Antigravity handoffs each require one bootstrap model turn; `switch --dry-run --json` exposes `bootstrap_model_turn_required`. Dry runs launch no provider, create no Session/Handoff/snapshot, and consume no quota. Real interactive resume/switch requires stdin and stdout to be terminals; `--json` is valid only with `--dry-run`.
+
+Historical sessions without IDs cannot be exact-resumed. Plain Antigravity runs and plain Codex runs (including `--prompt`) retain direct native TUI semantics and may have no recorded ID. App Server empty-thread-to-CLI interoperability was not established, so no App Server allocation or hidden model turn is used for plain Codex run. CortexShift never guesses provider-last sessions or inspects provider caches/transcripts. A deleted provider-native conversation can still cause exact resume to fail; the recorded ID is preserved and no fresh conversation is silently substituted. Unfinished or spawn-failed invocations are excluded from automatic resume selection.
+
+To upgrade existing local state to schema v5, rerun `cortexshift init`; migration is transactional and preserves prior records. See [ADR-0007](docs/decisions/ADR-0007-native-session-continuity.md) for contracts and trade-offs.
+
 ### What Does NOT Work Yet
 
 ```text
-✗ general native provider session resume through CortexShift
 ✗ automatic outgoing-agent summaries
 ✗ automatic quota detection
 ✗ automatic switching
@@ -124,7 +156,6 @@ Claude Code      Codex        Antigravity
 ✗ transcript transplantation
 ```
 
-- ✗ General native provider session resume (`cortexshift session resume`, `run --resume`) is not implemented (planned for Phase 6). The Antigravity conversation ID captured during a handoff is a transport implementation detail of that provider's delivery strategy, not a general resume feature.
 - ✗ Automatic outgoing-agent summaries are deliberately absent — and always will be as a *requirement*. CortexShift must work when the outgoing agent cannot answer.
 - ✗ Automatic quota/rate-limit detection and automatic provider switching (explicitly out of scope; switching is manual).
 - ✗ Automatic periodic checkpoints and disaster recovery (planned for Phase 7).

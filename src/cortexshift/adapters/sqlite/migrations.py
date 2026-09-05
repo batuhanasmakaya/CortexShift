@@ -7,7 +7,7 @@ from collections.abc import Callable
 from cortexshift.domain.errors import DatabaseStateError, UnsupportedSchemaVersionError
 from cortexshift.domain.identifiers import utc_now
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 def _migrate_v1(conn: sqlite3.Connection) -> None:
@@ -145,12 +145,21 @@ def _migrate_v4(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_handoffs_created_at ON handoffs(created_at DESC);")
 
 
+def _migrate_v5(conn: sqlite3.Connection) -> None:
+    """Add invocation lineage without rewriting any historical session."""
+    conn.execute(
+        "ALTER TABLE sessions ADD COLUMN resumed_from_session_id TEXT "
+        "REFERENCES sessions(id) ON DELETE SET NULL;"
+    )
+
+
 # Ordered registry of migration functions: index 0 is v1, index 1 is v2, index 2 is v3, etc.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1,
     _migrate_v2,
     _migrate_v3,
     _migrate_v4,
+    _migrate_v5,
 ]
 
 

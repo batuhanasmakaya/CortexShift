@@ -63,7 +63,12 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
             raise DatabaseStateError(msg) from err
 
         if auto_migrate:
-            self.migrate()
+            try:
+                self.migrate()
+            except BaseException:
+                # A failed constructor has no context-manager exit to release the connection.
+                self.close()
+                raise
 
     def _configure_connection(self) -> None:
         """Configure SQLite pragmas for safety and performance."""
@@ -436,12 +441,14 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                     """
                     INSERT INTO sessions (
                         id, task_id, provider_id, native_session_id, status,
-                        started_at, ended_at, exit_reason, exit_code, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        started_at, ended_at, exit_reason, exit_code, metadata,
+                        resumed_from_session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         task_id = excluded.task_id,
                         provider_id = excluded.provider_id,
                         native_session_id = excluded.native_session_id,
+                        resumed_from_session_id = excluded.resumed_from_session_id,
                         status = excluded.status,
                         started_at = excluded.started_at,
                         ended_at = excluded.ended_at,
@@ -460,6 +467,7 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                         session.exit_reason.value if session.exit_reason else None,
                         session.exit_code,
                         json.dumps(session.metadata),
+                        session.resumed_from_session_id,
                     ),
                 )
         except sqlite3.IntegrityError as err:
@@ -474,7 +482,8 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
             cursor.execute(
                 """
                 SELECT id, task_id, provider_id, native_session_id, status,
-                       started_at, ended_at, exit_reason, exit_code, metadata
+                       started_at, ended_at, exit_reason, exit_code, metadata,
+                        resumed_from_session_id
                 FROM sessions WHERE id = ?;
                 """,
                 (session_id,),
@@ -491,7 +500,7 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
         self,
         project_id: str | None = None,
         task_id: str | None = None,
-        limit: int = 20,
+        limit: int | None = 20,
     ) -> list[Session]:
         """List sessions, ordered newest first."""
         try:
@@ -510,14 +519,15 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
                 SELECT s.id, s.task_id, s.provider_id, s.native_session_id, s.status,
-                       s.started_at, s.ended_at, s.exit_reason, s.exit_code, s.metadata
+                       s.started_at, s.ended_at, s.exit_reason, s.exit_code, s.metadata,
+                       s.resumed_from_session_id
                 FROM sessions s
                 JOIN tasks t ON s.task_id = t.id
                 {where_clause}
                 ORDER BY s.started_at DESC
                 LIMIT ?;
             """
-            params.append(max(1, limit))
+            params.append(-1 if limit is None else max(1, limit))
             cursor.execute(query, params)
             return [self._row_to_session(row) for row in cursor.fetchall()]
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
@@ -531,6 +541,7 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
             task_id=row["task_id"],
             provider_id=ProviderId(row["provider_id"]),
             native_session_id=row["native_session_id"],
+            resumed_from_session_id=row["resumed_from_session_id"],
             status=SessionStatus(row["status"]),
             started_at=_parse_utc_datetime(row["started_at"]),
             ended_at=_parse_utc_datetime(row["ended_at"]) if row["ended_at"] else None,

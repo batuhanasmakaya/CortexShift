@@ -234,6 +234,7 @@ class RunService:
                 session = launcher.start_session(
                     task_id=task.id,
                     provider_id=adapter.provider_id,
+                    native_session_id=launch_spec.native_session_id,
                 )
 
                 def _forward(spec: LaunchSpecification, current: Session) -> None:

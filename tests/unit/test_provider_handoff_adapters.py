@@ -17,7 +17,6 @@ from cortexshift.domain.handoff import HandoffFailureCode
 from cortexshift.domain.provider import (
     PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
-    PROVIDER_CODEX,
 )
 from cortexshift.ports.handoff_delivery import HandoffDeliveryStrategy, ProviderHandoffAdapter
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
@@ -65,7 +64,6 @@ def _success_result(conversation_id: str = "test-conversation-123") -> HeadlessR
     ("adapter", "provider_id", "executable"),
     [
         (ClaudeHandoffAdapter(), PROVIDER_CLAUDE, "claude"),
-        (CodexHandoffAdapter(), PROVIDER_CODEX, "codex"),
     ],
 )
 def test_direct_adapters_pass_context_as_single_argument(
@@ -86,15 +84,20 @@ def test_direct_adapters_pass_context_as_single_argument(
         rendered_context=CONTEXT,
     )
 
-    assert preparation.launch_spec.argv == [f"/bin/{executable}", CONTEXT]
+    assert preparation.launch_spec.argv == [
+        f"/bin/{executable}",
+        "--session-id",
+        preparation.native_session_id,
+        CONTEXT,
+    ]
     assert preparation.launch_spec.cwd == tmp_path
     assert preparation.launch_spec.interactive is True
     assert preparation.launch_spec.prompt_supplied is True
-    assert preparation.native_session_id is None
+    assert preparation.native_session_id is not None
     assert preparation.bootstrap_performed is False
 
 
-@pytest.mark.parametrize("adapter", [ClaudeHandoffAdapter(), CodexHandoffAdapter()])
+@pytest.mark.parametrize("adapter", [ClaudeHandoffAdapter()])
 def test_direct_adapters_never_use_headless_or_exec_subcommands(
     adapter: ProviderHandoffAdapter, tmp_path: Path
 ) -> None:
@@ -105,7 +108,7 @@ def test_direct_adapters_never_use_headless_or_exec_subcommands(
         rendered_context=CONTEXT,
     ).launch_spec.argv
 
-    assert len(argv) == 2
+    assert len(argv) == 4
     for forbidden in (
         "exec",
         "-p",
@@ -131,7 +134,8 @@ def test_direct_adapters_keep_shell_metacharacters_inert(tmp_path: Path) -> None
         .launch_spec.argv
     )
 
-    assert argv == ["/bin/claude", hostile]
+    assert argv[0:2] == ["/bin/claude", "--session-id"]
+    assert argv[-1] == hostile
 
 
 # --- Antigravity read-only bootstrap + conversation resume ---

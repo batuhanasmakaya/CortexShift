@@ -125,8 +125,8 @@ def test_handoff_preview_json_contract(handoff_project: Path) -> None:
     data = json.loads(result.stdout)
     assert data["protocol_version"] == 1
     assert data["target_provider_id"] == "codex"
-    assert data["delivery_strategy"] == "direct_initial_prompt"
-    assert data["bootstrap_model_turn_required"] is False
+    assert data["delivery_strategy"] == "read_only_bootstrap_then_resume"
+    assert data["bootstrap_model_turn_required"] is True
     assert data["payload"]["original_objective"].startswith("Add OAuth2 PKCE")
     assert data["payload"]["source_session"]["provider_id"] == "claude"
     assert data["payload"]["test_status"]["known"] is False

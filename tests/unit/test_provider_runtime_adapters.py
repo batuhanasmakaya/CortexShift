@@ -26,7 +26,7 @@ def test_claude_launch_spec_without_prompt(tmp_path: Path) -> None:
     assert spec.provider_id == PROVIDER_CLAUDE
     assert spec.executable == "/bin/claude"
     assert spec.cwd == tmp_path
-    assert spec.argv == ["/bin/claude"]
+    assert spec.argv == ["/bin/claude", "--session-id", spec.native_session_id]
     assert spec.interactive is True
     assert spec.initial_prompt_supported is True
     assert spec.prompt_supplied is False
@@ -41,7 +41,7 @@ def test_claude_launch_spec_with_prompt(tmp_path: Path) -> None:
         executable_path="/bin/claude",
         prompt="Inspect the repo",
     )
-    assert spec.argv == ["/bin/claude", "Inspect the repo"]
+    assert spec.argv == ["/bin/claude", "--session-id", spec.native_session_id, "Inspect the repo"]
     assert spec.prompt_supplied is True
     assert "-p" not in spec.argv
 
@@ -127,9 +127,9 @@ def test_command_injection_regression_preserves_single_argument(
         prompt=malicious_prompt,
     )
     # Must be exactly 2 items: executable and the raw prompt string
-    assert len(spec_claude.argv) == 2
+    assert len(spec_claude.argv) == 4
     assert spec_claude.argv[0] == "/bin/claude"
-    assert spec_claude.argv[1] == malicious_prompt
+    assert spec_claude.argv[-1] == malicious_prompt
 
     codex_adapter = CodexRuntimeAdapter()
     spec_codex = codex_adapter.build_launch_spec(

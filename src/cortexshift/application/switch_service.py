@@ -33,11 +33,14 @@ from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.handoff_builder import HandoffBuilder
 from cortexshift.application.handoff_renderer import HandoffRenderer, RenderedHandoffContext
 from cortexshift.application.locator import ProjectLocator
+from cortexshift.application.native_session import native_capabilities, select_native_session
+from cortexshift.application.run_service import ProviderRuntimeRegistry
 from cortexshift.application.session_launcher import ProviderSessionLauncher
 from cortexshift.application.source_session import select_source_session
 from cortexshift.domain.errors import (
     GitProbeError,
     HandoffDeliveryError,
+    NativeResumeError,
     NoActiveTaskError,
     ProjectNotInitializedError,
     ProviderNotFoundError,
@@ -103,6 +106,10 @@ class SwitchDryRunResult(BaseModel):
 
     target_provider_id: str
     target_provider_name: str
+    target_native_mode: str = "new_session"
+    selected_prior_target_session_id: str | None = None
+    native_session_known: bool = False
+    native_session_id: str | None = None
     target_executable: str
 
     git_status: str
@@ -171,6 +178,7 @@ class _SwitchContext:
     adapter: ProviderHandoffAdapter
     executable_path: str
     store: SQLiteStateStore
+    prior_target: Session | None = None
 
 
 class SwitchService:
@@ -179,6 +187,7 @@ class SwitchService:
     def __init__(
         self,
         registry: ProviderHandoffRegistry | None = None,
+        native_registry: ProviderRuntimeRegistry | None = None,
         inspector: RepositoryInspector | None = None,
         process_runner: InteractiveProcessRunner | None = None,
         lease_manager: WorkspaceLeaseManager | None = None,
@@ -188,6 +197,7 @@ class SwitchService:
         is_tty_fn: Callable[[], bool] | None = None,
     ) -> None:
         self._registry = registry or ProviderHandoffRegistry()
+        self._native_registry = native_registry or ProviderRuntimeRegistry()
         self._inspector = inspector or GitRepositoryInspector()
         self._runner = process_runner or SubprocessInteractiveProcessRunner()
         self._lease_manager = lease_manager or FileWorkspaceLeaseManager()
@@ -266,6 +276,28 @@ class SwitchService:
             store.close()
             raise
 
+    def _select_target(
+        self, context: _SwitchContext, new_session: bool, resume_session_id: str | None
+    ) -> None:
+        if new_session and resume_session_id is not None:
+            raise NativeResumeError("--new-session and --resume-session are mutually exclusive.")
+        adapter = self._native_registry.get(str(context.adapter.provider_id))
+        if new_session:
+            context.prior_target = None
+        elif (capabilities := native_capabilities(adapter)).supports_exact_resume:
+            if capabilities.can_resume_with_followup_context:
+                context.prior_target = select_native_session(
+                    context.store,
+                    context.task.id,
+                    context.adapter.provider_id,
+                    capabilities,
+                    resume_session_id,
+                )
+            elif resume_session_id is not None:
+                raise NativeResumeError("Provider cannot receive fresh context on exact resume.")
+        elif resume_session_id is not None:
+            raise NativeResumeError("Provider does not support exact resume.")
+
     def _inspect(self, context: _SwitchContext) -> RepositoryInspection:
         """Inspect the live repository for the project being handed off."""
         return self._inspector.inspect(
@@ -329,6 +361,8 @@ class SwitchService:
         from_session_id: str | None = None,
         note: str | None = None,
         start_dir: Path | str | None = None,
+        new_session: bool = False,
+        resume_session_id: str | None = None,
     ) -> SwitchDryRunResult:
         """Describe what an actual switch would do without persisting or launching anything.
 
@@ -337,6 +371,7 @@ class SwitchService:
         """
         context = self._resolve_context(target_provider_name, from_session_id, start_dir)
         try:
+            self._select_target(context, new_session, resume_session_id)
             inspection = self._inspect(context)
             payload = self._builder.build(
                 project=context.project,
@@ -361,6 +396,14 @@ class SwitchService:
                 target_provider_id=str(context.adapter.provider_id),
                 target_provider_name=context.adapter.display_name,
                 target_executable=context.executable_path,
+                target_native_mode="resume_existing" if context.prior_target else "new_session",
+                selected_prior_target_session_id=(
+                    context.prior_target.id if context.prior_target else None
+                ),
+                native_session_known=context.prior_target is not None,
+                native_session_id=(
+                    context.prior_target.native_session_id if context.prior_target else None
+                ),
                 git_status=inspection.status.value,
                 git_branch=snapshot.branch if snapshot else None,
                 git_head_sha=snapshot.head_sha if snapshot else None,
@@ -383,6 +426,8 @@ class SwitchService:
         from_session_id: str | None = None,
         note: str | None = None,
         start_dir: Path | str | None = None,
+        new_session: bool = False,
+        resume_session_id: str | None = None,
         on_prepared: Callable[[HandoffRecord, RenderedHandoffContext], None] | None = None,
         on_launch: Callable[[LaunchSpecification, Session], None] | None = None,
     ) -> SwitchResult:
@@ -411,6 +456,7 @@ class SwitchService:
                 raise WorkspaceLockedError(lock_path=lease.lock_path)
 
             try:
+                self._select_target(context, new_session, resume_session_id)
                 inspection = self._inspect(context)
                 snapshot_id = self._persist_snapshot(inspection, store)
 
@@ -490,6 +536,10 @@ class SwitchService:
             task_id=context.task.id,
             provider_id=context.adapter.provider_id,
             metadata={"handoff_id": handoff.id},
+            resumed_from_session_id=context.prior_target.id if context.prior_target else None,
+            native_session_id=(
+                context.prior_target.native_session_id if context.prior_target else None
+            ),
         )
 
         try:
@@ -497,11 +547,26 @@ class SwitchService:
                 executable_path=context.executable_path,
                 project_root=Path(context.project.repo_path),
                 rendered_context=rendered.text,
+                native_session_id=(
+                    context.prior_target.native_session_id if context.prior_target else None
+                ),
             )
         except HandoffDeliveryError as err:
             target_session = launcher.fail_session(target_session, SessionExitReason.SPAWN_FAILED)
             self._fail_handoff(store, handoff, err.failure_code, target_session.id)
             raise
+
+        except BaseException as err:
+            launcher.fail_session(target_session, SessionExitReason.SPAWN_FAILED)
+            self._fail_handoff(
+                store, handoff, HandoffFailureCode.BOOTSTRAP_FAILED.value, target_session.id
+            )
+            if isinstance(err, (KeyboardInterrupt, SystemExit)):
+                raise
+            raise HandoffDeliveryError(
+                "bootstrap_failed",
+                "Provider handoff preparation failed; no fallback was attempted.",
+            ) from None
 
         if preparation.native_session_id:
             target_session = launcher.attach_native_session_id(

@@ -122,7 +122,6 @@ def test_end_to_end_run_from_nested_subdirectory(
     assert report_file.exists()
     report_data = json.loads(report_file.read_text())
     assert Path(report_data["cwd"]).resolve() == git_repo_with_task.resolve()
-    assert report_data["argv"] == [str(fake_claude)]
 
     # Verify session persisted in SQLite DB
     db_path = git_repo_with_task / ".cortexshift" / "state.sqlite3"
@@ -130,6 +129,7 @@ def test_end_to_end_run_from_nested_subdirectory(
         sessions = store.list_sessions()
         assert len(sessions) == 1
         s = sessions[0]
+        assert report_data["argv"] == [str(fake_claude), "--session-id", s.native_session_id]
         assert s.provider_id == "claude"
         assert s.status == SessionStatus.COMPLETED
         assert s.exit_code == 0

@@ -21,7 +21,7 @@ class SessionStore(Protocol):
         self,
         project_id: str | None = None,
         task_id: str | None = None,
-        limit: int = 20,
+        limit: int | None = 20,
     ) -> list[Session]:
         """List sessions, ordered newest first."""
         ...

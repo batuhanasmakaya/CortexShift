@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 6: Native Session Identity, Resume & Return-to-Provider Continuity** (unreleased):
+  - `cortexshift resume PROVIDER` with exact CortexShift source selection, dry-run and JSON preview.
+  - New invocation lineage via `Session.resumed_from_session_id`; transactional SQLite schema v4 → v5 migration preserves all older records.
+  - Claude UUID4 allocation on new sessions and exact resume with fresh handoff context on return.
+  - Codex managed native ID capture from a read-only JSONL handoff turn, plus same-thread `exec resume` injection before interactive resume.
+  - Antigravity known conversation resume and same-conversation plan handoff on return.
+  - Automatic safe target reuse on explicit switch; `--new-session` and `--resume-session` overrides.
+  - Session list/show include native ID, lineage and derived exact resumability. Unknown and spawn-failed invocations are never guessed.
+  - Six-invocation native-continuity integration coverage, restart persistence, v5 migration/rollback tests and privacy boundaries.
+  - ADR-0007 records partial plain-run tracking support, no App Server allocation, model-turn costs and exact-ID-only policy.
+
 - **Phase 5: Canonical Manual Handoff & Agent Switching**:
   - CLI command `cortexshift switch <provider>` moving the active Task to another coding agent with full canonical context, supporting `--from-session`, `--note`, `--dry-run`, and `--json`.
   - CLI command group `cortexshift handoff` with `preview <target>`, `list`, and `show <id>`, each supporting `--json`.

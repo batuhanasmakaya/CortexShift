@@ -6,8 +6,11 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+from cortexshift.adapters.headless_runner import SubprocessHeadlessProviderRunner
 from cortexshift.domain.doctor import AuthenticationStatus, ProviderDiagnostic
+from cortexshift.domain.errors import HandoffDeliveryError, NativeResumeError
 from cortexshift.domain.launch import LaunchSpecification
+from cortexshift.domain.native_session import NativeSessionCapabilities, valid_native_id
 from cortexshift.domain.provider import PROVIDER_CODEX, ProviderCapabilities, ProviderId
 from cortexshift.ports.command_runner import CommandRunner
 from cortexshift.ports.discovery import ProviderProbe
@@ -15,6 +18,10 @@ from cortexshift.ports.handoff_delivery import (
     HandoffDeliveryPreparation,
     HandoffDeliveryStrategy,
     ProviderHandoffAdapter,
+)
+from cortexshift.ports.headless_runner import (
+    DEFAULT_HEADLESS_TIMEOUT_SECONDS,
+    HeadlessProviderRunner,
 )
 from cortexshift.ports.provider import ProviderRuntimeAdapter
 
@@ -189,6 +196,28 @@ class CodexRuntimeAdapter(ProviderRuntimeAdapter):
             supports_usage_metrics=True,
         )
 
+    def get_native_capabilities(self) -> NativeSessionCapabilities:
+        return NativeSessionCapabilities(
+            supports_exact_resume=True,
+            can_capture_native_id_during_bootstrap=True,
+            can_resume_with_followup_context=True,
+            requires_model_turn_for_handoff_resume=True,
+            supports_managed_new_session=True,
+        )
+
+    def build_exact_resume(
+        self, project_root: Path, executable_path: str, native_session_id: str
+    ) -> LaunchSpecification:
+        if not valid_native_id(native_session_id):
+            raise NativeResumeError("Invalid native session identifier.")
+        return LaunchSpecification(
+            provider_id=self.provider_id,
+            executable=executable_path,
+            cwd=project_root,
+            argv=[executable_path, "resume", native_session_id],
+            native_session_id=native_session_id,
+        )
+
     def build_launch_spec(
         self,
         project_root: Path,
@@ -213,18 +242,26 @@ class CodexRuntimeAdapter(ProviderRuntimeAdapter):
         )
 
 
+CODEX_BOOTSTRAP_PREFIX = """This is a CortexShift handoff bootstrap.
+Analyze and ingest the supplied context. Remain read-only.
+Do not modify repository files. Do not run mutating commands.
+The same native Codex session will be resumed immediately in the interactive TUI.
+
+"""
+
+
 class CodexHandoffAdapter(ProviderHandoffAdapter):
-    """Delivers canonical handoff context to the native Codex interactive CLI.
+    """Capture native identity through one read-only JSONL turn, then open the TUI."""
 
-    Codex's documented interactive CLI accepts an optional initial prompt as a trailing
-    positional argument, so the canonical context is delivered directly. ``codex exec``
-    is deliberately not used: the target user experience must remain the native Codex
-    TUI. Sandbox, permission, model, and reasoning-effort settings stay under the user's
-    own Codex configuration.
-    """
-
-    def __init__(self, runtime_adapter: CodexRuntimeAdapter | None = None) -> None:
+    def __init__(
+        self,
+        runtime_adapter: CodexRuntimeAdapter | None = None,
+        headless_runner: HeadlessProviderRunner | None = None,
+        timeout: float = DEFAULT_HEADLESS_TIMEOUT_SECONDS,
+    ) -> None:
         self._runtime = runtime_adapter or CodexRuntimeAdapter()
+        self._headless = headless_runner or SubprocessHeadlessProviderRunner()
+        self._timeout = timeout
 
     @property
     def provider_id(self) -> ProviderId:
@@ -240,26 +277,72 @@ class CodexHandoffAdapter(ProviderHandoffAdapter):
 
     @property
     def delivery_strategy(self) -> HandoffDeliveryStrategy:
-        return HandoffDeliveryStrategy.DIRECT_INITIAL_PROMPT
+        return HandoffDeliveryStrategy.READ_ONLY_BOOTSTRAP_THEN_RESUME
 
     @property
     def bootstrap_model_turn_required(self) -> bool:
-        return False
+        return True
 
     def prepare_delivery(
         self,
         executable_path: str,
         project_root: Path,
         rendered_context: str,
+        native_session_id: str | None = None,
     ) -> HandoffDeliveryPreparation:
-        """Build the native interactive launch carrying the handoff as one argument."""
-        launch_spec = self._runtime.build_launch_spec(
-            project_root=project_root,
-            executable_path=executable_path,
-            prompt=rendered_context,
-        )
+        if native_session_id is not None and not valid_native_id(native_session_id):
+            raise NativeResumeError("Invalid native session identifier.")
+        # Sandbox is an exec parent option, JSON is also supported on exec resume.
+        argv = [executable_path, "exec", "--sandbox", "read-only"]
+        if native_session_id is not None:
+            argv.extend(["resume", "--json", native_session_id])
+        else:
+            argv.append("--json")
+        argv.append(CODEX_BOOTSTRAP_PREFIX + rendered_context)
+        result = self._headless.run_headless(argv, project_root, timeout=self._timeout)
+        if result.timed_out:
+            raise HandoffDeliveryError("bootstrap_timeout", "Codex handoff bootstrap timed out.")
+        if result.not_found:
+            raise HandoffDeliveryError("spawn_failed", "Codex handoff bootstrap could not start.")
+        if result.exit_code != 0:
+            raise HandoffDeliveryError("bootstrap_failed", "Codex handoff bootstrap failed.")
+
+        captured: str | None = None
+        completed = False
+        try:
+            for line in result.stdout.splitlines():
+                if not line.strip():
+                    continue
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    raise ValueError
+                kind = event.get("type")
+                if kind in ("error", "turn.failed"):
+                    raise HandoffDeliveryError("bootstrap_failed", "Codex handoff turn failed.")
+                if kind == "thread.started":
+                    candidate = event.get("thread_id")
+                    if not isinstance(candidate, str) or not valid_native_id(candidate):
+                        raise ValueError
+                    if captured is not None and captured != candidate:
+                        raise ValueError
+                    captured = candidate
+                if kind == "turn.completed":
+                    completed = True
+        except (ValueError, TypeError):
+            raise HandoffDeliveryError(
+                "bootstrap_invalid_output", "Codex returned invalid bootstrap metadata."
+            ) from None
+        if captured is None or not completed:
+            raise HandoffDeliveryError(
+                "bootstrap_invalid_output",
+                "Codex did not confirm a native thread and completed turn.",
+            )
+        if native_session_id is not None and captured != native_session_id:
+            raise HandoffDeliveryError(
+                "bootstrap_invalid_output", "Codex returned a different thread; refusing fallback."
+            )
         return HandoffDeliveryPreparation(
-            launch_spec=launch_spec,
-            native_session_id=None,
-            bootstrap_performed=False,
+            launch_spec=self._runtime.build_exact_resume(project_root, executable_path, captured),
+            native_session_id=captured,
+            bootstrap_performed=True,
         )

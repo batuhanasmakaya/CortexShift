@@ -28,6 +28,7 @@ class HandoffDeliveryStrategy(StrEnum):
     """
 
     DIRECT_INITIAL_PROMPT = "direct_initial_prompt"
+    READ_ONLY_BOOTSTRAP_THEN_RESUME = "read_only_bootstrap_then_resume"
     PLAN_BOOTSTRAP_THEN_RESUME = "plan_bootstrap_then_resume"
 
 
@@ -75,6 +76,7 @@ class ProviderHandoffAdapter(Protocol):
         executable_path: str,
         project_root: Path,
         rendered_context: str,
+        native_session_id: str | None = None,
     ) -> HandoffDeliveryPreparation:
         """Deliver the canonical context and return the interactive launch specification.
 

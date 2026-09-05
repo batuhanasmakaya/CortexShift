@@ -5,9 +5,12 @@ import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from uuid import uuid4
 
 from cortexshift.domain.doctor import AuthenticationStatus, ProviderDiagnostic
+from cortexshift.domain.errors import NativeResumeError
 from cortexshift.domain.launch import LaunchSpecification
+from cortexshift.domain.native_session import NativeSessionCapabilities, valid_native_id
 from cortexshift.domain.provider import PROVIDER_CLAUDE, ProviderCapabilities, ProviderId
 from cortexshift.ports.command_runner import CommandRunner
 from cortexshift.ports.discovery import ProviderProbe
@@ -189,6 +192,27 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
             supports_usage_metrics=True,
         )
 
+    def get_native_capabilities(self) -> NativeSessionCapabilities:
+        return NativeSessionCapabilities(
+            supports_exact_resume=True,
+            can_allocate_native_id_before_launch=True,
+            can_resume_with_followup_context=True,
+            supports_managed_new_session=True,
+        )
+
+    def build_exact_resume(
+        self, project_root: Path, executable_path: str, native_session_id: str
+    ) -> LaunchSpecification:
+        if not valid_native_id(native_session_id):
+            raise NativeResumeError("Invalid native session identifier.")
+        return LaunchSpecification(
+            provider_id=self.provider_id,
+            executable=executable_path,
+            cwd=project_root,
+            argv=[executable_path, "--resume", native_session_id],
+            native_session_id=native_session_id,
+        )
+
     def build_launch_spec(
         self,
         project_root: Path,
@@ -196,7 +220,8 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
         prompt: str | None = None,
     ) -> LaunchSpecification:
         """Build argument vector for native Claude launch."""
-        argv = [executable_path]
+        native_id = str(uuid4())
+        argv = [executable_path, "--session-id", native_id]
         prompt_supplied = False
         if prompt is not None and prompt.strip():
             argv.append(prompt)
@@ -207,6 +232,7 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
             executable=executable_path,
             cwd=project_root,
             argv=argv,
+            native_session_id=native_id,
             interactive=True,
             initial_prompt_supported=True,
             prompt_supplied=prompt_supplied,
@@ -250,15 +276,27 @@ class ClaudeHandoffAdapter(ProviderHandoffAdapter):
         executable_path: str,
         project_root: Path,
         rendered_context: str,
+        native_session_id: str | None = None,
     ) -> HandoffDeliveryPreparation:
         """Build the native interactive launch carrying the handoff as one argument."""
-        launch_spec = self._runtime.build_launch_spec(
-            project_root=project_root,
-            executable_path=executable_path,
-            prompt=rendered_context,
-        )
+        if native_session_id is not None:
+            launch_spec = self._runtime.build_exact_resume(
+                project_root, executable_path, native_session_id
+            )
+            launch_spec = launch_spec.model_copy(
+                update={
+                    "argv": [*launch_spec.argv, rendered_context],
+                    "prompt_supplied": True,
+                }
+            )
+        else:
+            launch_spec = self._runtime.build_launch_spec(
+                project_root=project_root,
+                executable_path=executable_path,
+                prompt=rendered_context,
+            )
         return HandoffDeliveryPreparation(
             launch_spec=launch_spec,
-            native_session_id=None,
+            native_session_id=launch_spec.native_session_id,
             bootstrap_performed=False,
         )

@@ -21,6 +21,7 @@ class LaunchSpecification(BaseModel):
     executable: str
     cwd: Path
     argv: list[str]
+    native_session_id: str | None = None
     interactive: bool = True
     initial_prompt_supported: bool = True
     prompt_supplied: bool = False

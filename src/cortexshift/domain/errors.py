@@ -7,6 +7,10 @@ class CortexShiftError(Exception):
     """Base exception for all CortexShift domain and application errors."""
 
 
+class NativeResumeError(CortexShiftError):
+    """An exact native resume cannot be performed safely."""
+
+
 class ProjectNotInitializedError(CortexShiftError):
     """Raised when an operation requires an initialized CortexShift project but none was found."""
 

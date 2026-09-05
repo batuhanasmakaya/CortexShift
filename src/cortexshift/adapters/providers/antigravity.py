@@ -8,9 +8,14 @@ from pathlib import Path
 
 from cortexshift.adapters.headless_runner import SubprocessHeadlessProviderRunner
 from cortexshift.domain.doctor import AuthenticationStatus, ProviderDiagnostic
-from cortexshift.domain.errors import HandoffDeliveryError, UnsupportedPromptError
+from cortexshift.domain.errors import (
+    HandoffDeliveryError,
+    NativeResumeError,
+    UnsupportedPromptError,
+)
 from cortexshift.domain.handoff import HandoffFailureCode
 from cortexshift.domain.launch import LaunchSpecification
+from cortexshift.domain.native_session import NativeSessionCapabilities, valid_native_id
 from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY, ProviderCapabilities, ProviderId
 from cortexshift.ports.command_runner import CommandRunner
 from cortexshift.ports.discovery import ProviderProbe
@@ -157,6 +162,28 @@ class AntigravityRuntimeAdapter(ProviderRuntimeAdapter):
             supports_usage_metrics=True,
         )
 
+    def get_native_capabilities(self) -> NativeSessionCapabilities:
+        return NativeSessionCapabilities(
+            supports_exact_resume=True,
+            can_capture_native_id_during_bootstrap=True,
+            can_resume_with_followup_context=True,
+            requires_model_turn_for_handoff_resume=True,
+            supports_managed_new_session=True,
+        )
+
+    def build_exact_resume(
+        self, project_root: Path, executable_path: str, native_session_id: str
+    ) -> LaunchSpecification:
+        if not valid_native_id(native_session_id):
+            raise NativeResumeError("Invalid native session identifier.")
+        return LaunchSpecification(
+            provider_id=self.provider_id,
+            executable=executable_path,
+            cwd=project_root,
+            argv=[executable_path, "--conversation", native_session_id],
+            native_session_id=native_session_id,
+        )
+
     def build_launch_spec(
         self,
         project_root: Path,
@@ -293,8 +320,11 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
         executable_path: str,
         project_root: Path,
         rendered_context: str,
+        native_session_id: str | None = None,
     ) -> HandoffDeliveryPreparation:
         """Run the read-only plan bootstrap, then prepare interactive conversation resume."""
+        if native_session_id is not None and not valid_native_id(native_session_id):
+            raise NativeResumeError("Invalid native session identifier.")
         bootstrap_prompt = f"{ANTIGRAVITY_BOOTSTRAP_PREFIX}\n{rendered_context}"
 
         result = self._headless.run_headless(
@@ -305,6 +335,7 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
                 bootstrap_prompt,
                 "--output-format",
                 "json",
+                *(["--conversation", native_session_id] if native_session_id else []),
             ],
             cwd=project_root,
             timeout=self._timeout,
@@ -336,10 +367,17 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
                 "The Antigravity handoff bootstrap did not report a successful status.",
             )
 
-        if not conversation_id:
+        if not valid_native_id(conversation_id):
             raise HandoffDeliveryError(
                 HandoffFailureCode.BOOTSTRAP_INVALID_OUTPUT.value,
                 "The Antigravity handoff bootstrap did not return a conversation identifier.",
+            )
+
+        assert conversation_id is not None
+        if native_session_id is not None and conversation_id != native_session_id:
+            raise HandoffDeliveryError(
+                HandoffFailureCode.BOOTSTRAP_INVALID_OUTPUT.value,
+                "Antigravity returned a different conversation; refusing continuity fallback.",
             )
 
         launch_spec = LaunchSpecification(
@@ -347,6 +385,7 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
             executable=executable_path,
             cwd=project_root,
             argv=[executable_path, "--conversation", conversation_id],
+            native_session_id=conversation_id,
             interactive=True,
             initial_prompt_supported=False,
             prompt_supplied=False,

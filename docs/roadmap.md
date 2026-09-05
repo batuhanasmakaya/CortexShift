@@ -17,6 +17,7 @@ Foundation    Provider      Task State    Git Context   Native        Manual
 Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
 Native        Checkpoints   MCP Server    TUI           Public        Experimental
 Resume        & Recovery                                Release
+(Complete)    (Planned)
 ```
 
 ---
@@ -125,20 +126,25 @@ The first end-to-end multi-agent workflow: one Task, multiple coding agents, no 
 
 ---
 
-## Phase 6 — Native Session Persistence & Resume
+## Phase 6 — Native Session Identity, Resume & Return-to-Provider Continuity ✅ COMPLETE
 
-Track native session identifiers to allow returning to prior provider-native sessions when supported.
+Add exact provider-native history continuity while preserving canonical Task and Handoff authority.
 
-- **Goals**:
-  - Capture provider session/thread IDs systematically across providers.
-  - Resume existing native sessions when supported by the provider CLI (`cortexshift session resume`, `run --resume`).
-
-> [!NOTE]
-> Phase 5 captures an Antigravity `conversation_id` during handoff delivery. That is a **transport implementation detail** of Antigravity's two-stage delivery strategy — it is what makes the read-only bootstrap and the interactive resume the *same* conversation. It does **not** mean the general Phase 6 session-resume feature exists: CortexShift exposes no general native resume command, and Claude/Codex native session IDs are not captured.
+- Claude managed UUID4 allocation and exact resume.
+- Codex managed handoff JSONL ID capture, read-only same-thread handoff continuation, then native TUI resume.
+- Antigravity known conversation resume and same-conversation plan handoff continuation.
+- `cortexshift resume PROVIDER`, `--session`, `--dry-run`, and dry-run-only `--json`.
+- Switch auto-reuses eligible target native history; `--new-session` and `--resume-session` override selection.
+- New CortexShift invocation on every resume with persisted `resumed_from_session_id`; transactional schema v4 → v5 migration.
+- No private provider-store discovery, guessed provider-last behavior, prompt/response persistence, or hidden model turns for plain runs.
+- Plain Codex and Antigravity run paths can retain null native IDs; historical untracked or unfinished invocations cannot be exact-resumed.
+- Verified: **486 passing tests**, **90% coverage**, Ruff, Ruff format, mypy and all requested CLI help/version/doctor checks. The flagship A → B → C → A → B → C test proves one Task, six invocations, three native identities, five fresh handoffs and five fresh Git snapshots; persistence survives fresh store recreation.
+- Real provider E2E is deferred: Claude was installed but unauthenticated, Codex installed/authenticated, and Antigravity missing. Automated verification uses deterministic fake providers.
+- [ADR-0007](decisions/ADR-0007-native-session-continuity.md) documents capabilities, transport costs and trade-offs.
 
 ---
 
-## Phase 7 — Checkpoints & Resilient Recovery
+## Phase 7 — Checkpoints & Recovery
 
 Automate checkpointing during active sessions to safeguard against abrupt session termination.
 

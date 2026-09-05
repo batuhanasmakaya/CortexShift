@@ -40,6 +40,10 @@ Every agent working on CortexShift must preserve the following architectural inv
 16. **Provider-Specific Handoff Delivery Belongs Behind Adapters**: All transport variance lives behind `ProviderHandoffAdapter`. Orchestration services must never branch on provider identity.
 17. **Never Persist Rendered Prompts or Provider Responses**: Canonical structured state is persisted; rendered provider prompts, provider bootstrap responses, transcripts, and hidden reasoning are not. Rendered packages are transport representations, re-derived deterministically from canonical state.
 
+18. **Exact Native Identity Only**: Never guess provider-native session identity or inspect provider transcript/cache storage to discover sessions.
+19. **Fresh Context on Return**: Fresh canonical handoff and live repository state outrank stale native conversation assumptions.
+20. **Invocation Lineage**: Every resume invocation creates a new CortexShift Session record; preserve historical invocations.
+
 ---
 
 ## 3. Engineering & Workflow Rules
@@ -69,3 +73,5 @@ Every agent working on CortexShift must preserve the following architectural inv
   - [ADR-0004: Git Repository Context](docs/decisions/ADR-0004-git-repository-context.md)
   - [ADR-0005: Native Provider Launch & Session Lifecycle](docs/decisions/ADR-0005-native-provider-runtime.md)
   - [ADR-0006: Canonical Agent Handoff & Manual Provider Switching](docs/decisions/ADR-0006-canonical-agent-handoff.md)
+
+  - [ADR-0007: Native Session Continuity](docs/decisions/ADR-0007-native-session-continuity.md)
