@@ -1,5 +1,6 @@
 """Port defining the interface for safe external command execution."""
 
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
@@ -37,6 +38,8 @@ class CommandRunner(Protocol):
         command: list[str],
         timeout: float = 5.0,
         env: dict[str, str] | None = None,
+        cwd: Path | str | None = None,
+        sanitize: bool = True,
     ) -> CommandResult:
         """Execute a command as an argument list with a finite timeout.
 
@@ -44,6 +47,8 @@ class CommandRunner(Protocol):
             command: Command and arguments as a list of strings.
             timeout: Maximum execution duration in seconds.
             env: Optional environment dictionary override.
+            cwd: Optional working directory for command execution.
+            sanitize: Whether to sanitize, strip ANSI escapes, and bound stdout/stderr.
 
         Returns:
             CommandResult containing exit code, stdout, stderr, and failure flags.

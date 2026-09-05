@@ -12,8 +12,10 @@ from cortexshift.domain.errors import (
     StateCorruptionError,
     UnsupportedSchemaVersionError,
 )
+from cortexshift.domain.git import GitSnapshot
 from cortexshift.domain.project import Project
 from cortexshift.domain.task import Task, TaskStatus
+from cortexshift.ports.repository import RepositorySnapshotStore
 from cortexshift.ports.state_store import StateStore
 
 
@@ -25,7 +27,7 @@ def _parse_utc_datetime(iso_str: str) -> datetime:
     return dt.astimezone(UTC)
 
 
-class SQLiteStateStore(StateStore):
+class SQLiteStateStore(StateStore, RepositorySnapshotStore):
     """SQLite-backed StateStore managing project-local canonical state."""
 
     def __init__(self, db_path: Path | str, auto_migrate: bool = True) -> None:
@@ -303,3 +305,113 @@ class SQLiteStateStore(StateStore):
             raise DatabaseStateError(
                 f"Failed to set active task '{task_id}' for project '{project_id}': {err}"
             ) from err
+
+    # --- Git Snapshot Operations ---
+
+    def save_snapshot(self, snapshot: GitSnapshot) -> None:
+        """Persist a canonical GitSnapshot record."""
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO git_snapshots (
+                        id, project_id, project_root, git_root, git_version,
+                        branch, head_sha, detached_head, dirty,
+                        staged_files, modified_files, untracked_files, conflicted_files,
+                        working_tree_diff_summary, staged_diff_summary,
+                        captured_at, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        snapshot.id,
+                        snapshot.project_id,
+                        snapshot.project_root,
+                        snapshot.git_root,
+                        snapshot.git_version,
+                        snapshot.branch,
+                        snapshot.head_sha,
+                        1 if snapshot.detached_head else 0,
+                        1 if snapshot.dirty else 0,
+                        json.dumps(snapshot.staged_files),
+                        json.dumps(snapshot.modified_files),
+                        json.dumps(snapshot.untracked_files),
+                        json.dumps(snapshot.conflicted_files),
+                        snapshot.working_tree_diff_summary,
+                        snapshot.staged_diff_summary,
+                        snapshot.captured_at.isoformat(),
+                        json.dumps(snapshot.metadata),
+                    ),
+                )
+        except sqlite3.IntegrityError as err:
+            raise DatabaseStateError(
+                f"Failed to persist Git snapshot '{snapshot.id}': {err}"
+            ) from err
+        except sqlite3.Error as err:
+            raise DatabaseStateError(f"Failed to save Git snapshot '{snapshot.id}': {err}") from err
+
+    def get_snapshot(self, snapshot_id: str) -> GitSnapshot | None:
+        """Retrieve a GitSnapshot by its identifier."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, project_id, project_root, git_root, git_version,
+                       branch, head_sha, detached_head, dirty,
+                       staged_files, modified_files, untracked_files, conflicted_files,
+                       working_tree_diff_summary, staged_diff_summary,
+                       captured_at, metadata
+                FROM git_snapshots WHERE id = ?;
+                """,
+                (snapshot_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return self._row_to_snapshot(row)
+        except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
+            msg = f"Failed to retrieve snapshot '{snapshot_id}': {err}"
+            raise StateCorruptionError(msg) from err
+
+    def list_snapshots(self, project_id: str, limit: int = 10) -> list[GitSnapshot]:
+        """List snapshots for a given project, ordered newest first."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, project_id, project_root, git_root, git_version,
+                       branch, head_sha, detached_head, dirty,
+                       staged_files, modified_files, untracked_files, conflicted_files,
+                       working_tree_diff_summary, staged_diff_summary,
+                       captured_at, metadata
+                FROM git_snapshots WHERE project_id = ?
+                ORDER BY captured_at DESC
+                LIMIT ?;
+                """,
+                (project_id, max(1, limit)),
+            )
+            return [self._row_to_snapshot(row) for row in cursor.fetchall()]
+        except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
+            msg = f"Failed to list snapshots for project '{project_id}': {err}"
+            raise StateCorruptionError(msg) from err
+
+    def _row_to_snapshot(self, row: sqlite3.Row) -> GitSnapshot:
+        """Convert a database row into a GitSnapshot domain entity."""
+        return GitSnapshot(
+            id=row["id"],
+            project_id=row["project_id"],
+            project_root=row["project_root"],
+            git_root=row["git_root"],
+            git_version=row["git_version"],
+            branch=row["branch"],
+            head_sha=row["head_sha"],
+            detached_head=bool(row["detached_head"]),
+            dirty=bool(row["dirty"]),
+            staged_files=json.loads(row["staged_files"]),
+            modified_files=json.loads(row["modified_files"]),
+            untracked_files=json.loads(row["untracked_files"]),
+            conflicted_files=json.loads(row["conflicted_files"]),
+            working_tree_diff_summary=row["working_tree_diff_summary"],
+            staged_diff_summary=row["staged_diff_summary"],
+            captured_at=_parse_utc_datetime(row["captured_at"]),
+            metadata=json.loads(row["metadata"]),
+        )

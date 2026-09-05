@@ -223,7 +223,7 @@ class TestGitSnapshotModel:
     """Tests for the GitSnapshot domain model."""
 
     def test_git_snapshot_creation(self) -> None:
-        snapshot = GitSnapshot(
+        snapshot = GitSnapshot(  # type: ignore[call-arg]
             repo_path="/Users/developer/project",
             branch="feature/handoff",
             head_sha="a1b2c3d4e5f6",
@@ -241,7 +241,7 @@ class TestGitSnapshotModel:
         assert snapshot.snapshot_at.tzinfo == UTC
 
     def test_git_snapshot_serialization_roundtrip(self) -> None:
-        snapshot = GitSnapshot(
+        snapshot = GitSnapshot(  # type: ignore[call-arg]
             repo_path="/repo",
             is_dirty=False,
         )
@@ -306,10 +306,12 @@ class TestHandoffModel:
 
     def test_handoff_canonical_fields(self) -> None:
         git_snap = GitSnapshot(
-            repo_path="/path/to/repo",
+            project_id="proj_xyz",
+            project_root="/path/to/repo",
+            git_root="/path/to/repo",
             branch="main",
             head_sha="abcdef123456",
-            is_dirty=False,
+            dirty=False,
         )
         handoff = Handoff(
             task_id="task_xyz",

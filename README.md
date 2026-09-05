@@ -42,9 +42,17 @@ Claude Code      Codex        Antigravity
 ## Status: Pre-Alpha
 
 > [!NOTE]
-> CortexShift is currently in **Phase 2 (Persistent Project & Task State)**. It provides durable project-local task persistence and native provider discovery, but does not yet launch agents or switch tasks.
+> CortexShift is currently in **Phase 3 (Git Context & Repository Awareness)**. It provides read-only repository inspection, working tree status parsing, durable Git snapshots, project-local task persistence, and native provider discovery, but does not yet launch agents or switch tasks.
 
-### What Works Today (Phase 2)
+### What Works Today (Phase 3)
+- **Git Context & Repository Awareness (Phase 3)**:
+  - Safe, strictly read-only repository inspection using native `git` CLI subprocesses with bounded timeouts and sanitized execution environments (`GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_OPTIONAL_LOCKS=0`).
+  - NUL-safe (`-z`) porcelain v1 parser handling spaces, unicode, renames, conflicts, and untracked files.
+  - Automatic path scoping for monorepo setups (resolving paths relative to project root) and exclusion of `.cortexshift/` internal state.
+  - Detection of branch, commit SHA, dirty state, detached HEAD, unborn (0 commits) repositories, and diff shortstat summaries.
+  - Persistent repository snapshots stored in SQLite schema v2 (`git_snapshots` table) across process restarts.
+  - CLI commands: `cortexshift repo status`, `cortexshift repo snapshot`, `cortexshift repo snapshots`, `cortexshift repo show <id>`, with human formatting and machine-readable `--json` flags.
+  - Graceful non-blocking fallback (exit code 0) when Git is not installed or when executed in non-Git directories.
 - **Persistent Project & Task State (Phase 2)**:
   - Initialize project-local state area (`.cortexshift/state.sqlite3`) via `cortexshift init`.
   - Persist canonical project identity, root path, and metadata.
@@ -63,11 +71,10 @@ Claude Code      Codex        Antigravity
   - Core domain models (`Project`, `Task`, `Session`, `Checkpoint`, `Handoff`, `GitSnapshot`).
   - Strict abstract ports (`CommandRunner`, `ProviderDiscoveryPort`, `ProviderAdapter`, `RepositoryInspector`, `StateStore`).
   - Multi-agent development contract ([`AGENTS.md`](AGENTS.md)).
-  - Architecture specifications, ADRs ([`ADR-0001`](docs/decisions/ADR-0001-core-architecture.md), [`ADR-0002`](docs/decisions/ADR-0002-safe-provider-discovery.md), [`ADR-0003`](docs/decisions/ADR-0003-project-local-persistence.md)).
+  - Architecture specifications, ADRs ([`ADR-0001`](docs/decisions/ADR-0001-core-architecture.md), [`ADR-0002`](docs/decisions/ADR-0002-safe-provider-discovery.md), [`ADR-0003`](docs/decisions/ADR-0003-project-local-persistence.md), [`ADR-0004`](docs/decisions/ADR-0004-git-repository-context.md)).
   - 100% type-checked code via strict `mypy`, formatted via `ruff`, with comprehensive unit and integration tests.
 
 ### What Does NOT Work Yet
-- ✗ Git context capture, diff analysis, and repository snapshots (planned for Phase 3).
 - ✗ Launching coding agents in interactive or headless modes (planned for Phase 4).
 - ✗ Agent switching or executing multi-agent workflows (`cortexshift switch`) (planned for Phase 5).
 - ✗ Automatic context handoffs between agents (planned for Phase 5).
@@ -180,6 +187,22 @@ uv run cortexshift task show --json
 
 # Mark active task completed
 uv run cortexshift task complete
+
+# Inspect live Git repository status (Phase 3)
+uv run cortexshift repo status
+uv run cortexshift repo status --json
+
+# Capture and persist a repository snapshot
+uv run cortexshift repo snapshot
+uv run cortexshift repo snapshot --json
+
+# List historical snapshots
+uv run cortexshift repo snapshots
+uv run cortexshift repo snapshots --limit 5
+
+# Show specific snapshot details
+uv run cortexshift repo show snap_<id>
+uv run cortexshift repo show snap_<id> --json
 ```
 
 ### Running Tests and Quality Checks

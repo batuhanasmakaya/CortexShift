@@ -10,17 +10,23 @@ from cortexshift.domain.doctor import (
 from cortexshift.domain.errors import (
     CortexShiftError,
     DatabaseStateError,
+    GitNotInstalledError,
+    GitProbeError,
+    GitProbeTimeoutError,
     NoActiveTaskError,
+    NotAGitRepositoryError,
     ProjectAlreadyInitializedError,
     ProjectConflictError,
     ProjectNotInitializedError,
+    RepositoryInspectionError,
+    SnapshotNotFoundError,
     StateCorruptionError,
     TaskAlreadyCompletedError,
     TaskNotActivatableError,
     TaskNotFoundError,
     UnsupportedSchemaVersionError,
 )
-from cortexshift.domain.git import GitSnapshot
+from cortexshift.domain.git import GitSnapshot, RepositoryInspection, RepositoryInspectionStatus
 from cortexshift.domain.handoff import Handoff
 from cortexshift.domain.identifiers import generate_id, utc_now
 from cortexshift.domain.project import Project
@@ -42,9 +48,13 @@ __all__ = [
     "CortexShiftError",
     "DatabaseStateError",
     "DoctorReport",
+    "GitNotInstalledError",
+    "GitProbeError",
+    "GitProbeTimeoutError",
     "GitSnapshot",
     "Handoff",
     "NoActiveTaskError",
+    "NotAGitRepositoryError",
     "PlatformInfo",
     "ProgressSummary",
     "Project",
@@ -55,9 +65,13 @@ __all__ = [
     "ProviderCapabilities",
     "ProviderDiagnostic",
     "ProviderId",
+    "RepositoryInspection",
+    "RepositoryInspectionError",
+    "RepositoryInspectionStatus",
     "Session",
     "SessionExitReason",
     "SessionStatus",
+    "SnapshotNotFoundError",
     "StateCorruptionError",
     "Task",
     "TaskAlreadyCompletedError",

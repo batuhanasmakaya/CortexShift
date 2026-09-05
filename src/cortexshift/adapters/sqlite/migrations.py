@@ -7,7 +7,7 @@ from collections.abc import Callable
 from cortexshift.domain.errors import DatabaseStateError, UnsupportedSchemaVersionError
 from cortexshift.domain.identifiers import utc_now
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 def _migrate_v1(conn: sqlite3.Connection) -> None:
@@ -54,9 +54,41 @@ def _migrate_v1(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v2(conn: sqlite3.Connection) -> None:
+    """Apply Schema Version 2: Git snapshots table for repository context tracking."""
+    conn.execute(
+        """
+        CREATE TABLE git_snapshots (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            project_root TEXT NOT NULL,
+            git_root TEXT NOT NULL,
+            git_version TEXT,
+            branch TEXT,
+            head_sha TEXT,
+            detached_head INTEGER NOT NULL DEFAULT 0,
+            dirty INTEGER NOT NULL DEFAULT 0,
+            staged_files TEXT NOT NULL,
+            modified_files TEXT NOT NULL,
+            untracked_files TEXT NOT NULL,
+            conflicted_files TEXT NOT NULL,
+            working_tree_diff_summary TEXT,
+            staged_diff_summary TEXT,
+            captured_at TEXT NOT NULL,
+            metadata TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute("CREATE INDEX idx_git_snapshots_project_id ON git_snapshots(project_id);")
+    conn.execute(
+        "CREATE INDEX idx_git_snapshots_captured_at ON git_snapshots(project_id, captured_at DESC);"
+    )
+
+
 # Ordered registry of migration functions: index 0 is v1, index 1 is v2, etc.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1,
+    _migrate_v2,
 ]
 
 

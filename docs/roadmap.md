@@ -12,7 +12,7 @@ Each phase builds systematically upon the previous phase without premature compl
 Phase 0  ──▶  Phase 1  ──▶  Phase 2  ──▶  Phase 3  ──▶  Phase 4  ──▶  Phase 5
 Foundation    Provider      Task State    Git Context   Native        Manual
 & Arch        Discovery     & SQLite                    Launch        Handoff
-(Complete)    (Complete)    (Complete)    (Next)
+(Complete)    (Complete)    (Complete)    (Complete)    (Next)
 
 Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
 Native        Checkpoints   MCP Server    TUI           Public        Experimental
@@ -68,14 +68,19 @@ Introduce durable local persistence, schema migrations, and complete task lifecy
 
 ---
 
-## Phase 3 — Git Context
+## Phase 3 — Git Context & Repository Awareness *(Completed)*
 
-Connect live Git repositories to CortexShift's context engine.
+Connect live Git repositories to CortexShift's context engine with read-only inspection and persistent snapshot history.
 
-- **Goals**:
-  - Implement `RepositoryInspector` adapter using local `git` CLI subprocesses.
-  - Capture branch, HEAD SHA, status, staged/unstaged diffs, and untracked files.
-  - Generate clean diff statistics for inclusion in checkpoints.
+- **Deliverables**:
+  - Safe, strictly read-only repository inspection using native `git` CLI subprocesses with bounded timeouts and sanitized execution environments (`GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_OPTIONAL_LOCKS=0`).
+  - NUL-safe (`-z`) porcelain v1 parser handling spaces, unicode, renames, conflicts, and untracked files.
+  - Automatic path scoping for monorepo setups (resolving paths relative to project root) and exclusion of `.cortexshift/` internal state.
+  - Branch, commit SHA, dirty state, detached HEAD, and unborn (0 commits) repository detection.
+  - Persistent repository snapshots stored in SQLite schema v2 (`git_snapshots` table) across process restarts.
+  - CLI command group `cortexshift repo` (`status`, `snapshot`, `snapshots`, `show`) with human formatting and machine-readable `--json` output.
+  - Graceful non-blocking fallback (exit code 0) when Git is not installed or when executed in non-Git directories.
+  - ADR-0004 documentation and comprehensive unit/integration test suite.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Tests for abstract port protocols."""
+from pathlib import Path
 
 from cortexshift.domain import (
     PROVIDER_CLAUDE,
@@ -7,9 +7,16 @@ from cortexshift.domain import (
     Project,
     ProviderCapabilities,
     ProviderId,
+    RepositoryInspection,
+    RepositoryInspectionStatus,
     Task,
 )
-from cortexshift.ports import ProviderAdapter, RepositoryInspector, StateStore
+from cortexshift.ports import (
+    ProviderAdapter,
+    RepositoryInspector,
+    RepositorySnapshotStore,
+    StateStore,
+)
 
 
 class DummyProviderAdapter:
@@ -41,14 +48,30 @@ class DummyProviderAdapter:
 class DummyRepositoryInspector:
     """Mock implementation verifying RepositoryInspector protocol compliance."""
 
-    def get_snapshot(self, repo_path: str) -> GitSnapshot:
-        return GitSnapshot(repo_path=repo_path, is_dirty=False)
+    def inspect(self, project_root: Path | str, project_id: str = "") -> RepositoryInspection:
+        return RepositoryInspection(
+            status=RepositoryInspectionStatus.READY,
+            project_root=str(project_root),
+            git_available=True,
+            snapshot=GitSnapshot(
+                project_id=project_id or "proj_123",
+                project_root=str(project_root),
+                git_root=str(project_root),
+            ),
+        )
 
-    def is_clean(self, repo_path: str) -> bool:
-        return True
 
-    def get_diff_summary(self, repo_path: str) -> str:
-        return "Clean working tree"
+class DummyRepositorySnapshotStore:
+    """Mock implementation verifying RepositorySnapshotStore protocol compliance."""
+
+    def save_snapshot(self, snapshot: GitSnapshot) -> None:
+        pass
+
+    def get_snapshot(self, snapshot_id: str) -> GitSnapshot | None:
+        return None
+
+    def list_snapshots(self, project_id: str, limit: int = 10) -> list[GitSnapshot]:
+        return []
 
 
 class DummyStateStore:
@@ -93,9 +116,18 @@ def test_provider_adapter_protocol() -> None:
 def test_repository_inspector_protocol() -> None:
     inspector = DummyRepositoryInspector()
     assert isinstance(inspector, RepositoryInspector)
-    snapshot = inspector.get_snapshot("/fake/path")
-    assert snapshot.repo_path == "/fake/path"
-    assert inspector.is_clean("/fake/path") is True
+    inspection = inspector.inspect("/fake/path", "proj_1")
+    assert inspection.status == RepositoryInspectionStatus.READY
+    assert inspection.is_ready is True
+    assert inspection.snapshot is not None
+    assert inspection.snapshot.project_root == "/fake/path"
+
+
+def test_repository_snapshot_store_protocol() -> None:
+    store = DummyRepositorySnapshotStore()
+    assert isinstance(store, RepositorySnapshotStore)
+    assert store.get_snapshot("snap_1") is None
+    assert store.list_snapshots("proj_1") == []
 
 
 def test_state_store_protocol() -> None:

@@ -58,7 +58,7 @@ Every handoff package contains the following 14 sections:
 Incoming agents must never blindly trust handoff declarations. For example:
 - If `TEST STATUS` claims *"All tests pass"*, the receiving agent must independently run the test suite before writing new code.
 - If `COMPLETED` claims *"Feature X is implemented"*, the receiving agent must inspect the corresponding code file to confirm its structure and quality.
-- If `GIT STATE` claims clean working tree, the agent verifies with `git status`.
+- If `GIT STATE` contains a stored `GitSnapshot`, the receiving agent must recognize it as an immutable historical record of what was true at capture time. It is never proof of current working tree reality. The agent must independently inspect live reality with `git status` before mutating the workspace.
 
 Every handoff prompt injected into a receiving agent concludes with this mandatory directive:
 ```text

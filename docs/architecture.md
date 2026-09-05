@@ -185,16 +185,6 @@ Native Executables (PATH / OS Subprocess)
 
 ---
 
-## 8. Checkpoints & Resilient Recovery
-
-AI coding sessions terminate abruptly due to rate limits, context exhaustion, network timeouts, or user interruptions. Waiting for an agent to generate an exit handoff is unreliable.
-
-CortexShift's checkpointing model guarantees recovery:
-- **Canonical Structure**: Every checkpoint captures `DONE`, `CURRENT`, `NEXT`, `DECISIONS`, `ISSUES`, `FILES`, and `TESTS`.
-- **Unexpected Exit Recovery**: When an agent exits prematurely without generating a final handoff, CortexShift synthesizes an emergency handoff package from the latest valid checkpoint and the current Git status.
-
----
-
 ## 8. Persistence Architecture (Phase 2)
 
 Phase 2 introduces durable, project-local persistence for CortexShift projects, tasks, and runtime states using a lightweight SQLite database.
@@ -235,7 +225,62 @@ SQLiteStateStore (Adapters)
 
 ---
 
-## 9. What is Explicitly Out of Scope for Initial Phases
+## 9. Repository Awareness & Git Context (Phase 3)
+
+Phase 3 connects live Git repository inspection and snapshot persistence to CortexShift's context engine, providing an empirical source of development truth.
+
+```text
+CLI (`cortexshift repo status`, `snapshot`, `snapshots`, `show`)
+ │
+ ▼
+RepositoryService (Application)
+ │
+ ├── Live Inspection Flow:
+ │    │
+ │    ▼
+ │   RepositoryInspector Port
+ │    │ (implemented by)
+ │   GitRepositoryInspector (Adapters)
+ │    │ (native git CLI, sanitized env, 10s timeouts)
+ │    ▼
+ │   Native Git Subprocess (`git status -z`, `git diff --shortstat`, etc.)
+ │    │
+ │    ▼
+ │   parse_porcelain_status (pure NUL-safe parser, monorepo scoping, .cortexshift/ exclusion)
+ │
+ └── Persistence Flow:
+      │
+      ▼
+     RepositorySnapshotStore Port
+      │ (implemented by)
+     SQLiteStateStore (Adapters)
+      │ (schema v2 `git_snapshots`, foreign keys, query indexes)
+      ▼
+     .cortexshift/state.sqlite3
+```
+
+### Git Inspection Invariants & Design Principles:
+- **Native-Agent-First & Read-Only**: CortexShift invokes the host's native `git` executable via `CommandRunner`. All Git interactions are strictly read-only and non-mutating (`git status`, `git branch`, `git rev-parse`, `git diff --shortstat`). CortexShift never stages, commits, resets, or cleans files.
+- **Sanitized Execution Environment**: Subprocesses run with `GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, and `GIT_OPTIONAL_LOCKS=0` to prevent interactive credential hangs, terminal pagers, or background lock contentions.
+- **NUL-Delimited Porcelain Status**: Parses `git status --porcelain=v1 -z --untracked-files=all` using pure string parsing. NUL (`\0`) separation guarantees deterministic handling of filenames containing spaces, quotes, newlines, and Unicode characters. Renames (`R dest\0orig\0`) and conflicts are cleanly parsed.
+- **Monorepo & Project Scoping**: Translates Git paths relative to the CortexShift project root. Changes outside the project are filtered out.
+- **Private State Exclusion**: The parser automatically excludes `.cortexshift/` runtime state so SQLite databases are never reported as untracked files.
+- **Historical Observation Semantics**: Stored `GitSnapshot` records in SQLite schema v2 (`git_snapshots`) are immutable records of state at capture time. Live repository inspection outranks stored snapshots in the truth hierarchy.
+- **Graceful Degradation**: If Git is not installed or the directory is not a Git repository, `cortexshift repo status` exits cleanly (exit code 0) with diagnostic output.
+
+---
+
+## 10. Checkpoints & Resilient Recovery
+
+AI coding sessions terminate abruptly due to rate limits, context exhaustion, network timeouts, or user interruptions. Waiting for an agent to generate an exit handoff is unreliable.
+
+CortexShift's checkpointing model guarantees recovery:
+- **Canonical Structure**: Every checkpoint captures `DONE`, `CURRENT`, `NEXT`, `DECISIONS`, `ISSUES`, `FILES`, and `TESTS`.
+- **Unexpected Exit Recovery**: When an agent exits prematurely without generating a final handoff, CortexShift synthesizes an emergency handoff package from the latest valid checkpoint and the current Git status.
+
+---
+
+## 11. What is Explicitly Out of Scope for Initial Phases
 
 To maintain strict engineering focus, the following are explicitly out of scope for Phase 0 and initial milestones:
 - Parallel multi-agent editing

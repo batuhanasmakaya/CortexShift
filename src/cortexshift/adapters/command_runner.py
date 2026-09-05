@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 from collections.abc import Mapping
+from pathlib import Path
 
 from cortexshift.ports.command_runner import CommandResult, CommandRunner
 
@@ -41,6 +42,8 @@ class SubprocessCommandRunner(CommandRunner):
         command: list[str],
         timeout: float | None = None,
         env: dict[str, str] | None = None,
+        cwd: Path | str | None = None,
+        sanitize: bool = True,
     ) -> CommandResult:
         if not command:
             return CommandResult(
@@ -56,6 +59,8 @@ class SubprocessCommandRunner(CommandRunner):
         if env is not None:
             eff_env = {**os.environ, **env}
 
+        cwd_path = str(cwd) if cwd is not None else None
+
         try:
             completed = subprocess.run(
                 command,
@@ -64,13 +69,16 @@ class SubprocessCommandRunner(CommandRunner):
                 timeout=eff_timeout,
                 shell=False,
                 env=eff_env,
+                cwd=cwd_path,
                 check=False,
             )
+            stdout = _sanitize_output(completed.stdout) if sanitize else completed.stdout
+            stderr = _sanitize_output(completed.stderr) if sanitize else completed.stderr
             return CommandResult(
                 command=command,
                 exit_code=completed.returncode,
-                stdout=_sanitize_output(completed.stdout),
-                stderr=_sanitize_output(completed.stderr),
+                stdout=stdout,
+                stderr=stderr,
             )
         except subprocess.TimeoutExpired:
             return CommandResult(

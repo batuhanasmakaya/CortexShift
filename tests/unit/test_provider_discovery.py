@@ -1,5 +1,7 @@
 """Unit tests for native provider probes and discovery adapter."""
 
+from pathlib import Path
+
 from cortexshift.adapters.discovery import BuiltinProviderDiscovery
 from cortexshift.adapters.providers.antigravity import AntigravityProviderProbe
 from cortexshift.adapters.providers.claude import ClaudeProviderProbe
@@ -26,6 +28,8 @@ class FakeCommandRunner(CommandRunner):
         command: list[str],
         timeout: float = 5.0,
         env: dict[str, str] | None = None,
+        cwd: Path | str | None = None,
+        sanitize: bool = True,
     ) -> CommandResult:
         self.executed_commands.append(command)
         key = tuple(command)

@@ -30,6 +30,8 @@ Every agent working on CortexShift must preserve the following architectural inv
 6. **Local-First & Zero Telemetry**: Core functionality must run locally without cloud dependencies, mandatory hosted backends, external databases, or telemetry.
 7. **Zero Credential Storage**: CortexShift MUST NEVER capture, store, or manage provider API keys or auth tokens. Authentication is strictly delegated to each provider's native CLI.
 8. **Structured Canonical State over Transcripts**: Context handoff uses distilled structured state (objective, requirements, decisions, touched files, test status). Transcript capture is disabled by default (`capture_transcripts = false`).
+9. **Git Snapshot Authority vs. Reality**: Stored `GitSnapshot` records are immutable historical observations of what was true at capture time. They are never proof of current working tree reality once subsequent changes occur. Live inspection via `git status` outranks any stored snapshot.
+10. **Strictly Read-Only Git Execution**: CortexShift's repository inspection must never mutate the repository's version control state. All repository inspection commands (`git status`, `git branch`, `git rev-parse`, `git diff --shortstat`) must be strictly read-only (no `git add`, `git commit`, `git checkout`, `git reset`, `git clean`, etc.).
 
 ---
 

@@ -74,3 +74,46 @@ class StateCorruptionError(DatabaseStateError):
     def __init__(self, detail: str) -> None:
         super().__init__(f"CortexShift state could not be opened: {detail}")
         self.detail = detail
+
+
+class RepositoryInspectionError(CortexShiftError):
+    """Base exception for repository inspection failures."""
+
+
+class GitNotInstalledError(RepositoryInspectionError):
+    """Raised when Git is required but not installed or found in PATH."""
+
+    def __init__(self, message: str = "Git executable was not found in PATH.") -> None:
+        super().__init__(message)
+
+
+class NotAGitRepositoryError(RepositoryInspectionError):
+    """Raised when the project is not inside a Git repository."""
+
+    def __init__(
+        self,
+        message: str = "This CortexShift project is not inside a Git repository.",
+    ) -> None:
+        super().__init__(message)
+
+
+class GitProbeTimeoutError(RepositoryInspectionError):
+    """Raised when a Git command times out during inspection."""
+
+    def __init__(self, message: str = "Git inspection timed out.") -> None:
+        super().__init__(message)
+
+
+class GitProbeError(RepositoryInspectionError):
+    """Raised when a Git inspection command fails unexpectedly."""
+
+    def __init__(self, message: str = "Git repository inspection failed.") -> None:
+        super().__init__(message)
+
+
+class SnapshotNotFoundError(CortexShiftError):
+    """Raised when a repository snapshot with the specified identifier cannot be found."""
+
+    def __init__(self, snapshot_id: str) -> None:
+        super().__init__(f"Snapshot '{snapshot_id}' was not found.")
+        self.snapshot_id = snapshot_id

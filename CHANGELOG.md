@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 3: Git Context & Repository Awareness**:
+  - Pure NUL-safe (`-z`) porcelain v1 parser (`parse_porcelain_status`) handling spaces, unicode, renames, conflicts, untracked files, and excluding `.cortexshift/` internal state.
+  - Native `git` CLI repository inspector adapter (`GitRepositoryInspector`) adhering to strictly read-only execution with sanitized environment (`GIT_TERMINAL_PROMPT=0`, `GIT_PAGER=cat`, `GIT_OPTIONAL_LOCKS=0`) and 10s timeouts.
+  - Monorepo and nested project path scoping, translating Git repository paths relative to project root.
+  - Comprehensive status detection: branch, commit SHA, dirty state, detached HEAD, unborn (0 commits) repositories, and diff shortstat summaries.
+  - Domain models `GitSnapshot`, `RepositoryInspection`, `RepositoryInspectionStatus` and domain error hierarchy (`RepositoryInspectionError`, `GitNotInstalledError`, `NotAGitRepositoryError`, `GitProbeTimeoutError`, `GitProbeError`, `SnapshotNotFoundError`).
+  - Abstract ports `RepositoryInspector` and `RepositorySnapshotStore`.
+  - SQLite schema migration v2 adding `git_snapshots` table with foreign key to `projects(id)` and query indexes.
+  - Persistent snapshot storage in `SQLiteStateStore` implementing `RepositorySnapshotStore`.
+  - Application layer `RepositoryService` orchestrating live inspection and persistent snapshot workflows.
+  - CLI command suite `cortexshift repo` with subcommands `status`, `snapshot`, `snapshots`, `show` supporting human output and machine-readable `--json`.
+  - Safe, non-blocking fallback (exit code 0) for environments without Git or non-Git projects on `cortexshift repo status`.
+  - Architectural Decision Record `ADR-0004-git-repository-context.md`.
+  - Automated unit and integration test suite with 100% type safety and zero external Git dependencies.
+
 - **Phase 2: Persistent Project & Task State**:
   - Project-local runtime directory `.cortexshift/` with SQLite persistence (`state.sqlite3`).
   - Standard-library `sqlite3` adapter (`SQLiteStateStore`) with WAL mode, foreign key enforcement, and busy timeouts without third-party ORMs.

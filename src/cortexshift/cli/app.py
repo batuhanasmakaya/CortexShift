@@ -8,6 +8,7 @@ from typing import Annotated
 import typer
 from rich import box
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from cortexshift import __version__
@@ -15,6 +16,7 @@ from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.doctor import DoctorService, UnknownProviderError
 from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.application.locator import DATABASE_FILE_NAME, STATE_DIR_NAME, ProjectLocator
+from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.task_service import TaskService
 from cortexshift.domain.doctor import AuthenticationStatus, DoctorReport
@@ -24,11 +26,16 @@ from cortexshift.domain.errors import (
     NoActiveTaskError,
     ProjectConflictError,
     ProjectNotInitializedError,
+    RepositoryInspectionError,
+    SnapshotNotFoundError,
     StateCorruptionError,
     TaskAlreadyCompletedError,
     TaskNotActivatableError,
     TaskNotFoundError,
     UnsupportedSchemaVersionError,
+)
+from cortexshift.domain.git import (
+    RepositoryInspectionStatus,
 )
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import ProviderId
@@ -50,6 +57,13 @@ task_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(task_app, name="task")
+
+repo_app = typer.Typer(
+    name="repo",
+    help="Inspect and snapshot Git repository state.",
+    no_args_is_help=True,
+)
+app.add_typer(repo_app, name="repo")
 
 
 def print_version() -> None:
@@ -73,6 +87,8 @@ def _handle_error(err: Exception) -> None:
             UnsupportedSchemaVersionError,
             StateCorruptionError,
             DatabaseStateError,
+            RepositoryInspectionError,
+            SnapshotNotFoundError,
         ),
     ):
         err_console.print(f"[red]Error:[/red] {err}")
@@ -738,6 +754,299 @@ def task_update_cmd(
         return
 
     console.print(f"Updated task {task.id}")
+
+
+# --- Repository CLI Commands ---
+
+
+def _format_safe_path(path: str) -> str:
+    """Safely escape paths for terminal display avoiding ANSI/control code injection."""
+    sanitized = "".join(c if (c >= " " and c != "\x7f") else f"\\x{ord(c):02x}" for c in path)
+    return escape(sanitized)
+
+
+def _render_file_list(title: str, files: list[str], max_display: int = 20) -> None:
+    """Render a bounded list of files in human-readable output."""
+    if not files:
+        return
+    console.print(f"  [bold]{title}[/bold] ({len(files)}):")
+    for f in files[:max_display]:
+        console.print(f"    {_format_safe_path(f)}")
+    if len(files) > max_display:
+        console.print(f"    [dim]... and {len(files) - max_display} more[/dim]")
+
+
+def _format_repo_path(path_str: str, project_root_str: str) -> str:
+    """Display project and git paths compactly avoiding unnecessary absolute home paths."""
+    try:
+        p = Path(path_str).resolve()
+        proj = Path(project_root_str).resolve()
+        if p == proj:
+            return "."
+        if proj.is_relative_to(p):
+            rel = ".."
+            cur = proj.parent
+            while cur != p and cur != cur.parent:
+                rel += "/.."
+                cur = cur.parent
+            return rel
+        return str(p)
+    except Exception:
+        return path_str
+
+
+@repo_app.command("status")
+def repo_status(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output repository inspection in JSON format."),
+    ] = False,
+) -> None:
+    """Inspect the live repository state and changed files."""
+    try:
+        service = RepositoryService()
+        inspection = service.inspect_repository()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(inspection.model_dump_json(indent=2) + "\n")
+        return
+
+    if inspection.status == RepositoryInspectionStatus.GIT_NOT_INSTALLED:
+        console.print("\n[bold]Repository[/bold]\n")
+        console.print("[yellow]Git executable was not found in PATH.[/yellow]\n")
+        return
+
+    if inspection.status == RepositoryInspectionStatus.NOT_GIT_REPOSITORY:
+        console.print("\n[bold]Repository[/bold]\n")
+        console.print(
+            "Git is available, but this CortexShift project is not inside a Git repository.\n"
+        )
+        return
+
+    if inspection.status == RepositoryInspectionStatus.PROBE_ERROR:
+        console.print("\n[bold]Repository[/bold]\n")
+        console.print(
+            f"[red]{inspection.diagnostic or 'Git repository inspection failed.'}[/red]\n"
+        )
+        return
+
+    snapshot = inspection.snapshot
+    if snapshot is None:
+        console.print("\n[bold]Repository[/bold]\n")
+        console.print("[yellow]No repository information available.[/yellow]\n")
+        return
+
+    console.print("\n[bold]Repository[/bold]\n")
+
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+
+    if snapshot.git_version:
+        grid.add_row("Git", snapshot.git_version)
+
+    git_root_display = _format_repo_path(snapshot.git_root, snapshot.project_root)
+    grid.add_row("Root", git_root_display)
+    grid.add_row("Branch", snapshot.branch if snapshot.branch else "[dim](none / detached)[/dim]")
+    grid.add_row("HEAD", snapshot.head_sha[:8] if snapshot.head_sha else "[dim](unborn)[/dim]")
+    state_display = "[yellow]Dirty[/yellow]" if snapshot.dirty else "[green]Clean[/green]"
+    grid.add_row("State", state_display)
+    console.print(grid)
+
+    console.print("\n[bold]Changes[/bold]")
+    ch_grid = Table.grid(padding=(0, 2))
+    ch_grid.add_column(style="dim", justify="left")
+    ch_grid.add_column(style="default", justify="left")
+    ch_grid.add_row("  Staged", str(len(snapshot.staged_files)))
+    ch_grid.add_row("  Modified", str(len(snapshot.modified_files)))
+    ch_grid.add_row("  Untracked", str(len(snapshot.untracked_files)))
+    ch_grid.add_row("  Conflicted", str(len(snapshot.conflicted_files)))
+    console.print(ch_grid)
+
+    if snapshot.working_tree_diff_summary:
+        console.print(f"\n[bold]Working tree[/bold]\n  {snapshot.working_tree_diff_summary}")
+    if snapshot.staged_diff_summary:
+        console.print(f"\n[bold]Staged[/bold]\n  {snapshot.staged_diff_summary}")
+
+    if snapshot.staged_files:
+        console.print()
+        _render_file_list("Staged", snapshot.staged_files)
+    if snapshot.modified_files:
+        console.print()
+        _render_file_list("Modified", snapshot.modified_files)
+    if snapshot.untracked_files:
+        console.print()
+        _render_file_list("Untracked", snapshot.untracked_files)
+    if snapshot.conflicted_files:
+        console.print()
+        _render_file_list("Conflicted", snapshot.conflicted_files)
+
+    console.print()
+
+
+@repo_app.command("snapshot")
+def repo_snapshot(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output persisted snapshot in JSON format."),
+    ] = False,
+) -> None:
+    """Capture and persist a point-in-time Git repository snapshot."""
+    try:
+        service = RepositoryService()
+        snapshot = service.capture_snapshot()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(snapshot.model_dump_json(indent=2) + "\n")
+        return
+
+    console.print("\n[bold green]Repository snapshot captured[/bold green]\n")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+
+    total_changed = (
+        len(snapshot.staged_files)
+        + len(snapshot.modified_files)
+        + len(snapshot.untracked_files)
+        + len(snapshot.conflicted_files)
+    )
+
+    grid.add_row("Snapshot", snapshot.id)
+    grid.add_row("Branch", snapshot.branch if snapshot.branch else "[dim](none / detached)[/dim]")
+    grid.add_row("HEAD", snapshot.head_sha[:8] if snapshot.head_sha else "[dim](unborn)[/dim]")
+    grid.add_row("State", "[yellow]Dirty[/yellow]" if snapshot.dirty else "[green]Clean[/green]")
+    grid.add_row("Changed", f"{total_changed} files" if total_changed > 0 else "[dim]Clean[/dim]")
+    console.print(grid)
+    console.print()
+
+
+@repo_app.command("snapshots")
+def repo_snapshots(
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-n", help="Maximum number of snapshots to display."),
+    ] = 10,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output snapshot list in JSON format."),
+    ] = False,
+) -> None:
+    """List historical repository snapshots."""
+    try:
+        service = RepositoryService()
+        snapshots = service.list_snapshots(limit=limit)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(
+            json.dumps([snap.model_dump(mode="json") for snap in snapshots], indent=2) + "\n"
+        )
+        return
+
+    if not snapshots:
+        console.print("\n[dim]No repository snapshots captured yet.[/dim]\n")
+        return
+
+    table = Table(
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold cyan",
+        title="\nRepository Snapshots",
+    )
+    table.add_column("Snapshot ID", style="cyan")
+    table.add_column("Captured (UTC)", style="white")
+    table.add_column("Branch", style="white")
+    table.add_column("HEAD", style="dim")
+    table.add_column("Dirty", justify="center")
+
+    for s in snapshots:
+        head_disp = s.head_sha[:8] if s.head_sha else "-"
+        branch_disp = s.branch if s.branch else "(detached)"
+        dirty_disp = "[yellow]yes[/yellow]" if s.dirty else "[green]no[/green]"
+        captured_str = s.captured_at.strftime("%Y-%m-%d %H:%M:%S")
+        table.add_row(s.id, captured_str, branch_disp, head_disp, dirty_disp)
+
+    console.print(table)
+    console.print()
+
+
+@repo_app.command("show")
+def repo_show(
+    snapshot_id: Annotated[
+        str,
+        typer.Argument(help="Identifier of the snapshot to inspect."),
+    ],
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output snapshot details in JSON format."),
+    ] = False,
+) -> None:
+    """Display detailed information for a stored repository snapshot."""
+    try:
+        service = RepositoryService()
+        snapshot = service.get_snapshot(snapshot_id)
+        if snapshot is None:
+            raise SnapshotNotFoundError(snapshot_id)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(snapshot.model_dump_json(indent=2) + "\n")
+        return
+
+    console.print(f"\n[bold]Repository Snapshot: {snapshot.id}[/bold]\n")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+
+    grid.add_row("Captured (UTC)", snapshot.captured_at.strftime("%Y-%m-%d %H:%M:%S"))
+    if snapshot.git_version:
+        grid.add_row("Git Version", snapshot.git_version)
+    grid.add_row("Git Root", snapshot.git_root)
+    grid.add_row("Branch", snapshot.branch if snapshot.branch else "[dim](none / detached)[/dim]")
+    grid.add_row("HEAD", snapshot.head_sha if snapshot.head_sha else "[dim](unborn)[/dim]")
+    grid.add_row("State", "[yellow]Dirty[/yellow]" if snapshot.dirty else "[green]Clean[/green]")
+    console.print(grid)
+
+    console.print("\n[bold]Changes[/bold]")
+    ch_grid = Table.grid(padding=(0, 2))
+    ch_grid.add_column(style="dim", justify="left")
+    ch_grid.add_column(style="default", justify="left")
+    ch_grid.add_row("  Staged", str(len(snapshot.staged_files)))
+    ch_grid.add_row("  Modified", str(len(snapshot.modified_files)))
+    ch_grid.add_row("  Untracked", str(len(snapshot.untracked_files)))
+    ch_grid.add_row("  Conflicted", str(len(snapshot.conflicted_files)))
+    console.print(ch_grid)
+
+    if snapshot.working_tree_diff_summary:
+        console.print(f"\n[bold]Working tree[/bold]\n  {snapshot.working_tree_diff_summary}")
+    if snapshot.staged_diff_summary:
+        console.print(f"\n[bold]Staged[/bold]\n  {snapshot.staged_diff_summary}")
+
+    if snapshot.staged_files:
+        console.print()
+        _render_file_list("Staged", snapshot.staged_files)
+    if snapshot.modified_files:
+        console.print()
+        _render_file_list("Modified", snapshot.modified_files)
+    if snapshot.untracked_files:
+        console.print()
+        _render_file_list("Untracked", snapshot.untracked_files)
+    if snapshot.conflicted_files:
+        console.print()
+        _render_file_list("Conflicted", snapshot.conflicted_files)
+
+    console.print()
 
 
 if __name__ == "__main__":

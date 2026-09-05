@@ -78,7 +78,7 @@ def test_process_restart_persistence(tmp_path: Path) -> None:
     status_data = json.loads(status_res.stdout)
 
     assert status_data["name"] == "RestartTest"
-    assert status_data["schema_version"] == 1
+    assert status_data["schema_version"] == 2
     assert status_data["active_task"] is not None
     assert status_data["active_task"]["title"] == "Survive Restart"
     assert status_data["active_task"]["status"] == "in_progress"

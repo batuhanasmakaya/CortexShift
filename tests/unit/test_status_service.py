@@ -33,7 +33,7 @@ def test_status_without_active_task(tmp_path: Path) -> None:
 
     assert status.name == "IdleProj"
     assert status.active_task is None
-    assert status.schema_version == 1
+    assert status.schema_version == 2
 
 
 def test_status_with_active_task_and_progress(tmp_path: Path) -> None:

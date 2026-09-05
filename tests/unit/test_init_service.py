@@ -26,7 +26,7 @@ def test_fresh_initialization(tmp_path: Path) -> None:
         assert proj is not None
         assert proj.id == result.project.id
         assert proj.name == "TestProject"
-        assert store.get_schema_version() == 1
+        assert store.get_schema_version() == 2
 
 
 def test_initialization_defaults_name_to_directory_name(tmp_path: Path) -> None:

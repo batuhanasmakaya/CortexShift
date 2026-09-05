@@ -1,5 +1,6 @@
 """Unit tests for CommandRunner abstraction and SubprocessCommandRunner."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from cortexshift.adapters.command_runner import SubprocessCommandRunner, _sanitize_output
@@ -129,3 +130,24 @@ def test_subprocess_command_runner_with_custom_env() -> None:
         mock_run.assert_called_once()
         called_env = mock_run.call_args[1]["env"]
         assert called_env["MY_TEST_VAR"] == "val"
+
+
+def test_subprocess_command_runner_with_cwd(tmp_path: Path) -> None:
+    runner = SubprocessCommandRunner()
+    import sys
+
+    script = "import os; print(os.getcwd())"
+    result = runner.run([sys.executable, "-c", script], cwd=tmp_path)
+    assert result.success is True
+    assert Path(result.stdout).resolve() == tmp_path.resolve()
+
+
+def test_subprocess_command_runner_sanitize_false() -> None:
+    runner = SubprocessCommandRunner()
+    import sys
+
+    # Print raw NUL byte and spaces
+    script = "import sys; sys.stdout.write('  hello\\x00world  ')"
+    result = runner.run([sys.executable, "-c", script], sanitize=False)
+    assert result.success is True
+    assert result.stdout == "  hello\x00world  "

@@ -1,8 +1,9 @@
-"""Port defining repository and Git state inspection capabilities."""
+"""Port defining repository inspection and snapshot persistence capabilities."""
 
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from cortexshift.domain.git import GitSnapshot
+from cortexshift.domain.git import GitSnapshot, RepositoryInspection
 
 
 @runtime_checkable
@@ -13,21 +14,31 @@ class RepositoryInspector(Protocol):
     into core domain logic.
     """
 
-    def get_snapshot(self, repo_path: str) -> GitSnapshot:
-        """Capture a point-in-time Git snapshot of the repository.
+    def inspect(self, project_root: Path | str, project_id: str = "") -> RepositoryInspection:
+        """Inspect the repository and return a RepositoryInspection domain model.
 
         Args:
-            repo_path: Absolute path to the repository root directory.
+            project_root: Absolute path to the CortexShift project root directory.
+            project_id: Canonical identifier of the containing Project.
 
         Returns:
-            A populated GitSnapshot domain model.
+            A populated RepositoryInspection domain model.
         """
         ...
 
-    def is_clean(self, repo_path: str) -> bool:
-        """Return True if there are no untracked, modified, or staged files."""
+
+@runtime_checkable
+class RepositorySnapshotStore(Protocol):
+    """Abstract port for persisting and retrieving Git snapshots."""
+
+    def save_snapshot(self, snapshot: GitSnapshot) -> None:
+        """Persist a GitSnapshot."""
         ...
 
-    def get_diff_summary(self, repo_path: str) -> str:
-        """Return a concise summary or diff stat of changes in the working tree."""
+    def get_snapshot(self, snapshot_id: str) -> GitSnapshot | None:
+        """Retrieve a GitSnapshot by its unique identifier."""
+        ...
+
+    def list_snapshots(self, project_id: str, limit: int = 10) -> list[GitSnapshot]:
+        """List snapshots for a given project, ordered newest first."""
         ...
