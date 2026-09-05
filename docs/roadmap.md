@@ -1,0 +1,155 @@
+# CortexShift Product Roadmap
+
+This document outlines the phased development roadmap for **CortexShift**.
+
+Each phase builds systematically upon the previous phase without premature complexity. Architectural boundaries established in Phase 0 ensure that later phases can be added without rewriting the core domain.
+
+---
+
+## Phases Overview
+
+```text
+Phase 0  ──▶  Phase 1  ──▶  Phase 2  ──▶  Phase 3  ──▶  Phase 4  ──▶  Phase 5
+Foundation    Provider      Task State    Git Context   Native        Manual
+& Arch        Discovery     & SQLite                    Launch        Handoff
+(Current)
+
+Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
+Native        Checkpoints   MCP Server    TUI           Public        Experimental
+Resume        & Recovery                                Release
+```
+
+---
+
+## Phase 0 — Foundation & Architecture *(Current Phase)*
+
+Establish repository foundation, domain models, abstract ports, CLI skeleton, test suite, and architectural invariants.
+
+- **Deliverables**:
+  - Valid Python package layout (`cortexshift`).
+  - Strict Pydantic domain models (`Project`, `Task`, `Session`, `Checkpoint`, `Handoff`, `GitSnapshot`, `ProviderCapabilities`).
+  - Abstract Ports (`ProviderAdapter`, `RepositoryInspector`, `StateStore`).
+  - Typer CLI with `version` and `--help`.
+  - Comprehensive documentation (`AGENTS.md`, `architecture.md`, `handoff-protocol.md`, `ADR-0001`).
+  - Complete test suite, strict mypy typing, Ruff linting, and GitHub Actions CI.
+
+---
+
+## Phase 1 — Provider Discovery
+
+Implement non-invasive local detection of installed AI coding agent CLIs.
+
+- **Goals**:
+  - Probe local `PATH` for `claude`, `codex`, `antigravity`, and future binaries.
+  - Query CLI versions, available subcommands, and supported flags.
+  - Implement the `cortexshift doctor` command to display detected environments.
+
+---
+
+## Phase 2 — Project & Task State
+
+Introduce local persistence and complete task lifecycle management.
+
+- **Goals**:
+  - SQLite database in `.cortexshift/state.db`.
+  - Commands: `cortexshift init`, `cortexshift task create`, `cortexshift task list`, `cortexshift status`.
+  - Task state transitions (`PENDING`, `IN_PROGRESS`, `BLOCKED`, `COMPLETED`).
+
+---
+
+## Phase 3 — Git Context
+
+Connect live Git repositories to CortexShift's context engine.
+
+- **Goals**:
+  - Implement `RepositoryInspector` adapter using local `git` CLI subprocesses.
+  - Capture branch, HEAD SHA, status, staged/unstaged diffs, and untracked files.
+  - Generate clean diff statistics for inclusion in checkpoints.
+
+---
+
+## Phase 4 — Native Provider Launch
+
+Launch external coding agents through non-invasive adapters.
+
+- **Goals**:
+  - Implement concrete adapters for Claude Code, Codex, and Antigravity.
+  - Orchestrate interactive terminal sessions and headless runs.
+  - Pass initial workspace context to launched CLIs.
+
+---
+
+## Phase 5 — Manual Handoff
+
+Complete the first end-to-end multi-agent workflow.
+
+- **Goals**:
+  - Switch from Claude Code to OpenAI Codex or Google Antigravity seamlessly:
+    ```bash
+    cortexshift switch codex
+    ```
+  - Compile the canonical handoff package into a structured injection prompt.
+  - Verify that the incoming agent can inspect the repo and continue the task without context degradation.
+
+---
+
+## Phase 6 — Native Session Persistence
+
+Track native session identifiers to allow returning to prior sessions when supported.
+
+- **Goals**:
+  - Capture provider session/thread IDs.
+  - Resume existing native sessions when supported by the provider CLI.
+
+---
+
+## Phase 7 — Checkpoints & Resilient Recovery
+
+Automate checkpointing during active sessions to safeguard against abrupt session termination.
+
+- **Goals**:
+  - Background checkpoint synthesis.
+  - Disaster recovery command to restore context after quota or process crashes.
+
+---
+
+## Phase 8 — MCP Integration
+
+Expose CortexShift capabilities and state to agents via Model Context Protocol.
+
+- **Goals**:
+  - Lightweight local MCP server.
+  - Tools for active agents to query task requirements, log decisions, and update task status directly.
+
+---
+
+## Phase 9 — Terminal User Interface (TUI)
+
+Build an interactive terminal experience using Textual or Rich.
+
+- **Goals**:
+  - Visual task dashboard.
+  - Real-time session monitoring and interactive agent switcher.
+
+---
+
+## Phase 10 — Public Release Hardening
+
+Prepare CortexShift for public open-source release.
+
+- **Goals**:
+  - Cross-platform verification (macOS, Linux, Windows).
+  - Standalone binary distributions via PyPI and Homebrew.
+  - Public documentation site and contributor onboarding.
+
+---
+
+## Later & Experimental Ideas
+
+The following concepts remain experimental and will be evaluated based on user demand:
+- Automatic quota/rate-limit detection and automatic fallback switching.
+- Visual desktop application (Electron / Tauri).
+- VS Code / JetBrains IDE extensions.
+- Adaptive context budgeting and smart semantic compression.
+- Optional explicit-opt-in full transcript capture (`capture_transcripts = true`).
+- Controlled multi-agent parallel branches and merge workflows.
