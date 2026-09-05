@@ -3,7 +3,7 @@ from pathlib import Path
 from cortexshift.domain import (
     PROVIDER_CLAUDE,
     GitSnapshot,
-    Handoff,
+    HandoffRecord,
     Project,
     ProviderCapabilities,
     ProviderId,
@@ -35,10 +35,15 @@ class DummyProviderAdapter:
             display_name="Claude Mock",
         )
 
-    def launch_interactive(self, task: Task, handoff: Handoff | None = None) -> int:
+    def launch_interactive(self, task: Task, handoff: HandoffRecord | None = None) -> int:
         return 0
 
-    def run_headless(self, task: Task, instruction: str, handoff: Handoff | None = None) -> int:
+    def run_headless(
+        self,
+        task: Task,
+        instruction: str,
+        handoff: HandoffRecord | None = None,
+    ) -> int:
         return 0
 
     def resume_native_session(self, task: Task, native_session_id: str) -> int:

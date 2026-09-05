@@ -6,15 +6,23 @@ import pytest
 from pydantic import ValidationError
 
 from cortexshift.domain import (
+    HANDOFF_PROTOCOL_VERSION,
     PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
     PROVIDER_CODEX,
     Checkpoint,
     GitSnapshot,
-    Handoff,
+    HandoffFailureCode,
+    HandoffGitState,
+    HandoffPayload,
+    HandoffRecord,
+    HandoffSourceSession,
+    HandoffStatus,
+    HandoffTestStatus,
     Project,
     ProviderCapabilities,
     ProviderId,
+    RepositoryInspectionStatus,
     Session,
     SessionExitReason,
     SessionStatus,
@@ -301,62 +309,128 @@ class TestProviderModel:
         assert restored == caps
 
 
-class TestHandoffModel:
-    """Tests for the canonical Handoff payload."""
+class TestHandoffModels:
+    """Tests for the canonical handoff payload and orchestration record."""
 
-    def test_handoff_canonical_fields(self) -> None:
-        git_snap = GitSnapshot(
-            project_id="proj_xyz",
-            project_root="/path/to/repo",
-            git_root="/path/to/repo",
-            branch="main",
-            head_sha="abcdef123456",
-            dirty=False,
+    @staticmethod
+    def _source_session() -> HandoffSourceSession:
+        return HandoffSourceSession(
+            session_id="sess_source",
+            provider_id=PROVIDER_CLAUDE,
+            status=SessionStatus.COMPLETED,
+            started_at=utc_now(),
+            ended_at=utc_now(),
+            exit_reason=SessionExitReason.NORMAL_COMPLETION,
+            exit_code=0,
         )
-        handoff = Handoff(
-            task_id="task_xyz",
+
+    def _payload(self) -> HandoffPayload:
+        return HandoffPayload(
             project_name="CortexShift",
-            original_objective="Build Phase 0 foundation",
+            project_root="/path/to/repo",
+            task_id="task_xyz",
+            task_title="Phase 5 handoff",
+            task_status="in_progress",
+            original_objective="Build canonical manual handoff",
             requirements=["Clean architecture", "Pydantic v2 models"],
             constraints=["No cloud DB", "No vendor conditionals"],
             completed=["Domain entities", "Ports", "Documentation"],
             current_work="Unit testing",
             remaining=["Integration test suite"],
-            important_decisions=["Use Ports and Adapters"],
+            important_decisions=[],
+            decisions_known=False,
             files_touched=["src/cortexshift/domain/handoff.py"],
-            test_status="25 tests passing",
+            test_status=HandoffTestStatus(known=False, summary="No verified test result recorded."),
             known_issues=[],
-            git_state=git_snap,
-            do_not_redo=["Do not introduce ORM"],
+            git_state=HandoffGitState(
+                status=RepositoryInspectionStatus.READY,
+                available=True,
+                note="Historical observation captured at handoff time.",
+                branch="main",
+                head_sha="abcdef123456",
+                dirty=False,
+                snapshot_id="snap_abc",
+            ),
+            do_not_redo=["Domain entities"],
             recommended_next_action="Run pytest and verify mypy strict pass",
+            source_session=self._source_session(),
+            target_provider_id=PROVIDER_CODEX,
         )
 
-        assert handoff.id.startswith("handoff_")
-        assert handoff.project_name == "CortexShift"
-        assert handoff.original_objective == "Build Phase 0 foundation"
-        assert len(handoff.requirements) == 2
-        assert len(handoff.completed) == 3
-        assert handoff.current_work == "Unit testing"
-        assert handoff.recommended_next_action == "Run pytest and verify mypy strict pass"
-        assert handoff.created_at.tzinfo == UTC
-        assert handoff.git_state is not None
-        assert handoff.git_state.branch == "main"
+    def test_payload_canonical_fields(self) -> None:
+        payload = self._payload()
 
-    def test_handoff_serialization_roundtrip(self) -> None:
-        handoff = Handoff(
+        assert payload.protocol_version == HANDOFF_PROTOCOL_VERSION == 1
+        assert payload.project_name == "CortexShift"
+        assert payload.original_objective == "Build canonical manual handoff"
+        assert len(payload.requirements) == 2
+        assert len(payload.completed) == 3
+        assert payload.current_work == "Unit testing"
+        assert payload.recommended_next_action == "Run pytest and verify mypy strict pass"
+        assert payload.generated_at.tzinfo == UTC
+        assert payload.git_state.branch == "main"
+        assert payload.git_state.snapshot_id == "snap_abc"
+        assert payload.source_session.provider_id == PROVIDER_CLAUDE
+        assert payload.target_provider_id == PROVIDER_CODEX
+
+    def test_unknown_state_is_encoded_honestly(self) -> None:
+        payload = self._payload()
+
+        assert payload.decisions_known is False
+        assert payload.important_decisions == []
+        assert payload.test_status.known is False
+
+    def test_record_wraps_payload_with_orchestration_metadata(self) -> None:
+        record = HandoffRecord(
+            project_id="proj_xyz",
             task_id="task_xyz",
-            project_name="CortexShift",
-            original_objective="Objective",
-            requirements=["Req 1"],
-            constraints=["Constraint 1"],
-            completed=["Item 1"],
-            remaining=["Item 2"],
-            test_status="All passing",
-            recommended_next_action="Next action",
+            source_session_id="sess_source",
+            source_provider_id=PROVIDER_CLAUDE,
+            target_provider_id=PROVIDER_CODEX,
+            git_snapshot_id="snap_abc",
+            payload=self._payload(),
         )
-        json_data = handoff.model_dump_json()
-        restored = Handoff.model_validate_json(json_data)
-        assert restored == handoff
+
+        assert record.id.startswith("handoff_")
+        assert record.protocol_version == 1
+        assert record.status == HandoffStatus.PREPARED
+        assert record.delivered_at is None
+        assert record.failure_code is None
+        assert record.target_session_id is None
+        assert record.created_at.tzinfo == UTC
+
+    def test_record_delivery_transitions(self) -> None:
+        record = HandoffRecord(
+            project_id="proj_xyz",
+            task_id="task_xyz",
+            source_session_id="sess_source",
+            source_provider_id=PROVIDER_CLAUDE,
+            target_provider_id=PROVIDER_CODEX,
+            payload=self._payload(),
+        )
+
+        delivered = record.mark_delivered(target_session_id="sess_target")
+        assert delivered.status == HandoffStatus.DELIVERED
+        assert delivered.target_session_id == "sess_target"
+        assert delivered.delivered_at is not None
+        assert delivered.failure_code is None
+
+        failed = record.mark_failed(HandoffFailureCode.BOOTSTRAP_TIMEOUT)
+        assert failed.status == HandoffStatus.FAILED
+        assert failed.failure_code == HandoffFailureCode.BOOTSTRAP_TIMEOUT
+
+    def test_record_serialization_roundtrip(self) -> None:
+        record = HandoffRecord(
+            project_id="proj_xyz",
+            task_id="task_xyz",
+            source_session_id="sess_source",
+            source_provider_id=PROVIDER_CLAUDE,
+            target_provider_id=PROVIDER_CODEX,
+            payload=self._payload(),
+        )
+        restored = HandoffRecord.model_validate_json(record.model_dump_json())
+        assert restored == record
+        assert restored.payload.git_state.status == RepositoryInspectionStatus.READY
 
 
 class TestDoctorDomainModels:

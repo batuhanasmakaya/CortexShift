@@ -1,4 +1,8 @@
-"""Unit tests for SQLite schema v2 to v3 migration regression."""
+"""Unit tests for the SQLite schema v2 migration chain regression.
+
+A genuine v2 database must migrate forward through every subsequent version
+(v2 -> v3 -> v4) with all Phase 1-3 state preserved.
+"""
 
 import sqlite3
 from pathlib import Path
@@ -16,8 +20,8 @@ from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import TaskStatus
 
 
-def test_migrate_v2_to_v3_preserves_state(tmp_path: Path) -> None:
-    """Verify that genuine schema-v2 state (Project, Task, Snapshot) survives migration to v3."""
+def test_migrate_v2_forward_preserves_state(tmp_path: Path) -> None:
+    """Verify genuine schema-v2 state survives migration through v3 to the current version."""
     db_file = tmp_path / "test_v2.sqlite3"
     conn = sqlite3.connect(str(db_file))
 
@@ -90,10 +94,10 @@ def test_migrate_v2_to_v3_preserves_state(tmp_path: Path) -> None:
     assert get_current_schema_version(conn) == 2
     conn.close()
 
-    # 3. Open with Phase 4 SQLiteStateStore (which runs auto_migrate to v3)
+    # 3. Open with the current SQLiteStateStore (auto_migrate walks v2 -> v3 -> v4)
     with SQLiteStateStore(db_file, auto_migrate=True) as store:
-        assert store.get_schema_version() == 3
         assert store.get_schema_version() == CURRENT_SCHEMA_VERSION
+        assert store.get_schema_version() >= 3
 
         # 4. Verify Project survived
         project = store.get_project(proj_id)

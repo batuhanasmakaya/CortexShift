@@ -15,6 +15,7 @@ from cortexshift.adapters.providers.codex import CodexRuntimeAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.locator import ProjectLocator
+from cortexshift.application.session_launcher import ProviderSessionLauncher
 from cortexshift.domain.errors import (
     NoActiveTaskError,
     ProjectNotInitializedError,
@@ -23,13 +24,12 @@ from cortexshift.domain.errors import (
     UnknownProviderError,
     WorkspaceLockedError,
 )
-from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import (
     ProviderId,
 )
-from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
+from cortexshift.domain.session import Session
 from cortexshift.domain.task import Task
 from cortexshift.ports.process_runner import InteractiveProcessRunner
 from cortexshift.ports.provider import ProviderRuntimeAdapter
@@ -228,77 +228,20 @@ class RunService:
             if not lease.acquire():
                 raise WorkspaceLockedError(lock_path=lease.lock_path)
 
-            # 4. Create and persist initial Session
-            session = Session(
-                task_id=task.id,
-                provider_id=adapter.provider_id,
-                status=SessionStatus.RUNNING,
-                started_at=utc_now(),
-            )
-            store.save_session(session)
-
-            # 5. Launch process and handle lifecycle
+            # 4. Delegate Session creation and lifecycle to the shared launcher
+            launcher = ProviderSessionLauncher(process_runner=self._runner, store=store)
             try:
-                if on_launch:
-                    on_launch(launch_spec, session, task, project)
-
-                exit_code = self._runner.run_interactive(
-                    argv=launch_spec.argv,
-                    cwd=launch_spec.cwd,
+                session = launcher.start_session(
+                    task_id=task.id,
+                    provider_id=adapter.provider_id,
                 )
 
-                ended_at = utc_now()
-                if exit_code == 0:
-                    session = session.model_copy(
-                        update={
-                            "status": SessionStatus.COMPLETED,
-                            "ended_at": ended_at,
-                            "exit_code": 0,
-                            "exit_reason": SessionExitReason.NORMAL_COMPLETION,
-                        }
-                    )
-                elif exit_code in (130, -2):
-                    session = session.model_copy(
-                        update={
-                            "status": SessionStatus.INTERRUPTED,
-                            "ended_at": ended_at,
-                            "exit_code": 130,
-                            "exit_reason": SessionExitReason.USER_INTERRUPTED,
-                        }
-                    )
-                else:
-                    session = session.model_copy(
-                        update={
-                            "status": SessionStatus.FAILED,
-                            "ended_at": ended_at,
-                            "exit_code": exit_code,
-                            "exit_reason": SessionExitReason.PROCESS_CRASHED,
-                        }
-                    )
-            except KeyboardInterrupt:
-                ended_at = utc_now()
-                session = session.model_copy(
-                    update={
-                        "status": SessionStatus.INTERRUPTED,
-                        "ended_at": ended_at,
-                        "exit_code": 130,
-                        "exit_reason": SessionExitReason.USER_INTERRUPTED,
-                    }
-                )
-            except Exception:
-                ended_at = utc_now()
-                session = session.model_copy(
-                    update={
-                        "status": SessionStatus.FAILED,
-                        "ended_at": ended_at,
-                        "exit_reason": SessionExitReason.SPAWN_FAILED,
-                    }
-                )
-                raise
+                def _forward(spec: LaunchSpecification, current: Session) -> None:
+                    if on_launch:
+                        on_launch(spec, current, task, project)
+
+                return launcher.run(session, launch_spec, on_launch=_forward)
             finally:
-                store.save_session(session)
                 lease.release()
-
-            return session
         finally:
             store.close()

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from cortexshift.adapters.sqlite.migrations import CURRENT_SCHEMA_VERSION
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.domain.errors import ProjectConflictError
@@ -26,7 +27,7 @@ def test_fresh_initialization(tmp_path: Path) -> None:
         assert proj is not None
         assert proj.id == result.project.id
         assert proj.name == "TestProject"
-        assert store.get_schema_version() == 3
+        assert store.get_schema_version() == CURRENT_SCHEMA_VERSION
 
 
 def test_initialization_defaults_name_to_directory_name(tmp_path: Path) -> None:

@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 5: Canonical Manual Handoff & Agent Switching**:
+  - CLI command `cortexshift switch <provider>` moving the active Task to another coding agent with full canonical context, supporting `--from-session`, `--note`, `--dry-run`, and `--json`.
+  - CLI command group `cortexshift handoff` with `preview <target>`, `list`, and `show <id>`, each supporting `--json`.
+  - **CortexShift Handoff Protocol v1** (`HANDOFF_PROTOCOL_VERSION = 1`), versioned independently of the SQLite schema so canonical fields and prompt formatting can evolve without a database migration.
+  - **Outgoing-provider independence**: handoffs are built deterministically from the canonical Project, canonical Task, previous CortexShift Session metadata, live Git inspection, and a Git snapshot captured at switch time. CortexShift makes no outgoing model call and never resolves the outgoing provider's executable, so switching works after the previous agent's quota is exhausted, its process is gone, or its CLI is uninstalled. Covered by dedicated service-level and end-to-end regression tests.
+  - Domain refactor of the speculative Phase 0 `Handoff` model into `HandoffPayload` (canonical point-in-time engineering context) and `HandoffRecord` (orchestration and delivery metadata), plus `HandoffStatus` (`prepared`/`delivered`/`failed`), `HandoffFailureCode`, `HandoffGitState`, `HandoffTestStatus`, and `HandoffSourceSession`.
+  - Deterministic `HandoffBuilder` (pure; no I/O, no subprocess, no model) deriving files touched from the deduplicated union of staged, modified, untracked, and conflicted Git paths, and deriving the recommended next action from current work → first remaining item → repository inspection.
+  - Honest unknown state: `IMPORTANT DECISIONS` and `TEST STATUS` are explicitly reported as unrecorded rather than fabricated. A provider process exiting 0 is never interpreted as "tests pass".
+  - Provider-neutral `HandoffRenderer` producing the receiving-agent package with the CortexShift authority order, an explicit startup contract (read `AGENTS.md`, inspect `git status`/`git diff`, verify recorded completed work, run relevant tests, continue rather than restart), and conservative completed / do-not-redo phrasing.
+  - **Context budgeting**: deterministic 48,000-character transport bound using simple character and list budgets (no tokenizer, no summarizer, no model, no vector store). Mandatory context is never dropped, omissions are reported with exact counts, and the persisted canonical payload is never truncated — remaining retrievable via `cortexshift handoff show ID --json`.
+  - Control-character and path safety: untrusted task text and Git filenames are escaped while preserving valid Unicode, and file-path entries are explicitly framed to the receiving agent as data rather than instructions.
+  - **Git snapshot at switch time**, captured under the exclusive workspace lease, which is held continuously from repository observation through receiving-provider runtime. Missing Git and non-Git projects continue with an explicit canonical marker and no snapshot row; an unexpected Git probe error fails the switch safely rather than shipping an unreliable observation.
+  - New persistence port `HandoffStore` and SQLite schema migration **v3 → v4** adding the `handoffs` table (canonical validated JSON payload, foreign keys, indexes), preserving all Phase 1–4 project, task, active-task, Git snapshot, and session state.
+  - New delivery port `ProviderHandoffAdapter` isolating all provider transport variance from orchestration:
+    - **Claude Code** — direct interactive initial prompt as a single argument.
+    - **Codex** — direct interactive initial prompt as a single argument (never `codex exec`).
+    - **Antigravity** — read-only `--mode=plan` headless bootstrap that ingests the canonical context, then interactive resume of that same conversation via `--conversation <id>`.
+  - New execution port `HeadlessProviderRunner` with `SubprocessHeadlessProviderRunner`: one bounded, shell-free, TTY-free provider turn with a model-turn-appropriate timeout and no output logging.
+  - Antigravity bootstrap parses only `conversation_id` and `status`, binds the conversation to the receiving Session's `native_session_id`, and discards the provider response, reasoning, and usage without persisting, logging, or printing them. Permission-bypass and accept-edits flags are never used, and no TUI keystrokes are automated.
+  - `ProviderSessionLauncher` extracted from `RunService` so `run` and `switch` share one Session lifecycle implementation without nesting advisory workspace locks.
+  - Handoff delivery and target Session outcome are modelled as distinct concerns: context can be `delivered` while the receiving session later ends `failed`. Delivery failures record safe machine classifications (`target_provider_missing`, `bootstrap_failed`, `bootstrap_timeout`, `bootstrap_invalid_output`, `spawn_failed`, `workspace_locked`) and never store raw provider stderr.
+  - Source Session selection from durable CortexShift records only, preferring the most recent meaningful session on the active task, with explicit `--from-session` override and validation (`NoSourceSessionError`, `SessionTaskMismatchError`, `SameProviderSwitchError`).
+  - `switch` never mutates task progress: it does not mark work completed, alter the remaining list, clear known issues, or complete the task, even on a clean provider exit.
+  - Zero-quota inspection surfaces: `cortexshift handoff preview` and `cortexshift switch --dry-run` persist nothing, launch nothing, and — for Antigravity — never perform the bootstrap model turn.
+  - Architectural Decision Record `ADR-0006-canonical-agent-handoff.md`, and `docs/handoff-protocol.md` promoted from future design to an implemented contract.
+  - Flagship integration test exercising the full fake Claude → Codex → Antigravity workflow against a disposable real Git repository, plus restart persistence, live-versus-historical, context budget, command-injection, outgoing-provider-unavailable, and workspace-lease regression coverage. No network, no provider subscription, no real model call.
+
 - **Phase 4: Native Provider Launch & Session Lifecycle**:
   - Segregated runtime ports `ProviderRuntimeAdapter`, `InteractiveProcessRunner`, `WorkspaceLease`, `WorkspaceLeaseManager`, and `SessionStore`.
   - Concrete provider runtime adapters for Claude Code (`ClaudeRuntimeAdapter`), Codex (`CodexRuntimeAdapter`), and Antigravity (`AntigravityRuntimeAdapter`).

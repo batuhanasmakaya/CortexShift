@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from cortexshift.adapters.sqlite.migrations import CURRENT_SCHEMA_VERSION
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 
 
@@ -78,7 +79,7 @@ def test_process_restart_persistence(tmp_path: Path) -> None:
     status_data = json.loads(status_res.stdout)
 
     assert status_data["name"] == "RestartTest"
-    assert status_data["schema_version"] == 3
+    assert status_data["schema_version"] == CURRENT_SCHEMA_VERSION
     assert status_data["active_task"] is not None
 
     assert status_data["active_task"]["title"] == "Survive Restart"

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from cortexshift.adapters.sqlite.migrations import CURRENT_SCHEMA_VERSION
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.cli.app import app
 from cortexshift.domain.task import Task
@@ -66,7 +67,7 @@ def test_status_json_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
     data = json.loads(result.stdout)
     assert data["name"] == "Jupiter"
-    assert data["schema_version"] == 3
+    assert data["schema_version"] == CURRENT_SCHEMA_VERSION
     assert data["state_file"] == ".cortexshift/state.sqlite3"
 
     assert data["active_task"] is not None

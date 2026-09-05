@@ -14,23 +14,31 @@ from rich.table import Table
 from cortexshift import __version__
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.doctor import DoctorService, UnknownProviderError
+from cortexshift.application.handoff_renderer import RenderedHandoffContext
+from cortexshift.application.handoff_service import HandoffService
 from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.application.locator import DATABASE_FILE_NAME, STATE_DIR_NAME, ProjectLocator
 from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.run_service import RunService
 from cortexshift.application.session_service import SessionService
 from cortexshift.application.status_service import ProjectStatusService
+from cortexshift.application.switch_service import SwitchService
 from cortexshift.application.task_service import TaskService
 from cortexshift.domain.doctor import AuthenticationStatus, DoctorReport
 from cortexshift.domain.errors import (
     CortexShiftError,
     DatabaseStateError,
+    HandoffDeliveryError,
+    HandoffNotFoundError,
     NoActiveTaskError,
+    NoSourceSessionError,
     ProjectConflictError,
     ProjectNotInitializedError,
     ProviderNotFoundError,
     RepositoryInspectionError,
+    SameProviderSwitchError,
     SessionNotFoundError,
+    SessionTaskMismatchError,
     SnapshotNotFoundError,
     StateCorruptionError,
     TaskAlreadyCompletedError,
@@ -44,6 +52,7 @@ from cortexshift.domain.errors import (
 from cortexshift.domain.git import (
     RepositoryInspectionStatus,
 )
+from cortexshift.domain.handoff import HandoffRecord, HandoffStatus
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import ProviderId
@@ -81,6 +90,13 @@ session_app = typer.Typer(
 )
 app.add_typer(session_app, name="session")
 
+handoff_app = typer.Typer(
+    name="handoff",
+    help="Preview and inspect canonical cross-provider handoffs.",
+    no_args_is_help=True,
+)
+app.add_typer(handoff_app, name="handoff")
+
 
 def print_version() -> None:
     """Print the version string."""
@@ -107,6 +123,10 @@ def _handle_error(err: Exception) -> None:
             ProviderNotFoundError,
             WorkspaceLockedError,
             TerminalRequiredError,
+            NoSourceSessionError,
+            SameProviderSwitchError,
+            SessionTaskMismatchError,
+            HandoffDeliveryError,
         ),
     ):
         err_console.print(f"\n{err}\n")
@@ -124,6 +144,7 @@ def _handle_error(err: Exception) -> None:
             RepositoryInspectionError,
             SnapshotNotFoundError,
             SessionNotFoundError,
+            HandoffNotFoundError,
             UnknownProviderError,
         ),
     ):
@@ -1318,6 +1339,421 @@ def session_show_command(
     grid.add_row("Exit Code", str(session.exit_code) if session.exit_code is not None else "—")
     console.print(grid)
     console.print()
+
+
+# --- Handoff Commands ---
+
+PROVIDER_DISPLAY_NAMES = {
+    "claude": "Claude Code",
+    "codex": "Codex",
+    "antigravity": "Antigravity",
+}
+
+
+def _provider_label(provider_id: str) -> str:
+    """Render a canonical provider ID as its human-readable display name."""
+    return PROVIDER_DISPLAY_NAMES.get(provider_id.lower(), provider_id)
+
+
+def _render_handoff_summary(handoff: HandoffRecord) -> None:
+    """Render the canonical engineering context of a handoff for human inspection."""
+    payload = handoff.payload
+
+    console.print(f"\n[bold]Handoff: {handoff.id}[/bold]\n")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+    grid.add_row("Protocol", f"CortexShift Handoff Protocol v{handoff.protocol_version}")
+    grid.add_row("Status", handoff.status.value)
+    grid.add_row("From", f"{_provider_label(str(handoff.source_provider_id))}")
+    grid.add_row("Source Session", handoff.source_session_id)
+    grid.add_row("To", f"{_provider_label(str(handoff.target_provider_id))}")
+    grid.add_row("Target Session", handoff.target_session_id or "—")
+    grid.add_row("Task", f"{escape(payload.task_title)} ({handoff.task_id})")
+    grid.add_row("Git Snapshot", handoff.git_snapshot_id or "—")
+    grid.add_row("Created (UTC)", handoff.created_at.strftime("%Y-%m-%d %H:%M:%S"))
+    grid.add_row(
+        "Delivered (UTC)",
+        handoff.delivered_at.strftime("%Y-%m-%d %H:%M:%S") if handoff.delivered_at else "—",
+    )
+    grid.add_row("Failure", handoff.failure_code.value if handoff.failure_code else "—")
+    console.print(grid)
+
+    console.print(f"\n[bold]Original Objective[/bold]\n  {escape(payload.original_objective)}")
+    _render_bullet_section("Requirements", payload.requirements)
+    _render_bullet_section("Constraints", payload.constraints)
+    _render_bullet_section("Completed (recorded, verify against repository)", payload.completed)
+    console.print(
+        f"\n[bold]Current Work[/bold]\n  "
+        f"{escape(payload.current_work) if payload.current_work else '[dim](none)[/dim]'}"
+    )
+    _render_bullet_section("Remaining", payload.remaining)
+    console.print(
+        "\n[bold]Important Decisions[/bold]\n  "
+        + (
+            "\n  ".join(escape(d) for d in payload.important_decisions)
+            if payload.decisions_known and payload.important_decisions
+            else "[dim]No structured decisions are recorded in CortexShift state.[/dim]"
+        )
+    )
+    _render_bullet_section("Known Issues", payload.known_issues)
+
+    console.print("\n[bold]Files Touched[/bold]")
+    if payload.files_touched:
+        _render_file_list("Paths", payload.files_touched)
+    else:
+        console.print("  [dim](none observed)[/dim]")
+
+    console.print(f"\n[bold]Test Status[/bold]\n  [dim]{escape(payload.test_status.summary)}[/dim]")
+
+    git = payload.git_state
+    console.print("\n[bold]Git State[/bold]")
+    git_grid = Table.grid(padding=(0, 2))
+    git_grid.add_column(style="dim", justify="left")
+    git_grid.add_column(style="default", justify="left")
+    git_grid.add_row("  Status", git.status.value)
+    if git.available:
+        git_grid.add_row("  Branch", git.branch or "(detached / unborn)")
+        git_grid.add_row("  HEAD", git.head_sha[:12] if git.head_sha else "(unborn)")
+        git_grid.add_row("  Working tree", "dirty" if git.dirty else "clean")
+        git_grid.add_row(
+            "  Changes",
+            f"staged {git.staged_count}, modified {git.modified_count}, "
+            f"untracked {git.untracked_count}, conflicted {git.conflicted_count}",
+        )
+    console.print(git_grid)
+    console.print(f"  [dim]{escape(git.note)}[/dim]")
+
+    if payload.operator_note:
+        console.print(f"\n[bold]Operator Note[/bold]\n  {escape(payload.operator_note)}")
+
+    console.print(
+        f"\n[bold]Recommended Next Action[/bold]\n  {escape(payload.recommended_next_action)}\n"
+    )
+
+
+def _render_bullet_section(title: str, items: list[str], max_display: int = 30) -> None:
+    """Render a bounded bulleted list section for human output."""
+    console.print(f"\n[bold]{title}[/bold]")
+    if not items:
+        console.print("  [dim](none recorded)[/dim]")
+        return
+    for item in items[:max_display]:
+        console.print(f"  - {escape(item)}")
+    if len(items) > max_display:
+        console.print(f"  [dim]... and {len(items) - max_display} more[/dim]")
+
+
+@handoff_app.command("preview")
+def handoff_preview_command(
+    target: Annotated[
+        str,
+        typer.Argument(
+            help="Canonical target provider identifier (claude, codex, antigravity).",
+        ),
+    ],
+    from_session: Annotated[
+        str | None,
+        typer.Option(
+            "--from-session",
+            help="Explicit source session ID to hand off from (defaults to the latest).",
+        ),
+    ] = None,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Optional operator note to include as advisory context."),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON format."),
+    ] = False,
+) -> None:
+    """Preview the canonical handoff context a target provider would receive.
+
+    Persists nothing, launches nothing, and consumes zero model quota.
+    """
+    try:
+        result = SwitchService().preview(
+            target_provider_name=target,
+            from_session_id=from_session,
+            note=note,
+        )
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(json.dumps(result.to_dict(), indent=2) + "\n")
+        return
+
+    console.print("\n[bold]CortexShift Handoff Preview[/bold]")
+    console.print(
+        "[dim]Preview only. Nothing was persisted and no provider was launched.\n"
+        "The repository may change after this preview, so it can become stale.[/dim]\n"
+    )
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+    grid.add_row("Protocol", f"CortexShift Handoff Protocol v{result.protocol_version}")
+    grid.add_row("Target", result.target_provider_name)
+    grid.add_row("Delivery", result.delivery_strategy)
+    grid.add_row(
+        "Bootstrap model turn",
+        "yes" if result.bootstrap_model_turn_required else "no",
+    )
+    grid.add_row(
+        "Context size",
+        f"{result.context_characters} / {result.context_max_characters} characters"
+        + (" (truncated)" if result.context_truncated else ""),
+    )
+    console.print(grid)
+
+    console.print("\n[bold]Receiving Agent Context[/bold]\n")
+    console.print(escape(result.rendered_context))
+    console.print()
+
+
+@handoff_app.command("list")
+def handoff_list_command(
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-n", help="Maximum number of handoffs to display."),
+    ] = 20,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON format."),
+    ] = False,
+) -> None:
+    """List historical canonical handoffs for this project."""
+    try:
+        handoffs = HandoffService().list_handoffs(limit=limit)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        data = [h.model_dump(mode="json") for h in handoffs]
+        sys.stdout.write(json.dumps(data, indent=2) + "\n")
+        return
+
+    if not handoffs:
+        console.print("\n[dim]No handoffs recorded yet.[/dim]\n")
+        return
+
+    table = Table(title="Handoffs", box=box.ROUNDED, header_style="bold cyan")
+    table.add_column("Handoff", style="bold")
+    table.add_column("From")
+    table.add_column("To")
+    table.add_column("Status")
+    table.add_column("Created (UTC)")
+
+    for h in handoffs:
+        status_style = {
+            HandoffStatus.DELIVERED: "green",
+            HandoffStatus.PREPARED: "yellow",
+            HandoffStatus.FAILED: "red",
+        }.get(h.status, "white")
+        table.add_row(
+            h.id,
+            _provider_label(str(h.source_provider_id)),
+            _provider_label(str(h.target_provider_id)),
+            f"[{status_style}]{h.status.value}[/{status_style}]",
+            h.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@handoff_app.command("show")
+def handoff_show_command(
+    handoff_id: Annotated[
+        str,
+        typer.Argument(help="Identifier of the handoff to inspect."),
+    ],
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON format."),
+    ] = False,
+) -> None:
+    """Show the canonical engineering context of a stored handoff."""
+    try:
+        handoff = HandoffService().get_handoff(handoff_id)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(json.dumps(handoff.model_dump(mode="json"), indent=2) + "\n")
+        return
+
+    _render_handoff_summary(handoff)
+
+
+# --- Switch Command ---
+
+
+@app.command("switch")
+def switch_command(
+    provider: Annotated[
+        str,
+        typer.Argument(
+            help="Canonical target provider identifier (claude, codex, antigravity).",
+        ),
+    ],
+    from_session: Annotated[
+        str | None,
+        typer.Option(
+            "--from-session",
+            help="Explicit source session ID to hand off from (defaults to the latest).",
+        ),
+    ] = None,
+    note: Annotated[
+        str | None,
+        typer.Option(
+            "--note",
+            help="Optional operator note added as advisory context to the handoff.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Describe the switch without persisting, launching, or using model quota.",
+        ),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON (only valid with --dry-run)."),
+    ] = False,
+) -> None:
+    """Hand the active task to another coding agent and launch it with full context.
+
+    CortexShift builds the handoff deterministically from durable local state, so the
+    outgoing agent does not need to be available, running, or even installed.
+
+    Claude Code and Codex receive the context directly as their native interactive
+    initial prompt. Antigravity first runs one read-only plan-mode bootstrap turn to
+    ingest the context (which consumes Antigravity usage), then resumes that same
+    conversation in its native interactive UI. `--dry-run` never performs that turn.
+    """
+    if json_output and not dry_run:
+        err_console.print("[red]Error:[/red] --json is only supported with --dry-run.")
+        raise typer.Exit(code=1)
+
+    service = SwitchService()
+
+    if dry_run:
+        try:
+            preview = service.dry_run(
+                target_provider_name=provider,
+                from_session_id=from_session,
+                note=note,
+            )
+        except Exception as err:
+            _handle_error(err)
+            return
+
+        if json_output:
+            sys.stdout.write(json.dumps(preview.to_dict(), indent=2) + "\n")
+            return
+
+        console.print("\n[bold]CortexShift Switch (Dry Run)[/bold]\n")
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="bold cyan", justify="left")
+        grid.add_column(style="default", justify="left")
+        grid.add_row("Protocol", f"CortexShift Handoff Protocol v{preview.protocol_version}")
+        grid.add_row("Project", f"{preview.project_name} ({preview.project_id})")
+        grid.add_row("Task", f"{escape(preview.task_title)} ({preview.task_id})")
+        grid.add_row(
+            "From",
+            f"{_provider_label(preview.source_provider_id)} "
+            f"({preview.source_session_id}, {preview.source_session_status})",
+        )
+        grid.add_row("To", f"{preview.target_provider_name} ({preview.target_executable})")
+        grid.add_row("Delivery", preview.delivery_strategy)
+        grid.add_row(
+            "Bootstrap model turn",
+            "yes — one read-only planning turn would run"
+            if preview.bootstrap_model_turn_required
+            else "no",
+        )
+        grid.add_row(
+            "Git",
+            f"{preview.git_status}"
+            + (
+                f" · {preview.git_branch or '(detached)'}"
+                f" · {'dirty' if preview.git_dirty else 'clean'}"
+                if preview.git_status == RepositoryInspectionStatus.READY.value
+                else ""
+            ),
+        )
+        grid.add_row(
+            "Context size",
+            f"{preview.context_characters} / {preview.context_max_characters} characters",
+        )
+        grid.add_row("Truncated", "yes" if preview.context_truncated else "no")
+        console.print(grid)
+        console.print("\n[dim]Dry run: nothing was persisted and nothing was launched.[/dim]\n")
+        return
+
+    def _on_prepared(handoff: HandoffRecord, rendered: RenderedHandoffContext) -> None:
+        console.print("\n[bold]CortexShift Handoff[/bold]")
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="bold cyan", justify="left")
+        grid.add_column(style="default", justify="left")
+        grid.add_row("Handoff", handoff.id)
+        grid.add_row("Task", escape(handoff.payload.task_title))
+        grid.add_row("From", _provider_label(str(handoff.source_provider_id)))
+        grid.add_row("To", _provider_label(str(handoff.target_provider_id)))
+        grid.add_row("Git Snapshot", handoff.git_snapshot_id or "— (Git state unavailable)")
+        if rendered.truncated:
+            omitted = sum(o.omitted_items for o in rendered.omissions)
+            grid.add_row("Context", f"{rendered.character_count} chars ({omitted} items omitted)")
+        else:
+            grid.add_row("Context", f"{rendered.character_count} chars")
+        console.print(grid)
+
+        adapter = service._registry.get(provider)
+        if adapter is not None and adapter.bootstrap_model_turn_required:
+            console.print(
+                "\n[dim]Delivering the handoff to Antigravity in read-only plan mode...[/dim]"
+            )
+
+    def _on_launch(_spec: LaunchSpecification, session: Session) -> None:
+        adapter = service._registry.get(provider)
+        if adapter is not None and adapter.bootstrap_model_turn_required:
+            console.print(
+                "\nHandoff delivered to Antigravity in read-only plan mode.\n"
+                "Opening the same conversation in the native TUI.\n"
+                "Review the prepared continuation plan and continue from there."
+            )
+        console.print(f"\n[dim]Session {session.id} — launching native provider...[/dim]\n")
+
+    try:
+        result = service.switch(
+            target_provider_name=provider,
+            from_session_id=from_session,
+            note=note,
+            on_prepared=_on_prepared,
+            on_launch=_on_launch,
+        )
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    session = result.target_session
+    if session.status == SessionStatus.COMPLETED:
+        console.print("\nSession completed.")
+    elif session.status == SessionStatus.INTERRUPTED:
+        console.print("\nSession interrupted.")
+    else:
+        console.print("\nSession failed.")
+        console.print(f"[dim]Handoff {result.handoff.id} was delivered.[/dim]")
+        if session.exit_code:
+            raise typer.Exit(code=session.exit_code)
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

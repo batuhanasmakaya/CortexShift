@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from cortexshift.adapters.sqlite.migrations import CURRENT_SCHEMA_VERSION
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.domain.errors import ProjectNotInitializedError
@@ -33,7 +34,7 @@ def test_status_without_active_task(tmp_path: Path) -> None:
 
     assert status.name == "IdleProj"
     assert status.active_task is None
-    assert status.schema_version == 3
+    assert status.schema_version == CURRENT_SCHEMA_VERSION
 
 
 def test_status_with_active_task_and_progress(tmp_path: Path) -> None:

@@ -126,9 +126,11 @@ CortexShift follows Ports and Adapters (Hexagonal Architecture) to ensure absolu
          │
          ▼
   Ports Layer (Abstract Protocols)
-   ├── ProviderAdapter
+   ├── ProviderAdapter / ProviderRuntimeAdapter
+   ├── ProviderHandoffAdapter
    ├── RepositoryInspector
-   └── StateStore
+   ├── StateStore / SessionStore / HandoffStore
+   └── InteractiveProcessRunner / HeadlessProviderRunner
          ▲
          │ (implements)
   Adapters Layer (Concrete Implementations)
@@ -138,7 +140,8 @@ CortexShift follows Ports and Adapters (Hexagonal Architecture) to ensure absolu
 
   ──────────────────────────────────────────
   Domain Layer (Pure Entities & Value Objects)
-   (Project, Task, Session, Checkpoint, Handoff, GitSnapshot, ProviderCapabilities)
+   (Project, Task, Session, Checkpoint, HandoffPayload, HandoffRecord,
+    GitSnapshot, LaunchSpecification, ProviderCapabilities)
    * Domain has NO dependencies on outer layers *
 ```
 
@@ -331,7 +334,94 @@ RunService (Application)
 
 ---
 
-## 11. Checkpoints & Resilient Recovery
+## 11. Canonical Handoff & Manual Agent Switching (Phase 5)
+
+Phase 5 delivers CortexShift's central product promise: one Task, multiple coding agents, no need to manually re-explain the work.
+
+```text
+CLI (`cortexshift switch <provider>`, `cortexshift handoff preview|list|show`)
+ │
+ ▼
+SwitchService (Application)
+ │
+ │  Validation: project → active Task → source Session → target provider →
+ │              same-provider rejection → target executable → TTY → workspace lease
+ │
+ ▼
+                        ┌── Task State
+                        │
+                        ├── Source Session
+                        │
+SwitchService ──────────┼── Live Git Inspection
+                        │
+                        └── Git Snapshot
+                              │
+                              ▼
+                       HandoffBuilder
+                              │
+                              ▼
+                     Canonical Handoff v1
+                              │
+                    ┌─────────┴─────────┐
+                    ▼                   ▼
+               HandoffStore      HandoffRenderer
+                                      │
+                                      ▼
+                              Delivery Strategy
+                         ┌────────┬────────────┐
+                         ▼        ▼            ▼
+                      Claude    Codex    Antigravity
+                         │        │            │
+                         └────────┴────────────┘
+                                  │
+                                  ▼
+                        ProviderSessionLauncher
+                         (target CortexShift Session)
+```
+
+### Phase 5 Components
+
+- **`SwitchService`** (application): orchestrates the whole handoff. Renders no Rich output, knows nothing about Typer, contains no SQL, and constructs no provider-specific commands.
+- **`HandoffBuilder`** (application): pure, deterministic construction of the canonical `HandoffPayload` from durable state. No I/O, no provider, no model.
+- **`HandoffRenderer`** (application): one provider-neutral renderer producing the bounded receiving-agent package. Provider transport differs; engineering context does not, so there are deliberately not three near-duplicate templates.
+- **`ProviderSessionLauncher`** (application): the shared Session lifecycle extracted from `RunService` in Phase 5. It assumes the caller already resolved project/task and already holds the workspace lease, so `switch` never nests a second advisory lock. Both `run` and `switch` use it.
+- **`select_source_session`** (application): chooses the most recent *meaningful* Session on the active task, reading only durable CortexShift records — never provider transcript history.
+- **`HandoffStore`** (port): a narrow, cohesive persistence port. The Phase 2 `StateStore` interface is deliberately not re-expanded; one SQLite adapter implements several ports.
+- **`ProviderHandoffAdapter`** (port): encapsulates all delivery variance, so the application core carries no `if target == "antigravity":` branching.
+- **`HeadlessProviderRunner`** (port) / **`SubprocessHeadlessProviderRunner`** (adapter): one bounded, non-interactive, shell-free provider turn with a model-turn-appropriate timeout. Distinct from the short-timeout diagnostic `CommandRunner`.
+
+### Handoff Invariants & Design Principles
+
+- **The outgoing agent is never required.** Handoffs derive deterministically from the canonical Project, canonical Task, previous Session metadata, live Git inspection, and the snapshot captured at switch time. No outgoing model call is ever made, and the source provider's executable is never even resolved. This is the whole point: the user switches *because* the previous agent became unusable.
+- **Structured state, never transcript transplantation.** CortexShift does not read, convert, or replay provider conversation storage, and never scrapes a TUI.
+- **Handoff protocol versioning.** `HANDOFF_PROTOCOL_VERSION = 1` is persisted per handoff and is independent of the SQLite schema version, so canonical fields and prompt formatting evolve separately from database migrations.
+- **Record vs. payload.** `HandoffPayload` holds point-in-time engineering context; `HandoffRecord` wraps it with orchestration and delivery metadata.
+- **Honest unknown state.** Absent decision and test records are stated as unknown rather than invented. A provider exiting 0 is never read as "tests pass".
+- **Advisory completed work.** Recorded completed items inform `COMPLETED` and `DO NOT REDO` conservatively; the receiving agent is told to verify, never to skip verification, and never to restart.
+- **Live capture under the lease.** The workspace lease is held continuously from repository observation through target provider runtime, so no other CortexShift agent can invalidate the observation before the receiving agent starts.
+- **Git optionality with honest markers.** `git_not_installed` and `not_git_repository` continue the handoff with an explicit marker and no snapshot row; fake `GitSnapshot` rows are never created. An unexpected `probe_error` fails the switch safely instead of shipping an unreliable observation.
+- **Bounded transport, complete storage.** Rendering is capped at 48,000 characters using deterministic character and list budgets — no tokenizer, no summarizer, no model. Mandatory context is never dropped; omissions are always reported with exact counts; the persisted payload is never truncated and remains retrievable via `cortexshift handoff show ID --json`.
+- **Rendered prompts are never persisted.** They are transport representations, re-derived from canonical state on demand.
+- **Delivery ≠ session outcome.** `HandoffStatus` (`prepared`/`delivered`/`failed`) describes whether context arrived; the target Session remains the source of truth for how the receiving coding session ended. Failure codes are safe machine classifications that never embed raw provider output.
+- **Switch never mutates task progress.** Not even a clean exit 0 marks work complete; CortexShift does not infer business progress from process status.
+- **Manual switching only.** No quota parsing, no automatic provider selection, no automatic termination or auto-switching. The user runs `cortexshift switch TARGET` explicitly.
+- **Historical handoff semantics.** A stored handoff is an immutable record of what was true at capture time. Live repository inspection always outranks it, exactly as with `GitSnapshot`.
+
+### Provider Delivery Strategies
+
+| Provider | Strategy | Bootstrap model turn |
+| :--- | :--- | :--- |
+| Claude Code | `direct_initial_prompt` — `[claude, <handoff-context>]` | No |
+| Codex | `direct_initial_prompt` — `[codex, <handoff-context>]` | No |
+| Antigravity | `plan_bootstrap_then_resume` | Yes — one read-only planning turn |
+
+Antigravity uses two documented native capabilities in sequence: a read-only headless plan turn (`agy --mode=plan -p <context> --output-format json`) that ingests the context, followed by an interactive resume of that same conversation (`agy --conversation <id>`). Only `conversation_id` and `status` are parsed; the response is discarded. Permission-bypass flags are never used, and CortexShift never automates TUI keystrokes — so the user may need to approve continuation in the resumed UI, which the CLI states plainly.
+
+See [ADR-0006](decisions/ADR-0006-canonical-agent-handoff.md) and the [Canonical Handoff Protocol](handoff-protocol.md) for the full contract.
+
+---
+
+## 12. Checkpoints & Resilient Recovery
 
 AI coding sessions terminate abruptly due to rate limits, context exhaustion, network timeouts, or user interruptions. Waiting for an agent to generate an exit handoff is unreliable.
 
@@ -341,7 +431,7 @@ CortexShift's checkpointing model guarantees recovery:
 
 ---
 
-## 12. What is Explicitly Out of Scope for Initial Phases
+## 13. What is Explicitly Out of Scope for Initial Phases
 
 To maintain strict engineering focus, the following are explicitly out of scope for Phase 0 and initial milestones:
 - Parallel multi-agent editing

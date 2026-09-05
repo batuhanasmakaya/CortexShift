@@ -13,10 +13,17 @@ from cortexshift.domain.errors import (
     UnsupportedSchemaVersionError,
 )
 from cortexshift.domain.git import GitSnapshot
+from cortexshift.domain.handoff import (
+    HandoffFailureCode,
+    HandoffPayload,
+    HandoffRecord,
+    HandoffStatus,
+)
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import ProviderId
 from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 from cortexshift.domain.task import Task, TaskStatus
+from cortexshift.ports.handoff_store import HandoffStore
 from cortexshift.ports.repository import RepositorySnapshotStore
 from cortexshift.ports.session_store import SessionStore
 from cortexshift.ports.state_store import StateStore
@@ -30,7 +37,7 @@ def _parse_utc_datetime(iso_str: str) -> datetime:
     return dt.astimezone(UTC)
 
 
-class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore):
+class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, HandoffStore):
     """SQLite-backed StateStore managing project-local canonical state."""
 
     def __init__(self, db_path: Path | str, auto_migrate: bool = True) -> None:
@@ -529,5 +536,172 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore):
             ended_at=_parse_utc_datetime(row["ended_at"]) if row["ended_at"] else None,
             exit_reason=SessionExitReason(row["exit_reason"]) if row["exit_reason"] else None,
             exit_code=row["exit_code"],
+            metadata=json.loads(row["metadata"]),
+        )
+
+    # --- Handoff Operations (HandoffStore) ---
+
+    def save_handoff(self, handoff: HandoffRecord) -> None:
+        """Persist or update a canonical HandoffRecord.
+
+        The canonical payload is stored as validated JSON text. Rendered provider
+        prompts and provider responses are never persisted.
+        """
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO handoffs (
+                        id, protocol_version, project_id, task_id,
+                        source_session_id, source_provider_id, target_provider_id,
+                        git_snapshot_id, target_session_id, status, payload,
+                        created_at, delivered_at, failure_code, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        protocol_version = excluded.protocol_version,
+                        project_id = excluded.project_id,
+                        task_id = excluded.task_id,
+                        source_session_id = excluded.source_session_id,
+                        source_provider_id = excluded.source_provider_id,
+                        target_provider_id = excluded.target_provider_id,
+                        git_snapshot_id = excluded.git_snapshot_id,
+                        target_session_id = excluded.target_session_id,
+                        status = excluded.status,
+                        payload = excluded.payload,
+                        delivered_at = excluded.delivered_at,
+                        failure_code = excluded.failure_code,
+                        metadata = excluded.metadata;
+                    """,
+                    (
+                        handoff.id,
+                        handoff.protocol_version,
+                        handoff.project_id,
+                        handoff.task_id,
+                        handoff.source_session_id,
+                        str(handoff.source_provider_id),
+                        str(handoff.target_provider_id),
+                        handoff.git_snapshot_id,
+                        handoff.target_session_id,
+                        handoff.status.value,
+                        handoff.payload.model_dump_json(),
+                        handoff.created_at.isoformat(),
+                        handoff.delivered_at.isoformat() if handoff.delivered_at else None,
+                        handoff.failure_code.value if handoff.failure_code else None,
+                        json.dumps(handoff.metadata, ensure_ascii=False),
+                    ),
+                )
+        except sqlite3.IntegrityError as err:
+            raise DatabaseStateError(f"Failed to persist handoff '{handoff.id}': {err}") from err
+        except sqlite3.Error as err:
+            raise DatabaseStateError(f"Failed to save handoff '{handoff.id}': {err}") from err
+
+    def update_handoff_delivery(
+        self,
+        handoff_id: str,
+        status: HandoffStatus,
+        target_session_id: str | None = None,
+        delivered_at: datetime | None = None,
+        failure_code: HandoffFailureCode | None = None,
+    ) -> None:
+        """Update delivery metadata of an existing handoff record."""
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    UPDATE handoffs SET
+                        status = ?,
+                        target_session_id = COALESCE(?, target_session_id),
+                        delivered_at = ?,
+                        failure_code = ?
+                    WHERE id = ?;
+                    """,
+                    (
+                        status.value,
+                        target_session_id,
+                        delivered_at.isoformat() if delivered_at else None,
+                        failure_code.value if failure_code else None,
+                        handoff_id,
+                    ),
+                )
+        except sqlite3.Error as err:
+            msg = f"Failed to update handoff delivery for '{handoff_id}': {err}"
+            raise DatabaseStateError(msg) from err
+
+    def get_handoff(self, handoff_id: str) -> HandoffRecord | None:
+        """Retrieve a HandoffRecord by its stable identifier."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, protocol_version, project_id, task_id,
+                       source_session_id, source_provider_id, target_provider_id,
+                       git_snapshot_id, target_session_id, status, payload,
+                       created_at, delivered_at, failure_code, metadata
+                FROM handoffs WHERE id = ?;
+                """,
+                (handoff_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return self._row_to_handoff(row)
+        except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
+            msg = f"Failed to retrieve handoff '{handoff_id}': {err}"
+            raise StateCorruptionError(msg) from err
+
+    def list_handoffs(
+        self,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        limit: int = 20,
+    ) -> list[HandoffRecord]:
+        """List handoff records, ordered newest first."""
+        try:
+            cursor = self._conn.cursor()
+            conditions: list[str] = []
+            params: list[Any] = []
+
+            if project_id is not None:
+                conditions.append("project_id = ?")
+                params.append(project_id)
+
+            if task_id is not None:
+                conditions.append("task_id = ?")
+                params.append(task_id)
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+                SELECT id, protocol_version, project_id, task_id,
+                       source_session_id, source_provider_id, target_provider_id,
+                       git_snapshot_id, target_session_id, status, payload,
+                       created_at, delivered_at, failure_code, metadata
+                FROM handoffs
+                {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ?;
+            """
+            params.append(max(1, limit))
+            cursor.execute(query, params)
+            return [self._row_to_handoff(row) for row in cursor.fetchall()]
+        except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
+            raise StateCorruptionError(f"Failed to list handoffs: {err}") from err
+
+    def _row_to_handoff(self, row: sqlite3.Row) -> HandoffRecord:
+        """Convert a database row into a HandoffRecord domain entity."""
+        return HandoffRecord(
+            id=row["id"],
+            protocol_version=int(row["protocol_version"]),
+            project_id=row["project_id"],
+            task_id=row["task_id"],
+            source_session_id=row["source_session_id"],
+            source_provider_id=ProviderId(row["source_provider_id"]),
+            target_provider_id=ProviderId(row["target_provider_id"]),
+            git_snapshot_id=row["git_snapshot_id"],
+            target_session_id=row["target_session_id"],
+            status=HandoffStatus(row["status"]),
+            payload=HandoffPayload.model_validate_json(row["payload"]),
+            created_at=_parse_utc_datetime(row["created_at"]),
+            delivered_at=_parse_utc_datetime(row["delivered_at"]) if row["delivered_at"] else None,
+            failure_code=(HandoffFailureCode(row["failure_code"]) if row["failure_code"] else None),
             metadata=json.loads(row["metadata"]),
         )

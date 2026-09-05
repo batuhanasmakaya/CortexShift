@@ -11,6 +11,11 @@ from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.provider import PROVIDER_CLAUDE, ProviderCapabilities, ProviderId
 from cortexshift.ports.command_runner import CommandRunner
 from cortexshift.ports.discovery import ProviderProbe
+from cortexshift.ports.handoff_delivery import (
+    HandoffDeliveryPreparation,
+    HandoffDeliveryStrategy,
+    ProviderHandoffAdapter,
+)
 from cortexshift.ports.provider import ProviderRuntimeAdapter
 
 _VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?(?:[-.][a-zA-Z0-9]+)?)")
@@ -205,4 +210,55 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
             interactive=True,
             initial_prompt_supported=True,
             prompt_supplied=prompt_supplied,
+        )
+
+
+class ClaudeHandoffAdapter(ProviderHandoffAdapter):
+    """Delivers canonical handoff context to Claude Code's native interactive CLI.
+
+    Claude Code's documented interactive launch accepts an initial prompt as a trailing
+    positional argument, so the canonical context is delivered directly as a single
+    argv element. No extra headless model turn is required, no transcript is imported,
+    and model, permission mode, and sandbox settings remain the user's own.
+    """
+
+    def __init__(self, runtime_adapter: ClaudeRuntimeAdapter | None = None) -> None:
+        self._runtime = runtime_adapter or ClaudeRuntimeAdapter()
+
+    @property
+    def provider_id(self) -> ProviderId:
+        return PROVIDER_CLAUDE
+
+    @property
+    def display_name(self) -> str:
+        return self._runtime.display_name
+
+    @property
+    def executable(self) -> str:
+        return self._runtime.executable
+
+    @property
+    def delivery_strategy(self) -> HandoffDeliveryStrategy:
+        return HandoffDeliveryStrategy.DIRECT_INITIAL_PROMPT
+
+    @property
+    def bootstrap_model_turn_required(self) -> bool:
+        return False
+
+    def prepare_delivery(
+        self,
+        executable_path: str,
+        project_root: Path,
+        rendered_context: str,
+    ) -> HandoffDeliveryPreparation:
+        """Build the native interactive launch carrying the handoff as one argument."""
+        launch_spec = self._runtime.build_launch_spec(
+            project_root=project_root,
+            executable_path=executable_path,
+            prompt=rendered_context,
+        )
+        return HandoffDeliveryPreparation(
+            launch_spec=launch_spec,
+            native_session_id=None,
+            bootstrap_performed=False,
         )

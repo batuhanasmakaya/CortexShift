@@ -7,7 +7,7 @@ from collections.abc import Callable
 from cortexshift.domain.errors import DatabaseStateError, UnsupportedSchemaVersionError
 from cortexshift.domain.identifiers import utc_now
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 def _migrate_v1(conn: sqlite3.Connection) -> None:
@@ -108,11 +108,49 @@ def _migrate_v3(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_sessions_provider_id ON sessions(provider_id);")
 
 
+def _migrate_v4(conn: sqlite3.Connection) -> None:
+    """Apply Schema Version 4: handoffs table for canonical cross-provider handoffs.
+
+    ``payload`` stores the canonical ``HandoffPayload`` as validated JSON text. The
+    payload is itself a strictly typed Pydantic schema, so canonical JSON keeps the
+    column extensible without repr/pickle/eval or a wide, brittle column set.
+
+    Deletion semantics: a handoff is meaningless without its project and task, so those
+    cascade. Optional target-session and snapshot references null out, allowing handoff
+    history to survive even if a referenced observation is removed.
+    """
+    conn.execute(
+        """
+        CREATE TABLE handoffs (
+            id TEXT PRIMARY KEY,
+            protocol_version INTEGER NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            source_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            source_provider_id TEXT NOT NULL,
+            target_provider_id TEXT NOT NULL,
+            git_snapshot_id TEXT REFERENCES git_snapshots(id) ON DELETE SET NULL,
+            target_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+            status TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            delivered_at TEXT,
+            failure_code TEXT,
+            metadata TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute("CREATE INDEX idx_handoffs_project_id ON handoffs(project_id);")
+    conn.execute("CREATE INDEX idx_handoffs_task_id ON handoffs(task_id);")
+    conn.execute("CREATE INDEX idx_handoffs_created_at ON handoffs(created_at DESC);")
+
+
 # Ordered registry of migration functions: index 0 is v1, index 1 is v2, index 2 is v3, etc.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1,
     _migrate_v2,
     _migrate_v3,
+    _migrate_v4,
 ]
 
 

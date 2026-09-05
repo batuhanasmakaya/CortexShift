@@ -184,3 +184,66 @@ class SessionNotFoundError(CortexShiftError):
     def __init__(self, session_id: str) -> None:
         super().__init__(f"Session '{session_id}' was not found.")
         self.session_id = session_id
+
+
+class NoSourceSessionError(CortexShiftError):
+    """Raised when a handoff is requested but no prior CortexShift Session exists.
+
+    `switch` is strictly a provider handoff operation; it never silently degrades into
+    a first-agent `run`.
+    """
+
+    def __init__(self, message: str | None = None) -> None:
+        if message is None:
+            message = (
+                "No previous CortexShift session exists for the active task.\n\n"
+                "There is nothing to hand off yet.\n\n"
+                "Start the first agent on this task with:\n\n"
+                "  cortexshift run <provider>\n"
+            )
+        super().__init__(message)
+
+
+class SessionTaskMismatchError(CortexShiftError):
+    """Raised when an explicitly selected source Session does not belong to the active task."""
+
+    def __init__(self, session_id: str, task_id: str) -> None:
+        super().__init__(
+            f"Session '{session_id}' does not belong to the active task '{task_id}'.\n\n"
+            "A handoff source session must belong to the currently active CortexShift task."
+        )
+        self.session_id = session_id
+        self.task_id = task_id
+
+
+class SameProviderSwitchError(CortexShiftError):
+    """Raised when the handoff target provider equals the source session provider."""
+
+    def __init__(self, provider_display_name: str) -> None:
+        super().__init__(
+            f"The latest task session already uses {provider_display_name}.\n\n"
+            "CortexShift switch is intended for provider handoff.\n\n"
+            "Choose a different target provider, or select an explicit source session "
+            "with --from-session."
+        )
+        self.provider_display_name = provider_display_name
+
+
+class HandoffNotFoundError(CortexShiftError):
+    """Raised when a handoff with the specified identifier cannot be found."""
+
+    def __init__(self, handoff_id: str) -> None:
+        super().__init__(f"Handoff '{handoff_id}' was not found.")
+        self.handoff_id = handoff_id
+
+
+class HandoffDeliveryError(CortexShiftError):
+    """Raised when handoff context could not be delivered to the target provider.
+
+    Carries a safe machine classification. Raw provider stdout/stderr and any provider
+    bootstrap response are deliberately excluded from both the message and the code.
+    """
+
+    def __init__(self, failure_code: str, message: str) -> None:
+        super().__init__(message)
+        self.failure_code = failure_code

@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from cortexshift.domain.handoff import Handoff
+from cortexshift.domain.handoff import HandoffRecord
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.provider import ProviderCapabilities, ProviderId
 from cortexshift.domain.task import Task
@@ -33,7 +33,7 @@ class ProviderAdapter(Protocol):
     def launch_interactive(
         self,
         task: Task,
-        handoff: Handoff | None = None,
+        handoff: HandoffRecord | None = None,
     ) -> int:
         """Launch an interactive terminal session with this provider on the given task.
 
@@ -50,7 +50,7 @@ class ProviderAdapter(Protocol):
         self,
         task: Task,
         instruction: str,
-        handoff: Handoff | None = None,
+        handoff: HandoffRecord | None = None,
     ) -> int:
         """Run a non-interactive single-command session if supported.
 

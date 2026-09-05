@@ -12,7 +12,7 @@ Each phase builds systematically upon the previous phase without premature compl
 Phase 0  ──▶  Phase 1  ──▶  Phase 2  ──▶  Phase 3  ──▶  Phase 4  ──▶  Phase 5
 Foundation    Provider      Task State    Git Context   Native        Manual
 & Arch        Discovery     & SQLite                    Launch        Handoff
-(Complete)    (Complete)    (Complete)    (Complete)    (Complete)    (Next)
+(Complete)    (Complete)    (Complete)    (Complete)    (Complete)    (Complete)
 
 Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
 Native        Checkpoints   MCP Server    TUI           Public        Experimental
@@ -103,27 +103,38 @@ Launch external coding agents through non-invasive adapters with raw terminal pa
 
 ---
 
-## Phase 5 — Manual Handoff *(Next)*
+## Phase 5 — Canonical Manual Handoff & Agent Switching *(Completed)*
 
-Complete the first end-to-end multi-agent workflow.
+The first end-to-end multi-agent workflow: one Task, multiple coding agents, no manual re-explanation.
 
-- **Goals**:
-  - Switch from Claude Code to OpenAI Codex or Google Antigravity seamlessly:
-    ```bash
-    cortexshift switch codex
-    ```
-  - Compile the canonical handoff package into a structured injection prompt.
-  - Verify that the incoming agent can inspect the repo and continue the task without context degradation.
+- **Deliverables**:
+  - `cortexshift switch claude|codex|antigravity` moving the active Task to another agent with full canonical context, plus `--from-session`, `--note`, `--dry-run`, and `--json`.
+  - **Outgoing-agent independence**: handoffs derive deterministically from the canonical Project, canonical Task, previous Session metadata, live Git inspection, and a Git snapshot captured at switch time. No outgoing model call is ever made, and the outgoing provider's executable is never resolved — covered by dedicated regression tests.
+  - CortexShift Handoff Protocol v1 (`HANDOFF_PROTOCOL_VERSION`), versioned independently of the SQLite schema.
+  - Domain refactor into `HandoffPayload` (canonical engineering context) and `HandoffRecord` (orchestration and delivery metadata), with `HandoffStatus` and safe `HandoffFailureCode` classifications.
+  - Deterministic `HandoffBuilder` (pure, no I/O, no model) and provider-neutral `HandoffRenderer` with a bounded 48,000-character transport budget, reported truncation counts, and an untruncated persisted payload.
+  - Honest unknown state: absent decisions and unverified test status are stated, never invented; a provider exiting 0 is never read as "tests pass".
+  - Receiving-agent contract: CortexShift authority order plus explicit startup instructions (read `AGENTS.md`, inspect `git status`/`git diff`, verify recorded completed work, run relevant tests, continue rather than restart).
+  - `HandoffStore` persistence port and SQLite schema migration v4 adding the `handoffs` table, with all Phase 1–4 state preserved.
+  - `ProviderHandoffAdapter` port isolating delivery variance: direct interactive initial prompt for Claude Code and Codex; read-only plan-mode bootstrap plus native conversation resume for Antigravity.
+  - `HeadlessProviderRunner` port and `SubprocessHeadlessProviderRunner` adapter for one bounded, shell-free, TTY-free provider turn.
+  - `ProviderSessionLauncher` extracted from `RunService` so `run` and `switch` share one Session lifecycle without nesting advisory locks.
+  - Zero-quota inspection: `cortexshift handoff preview <target>` and `cortexshift switch <target> --dry-run` persist nothing and launch nothing.
+  - Durable handoff history: `cortexshift handoff list` and `cortexshift handoff show <id>` with `--json`.
+  - ADR-0006, an implemented [Canonical Handoff Protocol](handoff-protocol.md), and a flagship Claude → Codex → Antigravity integration test using fake providers with no network and no real model call.
 
 ---
 
-## Phase 6 — Native Session Persistence
+## Phase 6 — Native Session Persistence & Resume
 
-Track native session identifiers to allow returning to prior sessions when supported.
+Track native session identifiers to allow returning to prior provider-native sessions when supported.
 
 - **Goals**:
-  - Capture provider session/thread IDs.
-  - Resume existing native sessions when supported by the provider CLI.
+  - Capture provider session/thread IDs systematically across providers.
+  - Resume existing native sessions when supported by the provider CLI (`cortexshift session resume`, `run --resume`).
+
+> [!NOTE]
+> Phase 5 captures an Antigravity `conversation_id` during handoff delivery. That is a **transport implementation detail** of Antigravity's two-stage delivery strategy — it is what makes the read-only bootstrap and the interactive resume the *same* conversation. It does **not** mean the general Phase 6 session-resume feature exists: CortexShift exposes no general native resume command, and Claude/Codex native session IDs are not captured.
 
 ---
 

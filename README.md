@@ -42,9 +42,37 @@ Claude Code      Codex        Antigravity
 ## Status: Pre-Alpha
 
 > [!NOTE]
-> CortexShift is currently in **Phase 4 (Native Provider Launch & CortexShift Session Lifecycle)**. It supports launching native interactive provider sessions (`claude`, `codex`, `antigravity`) with raw terminal passthrough, workspace concurrency leasing, session tracking, dry-run simulation, durable Git snapshots, persistent task models, and safe provider discovery.
+> CortexShift is currently in **Phase 5 (Canonical Manual Handoff & Agent Switching)**. A single Task can now move between Claude Code, Codex, and Antigravity through `cortexshift switch`, carrying deterministic canonical context. Crucially, the outgoing agent does **not** need to still be available: handoffs are derived from durable local state and live Git, never from an outgoing model call.
 
-### What Works Today (Phase 4)
+### What Works Today (Phase 5)
+
+```text
+✓ native provider discovery
+✓ persistent Task context
+✓ live Git context
+✓ historical Git snapshots
+✓ native provider launch
+✓ CortexShift Session history
+✓ deterministic canonical handoff generation
+✓ Claude → Codex switching
+✓ Codex → Claude switching
+✓ Antigravity handoff bootstrap + native conversation resume
+✓ persisted handoff history
+```
+
+- **Canonical Handoff & Agent Switching (Phase 5)**:
+  - Move the active task to another coding agent with `cortexshift switch claude|codex|antigravity`.
+  - **The outgoing agent is never required.** Handoffs are built deterministically from the canonical Project, canonical Task, previous CortexShift Session metadata, live Git inspection, and a Git snapshot captured at switch time. CortexShift makes **no outgoing model call** and never even resolves the outgoing provider's executable — so switching works after Claude's quota is exhausted, its process is gone, or its CLI is uninstalled.
+  - CortexShift Handoff Protocol v1: a provider-neutral canonical payload (project, objective, requirements, constraints, completed, current work, remaining, decisions, files touched, test status, known issues, Git state, do-not-redo, recommended next action) plus orchestration metadata, persisted in SQLite schema v4.
+  - Every receiving agent is given the CortexShift authority order (repository files → live Git → verified test results → canonical task state → historical summaries) and an explicit startup contract: read `AGENTS.md`, inspect `git status` and `git diff`, verify recorded completed work rather than trusting it, run relevant tests, and continue rather than restart.
+  - Honest unknown state: absent decisions and unverified test status are stated as unknown, never invented. A provider exiting with code 0 is never read as "tests pass".
+  - Deterministic bounded context (48,000 characters) with reported truncation counts; the persisted canonical payload is never truncated and stays retrievable via `cortexshift handoff show ID --json`.
+  - Live Git captured under the exclusive workspace lease, held continuously from repository observation through receiving-provider runtime. Non-Git projects hand off with an explicit marker; an unexpected Git probe error fails the switch safely instead of shipping an unreliable observation.
+  - Claude Code and Codex receive the context directly as their native interactive initial prompt (argument arrays, `shell=False`, one argument, no `-p` / `codex exec`, no model or permission overrides).
+  - Antigravity uses a two-stage documented native flow: one **read-only plan-mode bootstrap** that ingests the context, then an interactive resume of that same conversation (`agy --conversation <id>`). Only `conversation_id` and `status` are parsed; the response is discarded. No permission bypass, no TUI keystroke automation.
+  - Zero-cost inspection: `cortexshift handoff preview <target>` and `cortexshift switch <target> --dry-run` persist nothing, launch nothing, and consume no model quota — including for Antigravity, where the dry run never performs the bootstrap turn.
+  - Durable handoff history: `cortexshift handoff list` and `cortexshift handoff show <id>`, with `--json` on every surface.
+  - `switch` never mutates task progress: it does not mark work complete, alter the backlog, clear issues, or complete the task, even on a clean exit.
 - **Native Provider Launch & Session Lifecycle (Phase 4)**:
   - Launch native coding agent interactive CLIs directly (`cortexshift run claude`, `cortexshift run codex`, `cortexshift run antigravity`).
   - Raw TTY direct passthrough without scraping, buffering, pipe-wrapping, or modifying provider TUIs.
@@ -85,42 +113,65 @@ Claude Code      Codex        Antigravity
   - 100% type-checked code via strict `mypy`, formatted via `ruff`, with comprehensive unit and integration tests.
 
 ### What Does NOT Work Yet
-- ✗ Agent switching or executing multi-agent workflows (`cortexshift switch`) (planned for Phase 5).
-- ✗ Automatic context handoffs between agents (planned for Phase 5).
-- ✗ Headless/batch provider executions (planned for Phase 6).
-- ✗ Resuming native agent sessions (planned for Phase 6).
-- ✗ Checkpoint automation and disaster recovery (planned for Phase 7).
-- ✗ Model Context Protocol (MCP) server integration (planned for Phase 8).
+
+```text
+✗ general native provider session resume through CortexShift
+✗ automatic outgoing-agent summaries
+✗ automatic quota detection
+✗ automatic switching
+✗ automatic periodic checkpoints
+✗ MCP shared state
+✗ transcript transplantation
+```
+
+- ✗ General native provider session resume (`cortexshift session resume`, `run --resume`) is not implemented (planned for Phase 6). The Antigravity conversation ID captured during a handoff is a transport implementation detail of that provider's delivery strategy, not a general resume feature.
+- ✗ Automatic outgoing-agent summaries are deliberately absent — and always will be as a *requirement*. CortexShift must work when the outgoing agent cannot answer.
+- ✗ Automatic quota/rate-limit detection and automatic provider switching (explicitly out of scope; switching is manual).
+- ✗ Automatic periodic checkpoints and disaster recovery (planned for Phase 7).
+- ✗ Model Context Protocol (MCP) shared state (planned for Phase 8).
+- ✗ Transcript transplantation between providers (deliberately never — see [ADR-0006](docs/decisions/ADR-0006-canonical-agent-handoff.md)).
 
 
 ---
 
-## Conceptual Vision
-
-Once fully implemented, the developer workflow will look like this:
+## The Core Workflow
 
 ```bash
-# 1. Start a task and launch Claude Code
-cortexshift run claude "Refactor auth layer to support OAuth2 PKCE"
+# 1. Record the task, then launch Claude Code on it
+cortexshift task start --title "OAuth2 PKCE" \
+  --objective "Refactor the auth layer to support OAuth2 PKCE" \
+  --requirement "Support refresh token rotation" \
+  --constraint "No new third-party dependencies"
+
+cortexshift run claude
 
 # Claude works, makes edits, runs tests...
-# If Claude reaches a usage limit:
+# Then Claude exits, or its quota becomes unusable.
 
-# 2. Switch to OpenAI Codex without losing context
+# 2. Switch to Codex. Codex receives canonical context automatically
+#    and continues the SAME CortexShift Task.
 cortexshift switch codex
 
-# Codex receives the canonical handoff, inspects the repo, and continues...
-
-# 3. Switch to Google Antigravity
+# 3. Switch again. Antigravity receives the same task continuity
+#    and continues from the current repository state.
 cortexshift switch antigravity
 ```
 
-The receiving agent instantly understands:
+The receiving agent is given:
 - The original objective, requirements, and constraints
-- What was completed vs. what remains
-- Important decisions made and their rationale
-- Files touched and test suite status
-- Things NOT to redo or rollback
+- What is recorded as completed vs. what remains, and what is in flight
+- Files changed according to live Git, plus branch, HEAD, and dirty state
+- Known issues and a deterministic recommended next action
+- The CortexShift authority order, and an explicit instruction to verify against the repository and run relevant tests rather than trust the handoff
+
+**Claude does not need to still be running — or even installed.** CortexShift builds the handoff from its own durable state and live Git, so a switch works precisely when the previous agent has become unusable.
+
+Inspect any handoff without spending a single token:
+
+```bash
+cortexshift handoff preview codex        # exactly what the next agent would receive
+cortexshift switch codex --dry-run       # what the switch would do, nothing performed
+```
 
 ---
 
@@ -134,6 +185,7 @@ The receiving agent instantly understands:
 6. **Single Mutating Agent**: Only one coding agent actively mutates a workspace at a time.
 7. **Local-First & Private**: Zero mandatory cloud services, telemetry, or external databases. CortexShift never captures or manages provider credentials.
 8. **Structured Canonical State**: We pass concise, structured handoff packages rather than bloated conversational transcripts (`capture_transcripts = false`).
+9. **The Outgoing Agent Is Never Required**: Handoffs are derived deterministically from durable local state and live Git. CortexShift never asks a departing agent to summarize its work, because the moment you most need to switch is the moment it can no longer answer.
 
 ---
 
@@ -231,7 +283,42 @@ uv run cortexshift session list --limit 5
 # Show specific session details
 uv run cortexshift session show sess_<id>
 uv run cortexshift session show sess_<id> --json
+
+# Preview the canonical context a target agent would receive (Phase 5)
+# Persists nothing, launches nothing, consumes zero model quota.
+uv run cortexshift handoff preview codex
+uv run cortexshift handoff preview codex --json
+
+# Describe a switch without performing it
+# For Antigravity this never runs the plan-mode bootstrap turn.
+uv run cortexshift switch codex --dry-run
+uv run cortexshift switch codex --dry-run --json
+uv run cortexshift switch antigravity --dry-run
+
+# Hand the active task to another coding agent and launch it with full context
+uv run cortexshift switch codex
+uv run cortexshift switch claude
+uv run cortexshift switch antigravity
+
+# Hand off from a specific historical session, with an optional operator note
+uv run cortexshift switch codex --from-session sess_<id>
+uv run cortexshift switch codex --note "Mind the flaky integration test"
+
+# Inspect persisted handoff history
+uv run cortexshift handoff list
+uv run cortexshift handoff list --json
+uv run cortexshift handoff show handoff_<id>
+uv run cortexshift handoff show handoff_<id> --json
 ```
+
+> [!NOTE]
+> **Antigravity handoffs perform one read-only model turn.** Because Antigravity's native
+> interactive startup does not accept a direct initial prompt, `cortexshift switch antigravity`
+> first runs a single read-only plan-mode bootstrap (`agy --mode=plan …`) so the context is
+> ingested, then reopens that same conversation in the native TUI. This may consume Antigravity
+> usage; your explicit `switch antigravity` authorizes it, and `--dry-run` never performs it.
+> CortexShift does not automate TUI keystrokes, so you may need to review the prepared
+> continuation plan and continue from the resumed UI.
 
 ### Running Tests and Quality Checks
 
@@ -259,6 +346,7 @@ uv run mypy
 - [ADR-0003: Project-Local Persistence](docs/decisions/ADR-0003-project-local-persistence.md)
 - [ADR-0004: Git Repository Context](docs/decisions/ADR-0004-git-repository-context.md)
 - [ADR-0005: Native Provider Launch & Session Lifecycle](docs/decisions/ADR-0005-native-provider-runtime.md)
+- [ADR-0006: Canonical Agent Handoff & Manual Provider Switching](docs/decisions/ADR-0006-canonical-agent-handoff.md)
 - [Agent Contributor Contract](AGENTS.md)
 - [Contributing Guide](CONTRIBUTING.md)
 
