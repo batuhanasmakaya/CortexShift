@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Phase 1: Native Provider Discovery & `cortexshift doctor`**:
+  - Safe subprocess command execution abstraction (`CommandRunner` port, `SubprocessCommandRunner` adapter) with argument lists, finite timeouts, and error handling without `shell=True`.
+  - Passive native provider probes for Claude Code (`claude`), OpenAI Codex (`codex`), and Google Antigravity (`agy`).
+  - Best-effort version detection and passive authentication status classification (`claude auth status`, `codex login status`).
+  - Strict preservation of privacy and quotas: never sends model prompts (specifically never `agy -p ...`), never reads vendor credential storage, never leaks auth tokens.
+  - Diagnostic domain models: `AuthenticationStatus`, `PlatformInfo`, `ProviderDiagnostic`, `DoctorReport`.
+  - Application layer `DoctorService` orchestrating provider discovery and privacy-preserving platform metadata collection.
+  - `cortexshift doctor` command with Rich terminal formatting and machine-readable `--json` output.
+  - Provider filtering via `--provider` / `-p` with validation for unknown provider IDs.
+  - Ephemeral diagnostic design without state persistence or disk mutation in Phase 1.
+  - Architectural Decision Record `ADR-0002-safe-provider-discovery.md`.
+  - Comprehensive automated unit and integration tests with regression guards for prompt and credential invariants.
+
 ## [0.1.0] - 2026-09-05
 
 ### Added

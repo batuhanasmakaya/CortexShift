@@ -41,23 +41,33 @@ Claude Code      Codex        Antigravity
 
 ## Status: Pre-Alpha
 
-> [!WARNING]
-> CortexShift is currently in **Phase 0 (Foundation & Architecture)**. It is in active early development and not yet ready for production use.
+> [!NOTE]
+> CortexShift is currently in **Phase 1 (Native Provider Discovery & `cortexshift doctor`)**. It is in active early development and not yet ready for production task execution.
 
-### What Works Today (Phase 0)
-- Core domain model definitions (`Project`, `Task`, `Session`, `Checkpoint`, `Handoff`, `GitSnapshot`, `ProviderCapabilities`).
-- Pure abstract ports (`ProviderAdapter`, `RepositoryInspector`, `StateStore`).
-- Initial CLI skeleton (`cortexshift --help`, `cortexshift version`, `python -m cortexshift --help`).
-- Multi-agent development contract ([`AGENTS.md`](AGENTS.md)).
-- Architecture specifications and canonical handoff protocol ([`docs/`](docs/)).
-- 100% type-checked code via strict `mypy`, formatted via `ruff`, with comprehensive unit and integration tests.
+### What Works Today (Phase 1)
+- **Native Provider Discovery**:
+  - Discover supported native coding-agent CLIs (`claude`, `codex`, `agy` for Antigravity).
+  - Best-effort version inspection without launching full agent TUIs.
+  - Conservative, passive authentication status inspection where safely supported (`claude auth status`, `codex login status`).
+  - Strict preservation of privacy and quotas: never sends model prompts, never reads vendor credential storage, never leaks auth tokens.
+- **`cortexshift doctor` Command**:
+  - Polished Rich terminal table with environment summary, installation status, versions, and auth checks.
+  - Clean, machine-readable JSON output via `cortexshift doctor --json`.
+  - Provider filtering via `--provider` / `-p` (e.g. `cortexshift doctor --provider claude`).
+- **Foundational Architecture (Phase 0)**:
+  - Core domain model definitions (`Project`, `Task`, `Session`, `Checkpoint`, `Handoff`, `GitSnapshot`, `ProviderCapabilities`, `DoctorReport`).
+  - Pure abstract ports (`CommandRunner`, `ProviderDiscoveryPort`, `ProviderAdapter`, `RepositoryInspector`, `StateStore`).
+  - Multi-agent development contract ([`AGENTS.md`](AGENTS.md)).
+  - Architecture specifications, ADRs ([`ADR-0001`](docs/decisions/ADR-0001-core-architecture.md), [`ADR-0002`](docs/decisions/ADR-0002-safe-provider-discovery.md)), and canonical handoff protocol ([`docs/`](docs/)).
+  - 100% type-checked code via strict `mypy`, formatted via `ruff`, with comprehensive unit and integration tests.
 
 ### What Does NOT Work Yet
-- Native CLI launching or switching between Claude, Codex, or Antigravity (planned for Phases 4 & 5).
-- Provider discovery or `cortexshift doctor` (planned for Phase 1).
-- Local SQLite persistence and task management commands (`cortexshift init`, `cortexshift task`, `cortexshift status`) (planned for Phase 2).
-- Automatic Git state inspection subprocesses (planned for Phase 3).
-- Model Context Protocol (MCP) server (planned for Phase 8).
+- ✗ Starting tasks or managing task lifecycles (planned for Phase 2).
+- ✗ Persisting project state or local SQLite database (`cortexshift init`, `cortexshift task`) (planned for Phase 2).
+- ✗ Inspecting Git context, diffs, or repository snapshots (planned for Phase 3).
+- ✗ Launching coding agents in interactive or headless modes (planned for Phase 4).
+- ✗ Switching agents or executing multi-agent workflows (`cortexshift switch`) (planned for Phase 5).
+- ✗ Handing off context between agents (planned for Phase 5).
 
 ---
 
@@ -128,6 +138,15 @@ uv run cortexshift --help
 
 # Display version
 uv run cortexshift version
+
+# Inspect installed coding agents (Phase 1)
+uv run cortexshift doctor
+
+# Output diagnostics as machine-readable JSON
+uv run cortexshift doctor --json
+
+# Filter to specific provider(s)
+uv run cortexshift doctor --provider claude
 
 # Run via python module
 uv run python -m cortexshift --help

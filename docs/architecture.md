@@ -151,7 +151,41 @@ CortexShift follows Ports and Adapters (Hexagonal Architecture) to ensure absolu
 
 ---
 
-## 7. Checkpoints & Resilient Recovery
+## 7. Native Provider Discovery Flow (Phase 1)
+
+CortexShift discovers and diagnoses locally available coding-agent CLIs through passive inspection:
+
+```text
+CLI (`cortexshift doctor` / `--json`)
+ │
+ ▼
+DoctorService (Application)
+ │
+ ▼
+ProviderDiscoveryPort (Ports)
+ │ (implemented by)
+BuiltinProviderDiscovery (Adapters)
+ │
+ ├── ClaudeProviderProbe (`claude --version`, `claude auth status`)
+ ├── CodexProviderProbe (`codex --version`, `codex login status`)
+ └── AntigravityProviderProbe (`agy --version`)
+ │
+ ▼
+CommandRunner Port (SubprocessCommandRunner)
+ │ (shell=False, argument arrays, finite timeout)
+ ▼
+Native Executables (PATH / OS Subprocess)
+```
+
+### Discovery Principles:
+- **Doctor != Health-Check-by-Model-Call**: `cortexshift doctor` performs passive environment inspection only. It NEVER sends model prompts, executes headless runs, or consumes token quotas to determine authentication or health.
+- **Zero Credential Inspection**: CortexShift never reads local credential files (`~/.claude/`, `~/.codex/`, `~/.gemini/`) or Keychain records.
+- **Safe Subprocess Execution**: External commands are invoked as argument lists without `shell=True`, bound by finite timeouts, with sensitive command output discarded after classification.
+- **Support for Uncertainty**: When a provider does not expose a non-interactive auth status check (e.g., Antigravity `agy`), CortexShift explicitly and honestly reports `Authentication: Unknown`.
+
+---
+
+## 8. Checkpoints & Resilient Recovery
 
 AI coding sessions terminate abruptly due to rate limits, context exhaustion, network timeouts, or user interruptions. Waiting for an agent to generate an exit handoff is unreliable.
 

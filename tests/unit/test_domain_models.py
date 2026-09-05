@@ -328,3 +328,65 @@ class TestHandoffModel:
         json_data = handoff.model_dump_json()
         restored = Handoff.model_validate_json(json_data)
         assert restored == handoff
+
+
+class TestDoctorDomainModels:
+    """Tests for Doctor domain models."""
+
+    def test_authentication_status_values(self) -> None:
+        from cortexshift.domain.doctor import AuthenticationStatus
+
+        assert AuthenticationStatus.AUTHENTICATED.value == "authenticated"
+        assert AuthenticationStatus.NOT_AUTHENTICATED.value == "not_authenticated"
+        assert AuthenticationStatus.UNKNOWN.value == "unknown"
+        assert AuthenticationStatus.NOT_PROBED.value == "not_probed"
+
+    def test_provider_diagnostic_properties_and_aliases(self) -> None:
+        from cortexshift.domain.doctor import (
+            AuthenticationStatus,
+            DoctorReport,
+            PlatformInfo,
+            ProviderDiagnostic,
+        )
+
+        caps = ProviderCapabilities(
+            provider_id=PROVIDER_CLAUDE,
+            display_name="Claude Code",
+        )
+        diag = ProviderDiagnostic(
+            provider_id=PROVIDER_CLAUDE,
+            display_name="Claude Code",
+            executable="claude",
+            installed=True,
+            resolved_path="/usr/bin/claude",
+            version="2.0.0",
+            authentication_status=AuthenticationStatus.AUTHENTICATED,
+            capabilities=caps,
+            diagnostics=["Notes"],
+        )
+
+        assert diag.id == PROVIDER_CLAUDE
+        assert diag.authentication == AuthenticationStatus.AUTHENTICATED
+
+        # Immutability
+        with pytest.raises(ValidationError):
+            diag.installed = False
+
+        # DoctorReport serialization roundtrip
+        platform_info = PlatformInfo(
+            system="Darwin",
+            release="24.0.0",
+            machine="arm64",
+            python_version="3.12.0",
+        )
+        report = DoctorReport(
+            cortexshift_version="0.1.0",
+            python_version="3.12.0",
+            platform=platform_info,
+            timestamp=datetime.now(UTC),
+            providers=[diag],
+        )
+
+        dumped = report.model_dump_json()
+        restored = DoctorReport.model_validate_json(dumped)
+        assert restored == report

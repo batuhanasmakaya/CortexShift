@@ -12,7 +12,7 @@ Each phase builds systematically upon the previous phase without premature compl
 Phase 0  ──▶  Phase 1  ──▶  Phase 2  ──▶  Phase 3  ──▶  Phase 4  ──▶  Phase 5
 Foundation    Provider      Task State    Git Context   Native        Manual
 & Arch        Discovery     & SQLite                    Launch        Handoff
-(Current)
+(Complete)    (Complete)    (Next)
 
 Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
 Native        Checkpoints   MCP Server    TUI           Public        Experimental
@@ -21,7 +21,7 @@ Resume        & Recovery                                Release
 
 ---
 
-## Phase 0 — Foundation & Architecture *(Current Phase)*
+## Phase 0 — Foundation & Architecture *(Completed)*
 
 Establish repository foundation, domain models, abstract ports, CLI skeleton, test suite, and architectural invariants.
 
@@ -35,18 +35,23 @@ Establish repository foundation, domain models, abstract ports, CLI skeleton, te
 
 ---
 
-## Phase 1 — Provider Discovery
+## Phase 1 — Provider Discovery *(Completed)*
 
 Implement non-invasive local detection of installed AI coding agent CLIs.
 
-- **Goals**:
-  - Probe local `PATH` for `claude`, `codex`, `antigravity`, and future binaries.
-  - Query CLI versions, available subcommands, and supported flags.
-  - Implement the `cortexshift doctor` command to display detected environments.
+- **Deliverables**:
+  - Safe subprocess abstraction (`CommandRunner` port, `SubprocessCommandRunner` adapter).
+  - Passive native provider probes for Claude Code (`claude`), OpenAI Codex (`codex`), and Google Antigravity (`agy`).
+  - Best-effort version extraction and conservative, passive authentication classification.
+  - Model prompt and credential file inspection prevention invariants enforced.
+  - `cortexshift doctor` command with Rich human-readable table and machine-readable `--json` output.
+  - Provider filtering (`--provider` / `-p`).
+  - Ephemeral diagnostic architecture (`DoctorService`, `DoctorReport`).
+  - ADR-0002 documentation and automated test suite.
 
 ---
 
-## Phase 2 — Project & Task State
+## Phase 2 — Project & Task State *(Next Phase)*
 
 Introduce local persistence and complete task lifecycle management.
 
