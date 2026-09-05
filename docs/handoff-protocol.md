@@ -109,9 +109,9 @@ The point-in-time engineering context. Provider-neutral, immutable, never trunca
 | **COMPLETED** | `completed` | list[str] | Recorded as completed in canonical state — advisory, must be verified. |
 | **CURRENT WORK** | `current_work` | str \| None | In-flight work when the previous session halted. |
 | **REMAINING** | `remaining` | list[str] | Unfinished backlog. |
-| **IMPORTANT DECISIONS** | `important_decisions`, `decisions_known` | list[str], bool | Empty with `decisions_known = False` in Phase 5 (see §6). |
+| **IMPORTANT DECISIONS** | `important_decisions`, `decisions_known` | list[str], bool | Populated from newest checkpoint if available; otherwise empty with `decisions_known = False` (see §6). |
 | **FILES TOUCHED** | `files_touched` | list[str] | Deduplicated union of live Git change classes (see §8). |
-| **TEST STATUS** | `test_status` | `HandoffTestStatus` | `known` + `summary`; `known = False` in Phase 5 (see §6). |
+| **TEST STATUS** | `test_status` | `HandoffTestStatus` | `known` + `summary`; enriched from newest checkpoint with reported provenance disclaimer (see §6). |
 | **KNOWN ISSUES** | `known_issues` | list[str] | Recorded bugs, blockers, failing edge cases. |
 | **GIT STATE** | `git_state` | `HandoffGitState` | Status, availability marker, branch/HEAD/dirty, change counts, diff summaries, snapshot reference (see §7). |
 | **DO NOT REDO** | `do_not_redo` | list[str] | Derived from recorded completed work; conservative phrasing (see §6). |
@@ -119,20 +119,23 @@ The point-in-time engineering context. Provider-neutral, immutable, never trunca
 | — | `source_session` | `HandoffSourceSession` | Previous session's ID, provider, status, timestamps, exit reason/code. |
 | — | `target_provider_id` | ProviderId | The receiving agent. |
 | — | `operator_note` | str \| None | Optional human note with explicit provenance (see §10). |
+| — | `source_checkpoint_id` | str \| None | ID of the source checkpoint used for enrichment (Phase 7). |
+| — | `source_checkpoint_kind` | str \| None | Kind of the source checkpoint (`manual`, `recovery`, `session_end`). |
+| — | `source_checkpoint_created_at` | datetime \| None | Creation timestamp of the source checkpoint. |
 
 ### Orchestration Record (`HandoffRecord`)
 
 The payload is wrapped by a record carrying delivery metadata:
 
 ```text
-id                  protocol_version
-project_id          task_id
-source_session_id   source_provider_id
-target_provider_id  git_snapshot_id
-target_session_id   status
-payload             created_at
-delivered_at        failure_code
-metadata
+id                    protocol_version
+project_id            task_id
+source_session_id     source_provider_id
+target_provider_id    git_snapshot_id
+target_session_id     status
+payload               created_at
+delivered_at          failure_code
+metadata              source_checkpoint_id
 ```
 
 Target-provider runtime state is deliberately kept out of the canonical payload.
@@ -159,9 +162,11 @@ spawn_failed              workspace_locked
 
 ---
 
-## 6. Honest Unknown State
+## 6. Honest Unknown State & Checkpoint Enrichment
 
 CortexShift does not fabricate what it has not recorded.
+
+When no checkpoint exists for the active task, these sections remain explicitly unknown:
 
 ```text
 IMPORTANT DECISIONS
@@ -173,6 +178,19 @@ The receiving agent must run relevant tests before relying on previous claims.
 ```
 
 A provider process exiting with code 0 does **not** prove that project tests passed, and is never rendered as though it did.
+
+### Checkpoint-Enriched Decisions & Test Status (Phase 7)
+
+When an immutable checkpoint (`MANUAL`, `SESSION_END`, or `RECOVERY`) exists for the task, `HandoffBuilder` enriches the handoff payload:
+- **`important_decisions`**: Ingested from the checkpoint's recorded decisions, providing historical context without parsing conversation transcripts.
+- **`test_status`**: If the checkpoint recorded a test summary, it is included with an explicit **`[Reported / Unverified Provenance]`** notice:
+  ```text
+  TEST STATUS
+  Reported by prior agent / checkpoint (unverified by CortexShift):
+  42 passed in 1.2s
+  The receiving agent must independently verify test status before relying on previous claims.
+  ```
+- **Provenance Header**: The rendered handoff package includes a `LATEST CHECKPOINT (Provenance Reference)` section linking the checkpoint ID, kind, and creation timestamp.
 
 **Completed / Do Not Redo semantics.** Recorded completed items are advisory. The package states that they are *recorded as completed in CortexShift canonical state* and that the receiving agent must verify them against the repository before depending on them. `DO NOT REDO` tells the agent not to rebuild that work from scratch — and explicitly not to skip verification. If verification shows an item is missing or wrong, the agent repairs it rather than restarting the task.
 

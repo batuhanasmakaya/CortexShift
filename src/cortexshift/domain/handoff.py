@@ -166,6 +166,9 @@ class HandoffPayload(BaseModel):
     source_session: HandoffSourceSession
     target_provider_id: ProviderId
     operator_note: str | None = None
+    source_checkpoint_id: str | None = None
+    source_checkpoint_kind: str | None = None
+    source_checkpoint_created_at: datetime | None = None
 
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -195,6 +198,7 @@ class HandoffRecord(BaseModel):
     source_provider_id: ProviderId
     target_provider_id: ProviderId
 
+    source_checkpoint_id: str | None = None
     git_snapshot_id: str | None = None
     target_session_id: str | None = None
 

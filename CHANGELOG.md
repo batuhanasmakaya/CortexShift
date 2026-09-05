@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 7: Checkpoints, Crash Recovery & Handoff Enrichment** (unreleased):
+  - Checkpoint Protocol v1 domain entities: immutable `CheckpointRecord` with structured `CheckpointPayload` (task snapshot, Git state, source session, operator note, engineering decisions, test status with provenance).
+  - Strict input boundary limits: `MAX_OPERATOR_NOTE_CHARS = 2000`, `MAX_DECISION_CHARS = 1000`, `MAX_TEST_SUMMARY_CHARS = 1000`. No conversational transcripts, provider reasoning, credentials, or full file diffs stored.
+  - Cooperative milestone checkpoints: `cortexshift checkpoint create` captures progress without acquiring the workspace lease, preventing lock contention during active provider sessions.
+  - Crash recovery and honest session reconciliation: `cortexshift recover` acquires the exclusive workspace lease, reconciles unfinalized sessions (`INITIALIZING`/`RUNNING`) by setting `status=interrupted`, `exit_reason=unexpected_termination`, and `reconciled_at=<UTC>`, leaving `ended_at=None` to avoid fabricating unobserved process termination times.
+  - Recovery checkpoints: Captures an immutable `RECOVERY` checkpoint observing live Git state to bridge crash recovery into the next provider invocation.
+  - Automatic session-end checkpoints: Captured deterministically on provider process termination (exit 0, non-zero, or interrupt) under the active workspace lease before lease release. Safe execution ensures repository inspection/persistence warnings do not fail completed sessions.
+  - Checkpoint-enriched handoffs: `HandoffBuilder` injects decisions and reported test execution from the newest checkpoint. Unverified tests are explicitly qualified with `reported_unverified` provenance disclaimers.
+  - SQLite schema migration **v5 → v6**: Adds `checkpoints` table with 4 indexes (`idx_checkpoints_task_created`, `idx_checkpoints_session`, `idx_checkpoints_snapshot`, `idx_checkpoints_kind`), alters `sessions` with `reconciled_at TEXT`, and alters `handoffs` with `source_checkpoint_id TEXT REFERENCES checkpoints(id) ON DELETE SET NULL`. Fully forward-safe and transactional with rollback.
+  - Dedicated CLI commands: `cortexshift checkpoint create`, `list`, `show`, `latest`, and `cortexshift recover` (`--dry-run`, `--json`).
+  - Architectural Decision Record `ADR-0008-checkpoint-and-recovery.md` documenting Checkpoint Protocol v1, lease rules, honest reconciliation, and test provenance disclaimers.
+  - 524 passing unit and integration tests with 89% coverage, including crash recovery flagship and restart persistence across SQLite store recreation.
+
 - **Phase 6: Native Session Identity, Resume & Return-to-Provider Continuity** (unreleased):
   - `cortexshift resume PROVIDER` with exact CortexShift source selection, dry-run and JSON preview.
   - New invocation lineage via `Session.resumed_from_session_id`; transactional SQLite schema v4 → v5 migration preserves all older records.

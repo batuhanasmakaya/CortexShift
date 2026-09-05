@@ -130,6 +130,11 @@ _STARTUP_CONTRACT = """--- START HERE ---
 8. Continue the current work and the remaining items.
 9. Preserve the requirements and constraints recorded above.
 10. Do not ask the user to restate the original task unless you are genuinely blocked.
+11. After meaningful implementation milestones, consider updating CortexShift task
+    progress and creating a checkpoint:
+      cortexshift task update ...
+      cortexshift checkpoint create ...
+    Do not checkpoint after every trivial edit.
 
 Inspect enough current repository state to verify this handoff and continue the
 existing implementation. Do not review the entire repository from scratch, and do
@@ -282,6 +287,20 @@ class HandoffRenderer:
             f"(session {source.session_id}, status {source.status.value}"
             f"{self._exit_fragment(payload)})\n"
             f"Receiving agent: {sanitize_text(str(payload.target_provider_id))}\n"
+        )
+        if payload.source_checkpoint_id:
+            cp_kind = payload.source_checkpoint_kind or "checkpoint"
+            cp_time = (
+                payload.source_checkpoint_created_at.strftime("%Y-%m-%d %H:%M:%S")
+                if payload.source_checkpoint_created_at
+                else "unknown"
+            )
+            parts.append(
+                f"Latest Checkpoint: {payload.source_checkpoint_id} "
+                f"({cp_kind}, created {cp_time})\n"
+            )
+
+        parts.append(
             "\n"
             "--- CANONICAL HANDOFF ---\n"
             "\n"
@@ -315,11 +334,15 @@ class HandoffRenderer:
         )
         parts.append(sections["remaining"])
 
-        decisions = (
-            "\n".join(f"- {_item(entry)}" for entry in payload.important_decisions) + "\n"
-            if payload.decisions_known and payload.important_decisions
-            else f"{UNKNOWN_DECISIONS_STATEMENT}\n"
-        )
+        if payload.decisions_known and payload.important_decisions:
+            decisions = (
+                "These engineering decisions were recorded in CortexShift checkpoint state:\n"
+                + "\n".join(f"- {_item(entry)}" for entry in payload.important_decisions)
+                + "\n"
+            )
+        else:
+            decisions = f"{UNKNOWN_DECISIONS_STATEMENT}\n"
+
         parts.append(
             "\n## IMPORTANT DECISIONS\n"
             f"{decisions}"

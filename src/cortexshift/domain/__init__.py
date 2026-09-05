@@ -1,6 +1,17 @@
 """Core domain models for CortexShift."""
 
-from cortexshift.domain.checkpoint import Checkpoint
+from cortexshift.domain.checkpoint import (
+    CHECKPOINT_PROTOCOL_VERSION,
+    Checkpoint,
+    CheckpointGitState,
+    CheckpointKind,
+    CheckpointPayload,
+    CheckpointRecord,
+    CheckpointSourceSession,
+    CheckpointTaskSnapshot,
+    CheckpointTestProvenance,
+    CheckpointTestStatus,
+)
 from cortexshift.domain.doctor import (
     AuthenticationStatus,
     DoctorReport,
@@ -8,6 +19,7 @@ from cortexshift.domain.doctor import (
     ProviderDiagnostic,
 )
 from cortexshift.domain.errors import (
+    CheckpointNotFoundError,
     CortexShiftError,
     DatabaseStateError,
     GitNotInstalledError,
@@ -15,6 +27,7 @@ from cortexshift.domain.errors import (
     GitProbeTimeoutError,
     HandoffDeliveryError,
     HandoffNotFoundError,
+    InvalidCheckpointInputError,
     NoActiveTaskError,
     NoSourceSessionError,
     NotAGitRepositoryError,
@@ -25,6 +38,7 @@ from cortexshift.domain.errors import (
     RepositoryInspectionError,
     SameProviderSwitchError,
     SessionNotFoundError,
+    SessionRecoveryError,
     SessionTaskMismatchError,
     SnapshotNotFoundError,
     StateCorruptionError,
@@ -65,7 +79,17 @@ from cortexshift.domain.task import Task, TaskStatus
 __all__ = [
     "ActiveTaskSummary",
     "AuthenticationStatus",
+    "CHECKPOINT_PROTOCOL_VERSION",
     "Checkpoint",
+    "CheckpointGitState",
+    "CheckpointKind",
+    "CheckpointNotFoundError",
+    "CheckpointPayload",
+    "CheckpointRecord",
+    "CheckpointSourceSession",
+    "CheckpointTaskSnapshot",
+    "CheckpointTestProvenance",
+    "CheckpointTestStatus",
     "CortexShiftError",
     "DatabaseStateError",
     "DoctorReport",
@@ -82,6 +106,7 @@ __all__ = [
     "HandoffSourceSession",
     "HandoffStatus",
     "HandoffTestStatus",
+    "InvalidCheckpointInputError",
     "LaunchSpecification",
     "NoActiveTaskError",
     "NoSourceSessionError",
@@ -104,6 +129,7 @@ __all__ = [
     "Session",
     "SessionExitReason",
     "SessionNotFoundError",
+    "SessionRecoveryError",
     "SessionStatus",
     "SessionTaskMismatchError",
     "SnapshotNotFoundError",

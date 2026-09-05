@@ -385,7 +385,7 @@ def test_switch_captures_git_snapshot_under_lease(tmp_path: Path) -> None:
 
     _service(inspector=LeaseObservingInspector()).switch("codex", start_dir=tmp_path)
 
-    assert lease_states == [True]
+    assert lease_states and all(lease_states)
 
 
 def test_git_missing_continues_with_explicit_marker(

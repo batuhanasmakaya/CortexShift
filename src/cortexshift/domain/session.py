@@ -88,4 +88,5 @@ class Session(BaseModel):
     ended_at: datetime | None = None
     exit_reason: SessionExitReason | None = None
     exit_code: int | None = None
+    reconciled_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)

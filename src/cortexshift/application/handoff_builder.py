@@ -10,6 +10,7 @@ gone: nothing here requires the outgoing provider to be installed, running, or a
 answer a question.
 """
 
+from cortexshift.domain.checkpoint import CheckpointRecord
 from cortexshift.domain.git import RepositoryInspection, RepositoryInspectionStatus
 from cortexshift.domain.handoff import (
     HANDOFF_PROTOCOL_VERSION,
@@ -159,8 +160,33 @@ class HandoffBuilder:
         target_provider_id: ProviderId,
         snapshot_id: str | None = None,
         operator_note: str | None = None,
+        latest_checkpoint: CheckpointRecord | None = None,
     ) -> HandoffPayload:
         """Build the canonical handoff payload for a task moving to another provider."""
+        important_decisions: list[str] = []
+        decisions_known: bool = False
+        if latest_checkpoint is not None and latest_checkpoint.payload.decisions:
+            important_decisions = list(latest_checkpoint.payload.decisions)
+            decisions_known = True
+
+        test_status: HandoffTestStatus
+        if latest_checkpoint is not None and latest_checkpoint.payload.test_status.known:
+            test_status = HandoffTestStatus(
+                known=True,
+                summary=(
+                    f"Checkpoint-reported test status:\n"
+                    f"{latest_checkpoint.payload.test_status.summary}\n\n"
+                    f"This result was not independently verified by CortexShift. "
+                    f"Re-run relevant tests before relying on it."
+                ),
+            )
+        else:
+            test_status = HandoffTestStatus(known=False, summary=UNKNOWN_TEST_STATUS_STATEMENT)
+
+        source_checkpoint_id = latest_checkpoint.id if latest_checkpoint else None
+        source_checkpoint_kind = latest_checkpoint.kind.value if latest_checkpoint else None
+        source_checkpoint_created_at = latest_checkpoint.created_at if latest_checkpoint else None
+
         return HandoffPayload(
             protocol_version=HANDOFF_PROTOCOL_VERSION,
             generated_at=utc_now(),
@@ -175,11 +201,10 @@ class HandoffBuilder:
             completed=list(task.completed_items),
             current_work=task.current_work,
             remaining=list(task.remaining_items),
-            # CortexShift records no structured decisions yet; the absence stays explicit.
-            important_decisions=[],
-            decisions_known=False,
+            important_decisions=important_decisions,
+            decisions_known=decisions_known,
             files_touched=derive_files_touched(inspection),
-            test_status=HandoffTestStatus(known=False, summary=UNKNOWN_TEST_STATUS_STATEMENT),
+            test_status=test_status,
             known_issues=list(task.known_issues),
             git_state=build_git_state(inspection, snapshot_id=snapshot_id),
             # Completed work is the only signal CortexShift durably holds about what
@@ -197,4 +222,7 @@ class HandoffBuilder:
             ),
             target_provider_id=target_provider_id,
             operator_note=bound_operator_note(operator_note),
+            source_checkpoint_id=source_checkpoint_id,
+            source_checkpoint_kind=source_checkpoint_kind,
+            source_checkpoint_created_at=source_checkpoint_created_at,
         )

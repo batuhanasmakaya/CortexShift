@@ -90,7 +90,11 @@ class ResumeService(RunService):
                 spec = adapter.build_exact_resume(
                     Path(project.repo_path), executable, source.native_session_id
                 )
-                launcher = ProviderSessionLauncher(self._runner, store)
+                launcher = ProviderSessionLauncher(
+                    self._runner,
+                    store,
+                    checkpoint_service=self._checkpoint_service,
+                )
                 invocation = launcher.start_session(
                     task.id,
                     adapter.provider_id,

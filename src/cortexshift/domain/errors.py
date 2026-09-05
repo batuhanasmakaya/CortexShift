@@ -251,3 +251,19 @@ class HandoffDeliveryError(CortexShiftError):
     def __init__(self, failure_code: str, message: str) -> None:
         super().__init__(message)
         self.failure_code = failure_code
+
+
+class CheckpointNotFoundError(CortexShiftError):
+    """Raised when a checkpoint with the specified identifier cannot be found."""
+
+    def __init__(self, checkpoint_id: str) -> None:
+        super().__init__(f"Checkpoint '{checkpoint_id}' was not found.")
+        self.checkpoint_id = checkpoint_id
+
+
+class InvalidCheckpointInputError(CortexShiftError):
+    """Raised when user or agent checkpoint input exceeds bounds or fails validation."""
+
+
+class SessionRecoveryError(CortexShiftError):
+    """Raised when crash recovery encounters an unrecoverable orchestration condition."""

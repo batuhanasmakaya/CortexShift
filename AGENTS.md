@@ -43,6 +43,10 @@ Every agent working on CortexShift must preserve the following architectural inv
 18. **Exact Native Identity Only**: Never guess provider-native session identity or inspect provider transcript/cache storage to discover sessions.
 19. **Fresh Context on Return**: Fresh canonical handoff and live repository state outrank stale native conversation assumptions.
 20. **Invocation Lineage**: Every resume invocation creates a new CortexShift Session record; preserve historical invocations.
+21. **Historical Checkpoint State Never Outranks Live Truth**: Checkpoint records are immutable historical observations at capture time. Live repository files, live Git status, and verified test results strictly outrank any historical checkpoint.
+22. **Zero Outgoing Model Calls for Checkpoints & Recovery**: Checkpoint creation and crash recovery are entirely deterministic and derived from durable local state and live repository inspection. CortexShift must never invoke any LLM or require the outgoing provider to summarize its state during checkpoint or recovery.
+23. **Never Fabricate Test Verification or Process End Times**: If tests are reported in a checkpoint, they are explicitly tagged as unverified reported provenance. When reconciling stale sessions, CortexShift records `status=interrupted`, `exit_reason=unexpected_termination`, and `reconciled_at=<timestamp>`, leaving `ended_at=None` to avoid fabricating an unobserved process termination time.
+24. **Cooperative Milestone Checkpoints Without Lease**: Agents and operators may capture cooperative milestone checkpoints (`cortexshift checkpoint create`) while a provider session is actively running without acquiring the exclusive workspace lease. Crash recovery (`cortexshift recover`) strictly requires acquiring the exclusive workspace lease to ensure no other agent is actively modifying the repository.
 
 ---
 
@@ -73,5 +77,5 @@ Every agent working on CortexShift must preserve the following architectural inv
   - [ADR-0004: Git Repository Context](docs/decisions/ADR-0004-git-repository-context.md)
   - [ADR-0005: Native Provider Launch & Session Lifecycle](docs/decisions/ADR-0005-native-provider-runtime.md)
   - [ADR-0006: Canonical Agent Handoff & Manual Provider Switching](docs/decisions/ADR-0006-canonical-agent-handoff.md)
-
   - [ADR-0007: Native Session Continuity](docs/decisions/ADR-0007-native-session-continuity.md)
+  - [ADR-0008: Checkpoints, Crash Recovery & Handoff Enrichment](docs/decisions/ADR-0008-checkpoint-and-recovery.md)

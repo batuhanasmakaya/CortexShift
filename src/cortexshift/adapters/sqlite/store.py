@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from cortexshift.adapters.sqlite.migrations import get_current_schema_version, run_migrations
+from cortexshift.domain.checkpoint import (
+    CheckpointKind,
+    CheckpointPayload,
+    CheckpointRecord,
+)
 from cortexshift.domain.errors import (
     DatabaseStateError,
     StateCorruptionError,
@@ -23,6 +28,7 @@ from cortexshift.domain.project import Project
 from cortexshift.domain.provider import ProviderId
 from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 from cortexshift.domain.task import Task, TaskStatus
+from cortexshift.ports.checkpoint_store import CheckpointStore
 from cortexshift.ports.handoff_store import HandoffStore
 from cortexshift.ports.repository import RepositorySnapshotStore
 from cortexshift.ports.session_store import SessionStore
@@ -37,7 +43,13 @@ def _parse_utc_datetime(iso_str: str) -> datetime:
     return dt.astimezone(UTC)
 
 
-class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, HandoffStore):
+class SQLiteStateStore(
+    StateStore,
+    RepositorySnapshotStore,
+    SessionStore,
+    HandoffStore,
+    CheckpointStore,
+):
     """SQLite-backed StateStore managing project-local canonical state."""
 
     def __init__(self, db_path: Path | str, auto_migrate: bool = True) -> None:
@@ -442,8 +454,8 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                     INSERT INTO sessions (
                         id, task_id, provider_id, native_session_id, status,
                         started_at, ended_at, exit_reason, exit_code, metadata,
-                        resumed_from_session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        resumed_from_session_id, reconciled_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         task_id = excluded.task_id,
                         provider_id = excluded.provider_id,
@@ -454,7 +466,8 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                         ended_at = excluded.ended_at,
                         exit_reason = excluded.exit_reason,
                         exit_code = excluded.exit_code,
-                        metadata = excluded.metadata;
+                        metadata = excluded.metadata,
+                        reconciled_at = excluded.reconciled_at;
                     """,
                     (
                         session.id,
@@ -468,6 +481,7 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                         session.exit_code,
                         json.dumps(session.metadata),
                         session.resumed_from_session_id,
+                        session.reconciled_at.isoformat() if session.reconciled_at else None,
                     ),
                 )
         except sqlite3.IntegrityError as err:
@@ -483,7 +497,7 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                 """
                 SELECT id, task_id, provider_id, native_session_id, status,
                        started_at, ended_at, exit_reason, exit_code, metadata,
-                        resumed_from_session_id
+                       resumed_from_session_id, reconciled_at
                 FROM sessions WHERE id = ?;
                 """,
                 (session_id,),
@@ -520,7 +534,7 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
             query = f"""
                 SELECT s.id, s.task_id, s.provider_id, s.native_session_id, s.status,
                        s.started_at, s.ended_at, s.exit_reason, s.exit_code, s.metadata,
-                       s.resumed_from_session_id
+                       s.resumed_from_session_id, s.reconciled_at
                 FROM sessions s
                 JOIN tasks t ON s.task_id = t.id
                 {where_clause}
@@ -547,6 +561,11 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
             ended_at=_parse_utc_datetime(row["ended_at"]) if row["ended_at"] else None,
             exit_reason=SessionExitReason(row["exit_reason"]) if row["exit_reason"] else None,
             exit_code=row["exit_code"],
+            reconciled_at=(
+                _parse_utc_datetime(row["reconciled_at"])
+                if ("reconciled_at" in tuple(row.keys()) and row["reconciled_at"])
+                else None
+            ),
             metadata=json.loads(row["metadata"]),
         )
 
@@ -566,8 +585,9 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                         id, protocol_version, project_id, task_id,
                         source_session_id, source_provider_id, target_provider_id,
                         git_snapshot_id, target_session_id, status, payload,
-                        created_at, delivered_at, failure_code, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, delivered_at, failure_code, metadata,
+                        source_checkpoint_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         protocol_version = excluded.protocol_version,
                         project_id = excluded.project_id,
@@ -581,7 +601,8 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                         payload = excluded.payload,
                         delivered_at = excluded.delivered_at,
                         failure_code = excluded.failure_code,
-                        metadata = excluded.metadata;
+                        metadata = excluded.metadata,
+                        source_checkpoint_id = excluded.source_checkpoint_id;
                     """,
                     (
                         handoff.id,
@@ -599,6 +620,7 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                         handoff.delivered_at.isoformat() if handoff.delivered_at else None,
                         handoff.failure_code.value if handoff.failure_code else None,
                         json.dumps(handoff.metadata, ensure_ascii=False),
+                        handoff.source_checkpoint_id,
                     ),
                 )
         except sqlite3.IntegrityError as err:
@@ -647,7 +669,8 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                 SELECT id, protocol_version, project_id, task_id,
                        source_session_id, source_provider_id, target_provider_id,
                        git_snapshot_id, target_session_id, status, payload,
-                       created_at, delivered_at, failure_code, metadata
+                       created_at, delivered_at, failure_code, metadata,
+                       source_checkpoint_id
                 FROM handoffs WHERE id = ?;
                 """,
                 (handoff_id,),
@@ -685,7 +708,8 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
                 SELECT id, protocol_version, project_id, task_id,
                        source_session_id, source_provider_id, target_provider_id,
                        git_snapshot_id, target_session_id, status, payload,
-                       created_at, delivered_at, failure_code, metadata
+                       created_at, delivered_at, failure_code, metadata,
+                       source_checkpoint_id
                 FROM handoffs
                 {where_clause}
                 ORDER BY created_at DESC
@@ -707,6 +731,11 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
             source_session_id=row["source_session_id"],
             source_provider_id=ProviderId(row["source_provider_id"]),
             target_provider_id=ProviderId(row["target_provider_id"]),
+            source_checkpoint_id=(
+                row["source_checkpoint_id"]
+                if ("source_checkpoint_id" in tuple(row.keys()) and row["source_checkpoint_id"])
+                else None
+            ),
             git_snapshot_id=row["git_snapshot_id"],
             target_session_id=row["target_session_id"],
             status=HandoffStatus(row["status"]),
@@ -714,5 +743,127 @@ class SQLiteStateStore(StateStore, RepositorySnapshotStore, SessionStore, Handof
             created_at=_parse_utc_datetime(row["created_at"]),
             delivered_at=_parse_utc_datetime(row["delivered_at"]) if row["delivered_at"] else None,
             failure_code=(HandoffFailureCode(row["failure_code"]) if row["failure_code"] else None),
+            metadata=json.loads(row["metadata"]),
+        )
+
+    # --- Checkpoint Operations (CheckpointStore) ---
+
+    def save_checkpoint(self, checkpoint: CheckpointRecord) -> None:
+        """Persist a canonical CheckpointRecord.
+
+        The canonical payload is stored as validated JSON text. Rendered prompts,
+        provider responses, transcripts, and full diffs are never persisted.
+        """
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO checkpoints (
+                        id, protocol_version, project_id, task_id, session_id,
+                        git_snapshot_id, kind, payload, created_at, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        protocol_version = excluded.protocol_version,
+                        project_id = excluded.project_id,
+                        task_id = excluded.task_id,
+                        session_id = excluded.session_id,
+                        git_snapshot_id = excluded.git_snapshot_id,
+                        kind = excluded.kind,
+                        payload = excluded.payload,
+                        created_at = excluded.created_at,
+                        metadata = excluded.metadata;
+                    """,
+                    (
+                        checkpoint.id,
+                        checkpoint.protocol_version,
+                        checkpoint.project_id,
+                        checkpoint.task_id,
+                        checkpoint.session_id,
+                        checkpoint.git_snapshot_id,
+                        checkpoint.kind.value,
+                        checkpoint.payload.model_dump_json(),
+                        checkpoint.created_at.isoformat(),
+                        json.dumps(checkpoint.metadata, ensure_ascii=False),
+                    ),
+                )
+        except sqlite3.IntegrityError as err:
+            raise DatabaseStateError(
+                f"Failed to persist checkpoint '{checkpoint.id}': {err}"
+            ) from err
+        except sqlite3.Error as err:
+            raise DatabaseStateError(f"Failed to save checkpoint '{checkpoint.id}': {err}") from err
+
+    def get_checkpoint(self, checkpoint_id: str) -> CheckpointRecord | None:
+        """Retrieve a CheckpointRecord by its stable identifier."""
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, protocol_version, project_id, task_id, session_id,
+                       git_snapshot_id, kind, payload, created_at, metadata
+                FROM checkpoints WHERE id = ?;
+                """,
+                (checkpoint_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return self._row_to_checkpoint(row)
+        except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
+            msg = f"Failed to retrieve checkpoint '{checkpoint_id}': {err}"
+            raise StateCorruptionError(msg) from err
+
+    def list_checkpoints(
+        self,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        limit: int | None = 20,
+    ) -> list[CheckpointRecord]:
+        """List checkpoint records, ordered newest first."""
+        try:
+            cursor = self._conn.cursor()
+            conditions: list[str] = []
+            params: list[Any] = []
+
+            if project_id is not None:
+                conditions.append("project_id = ?")
+                params.append(project_id)
+
+            if task_id is not None:
+                conditions.append("task_id = ?")
+                params.append(task_id)
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            query = f"""
+                SELECT id, protocol_version, project_id, task_id, session_id,
+                       git_snapshot_id, kind, payload, created_at, metadata
+                FROM checkpoints
+                {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ?;
+            """
+            params.append(-1 if limit is None else max(1, limit))
+            cursor.execute(query, params)
+            return [self._row_to_checkpoint(row) for row in cursor.fetchall()]
+        except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
+            raise StateCorruptionError(f"Failed to list checkpoints: {err}") from err
+
+    def get_latest_checkpoint(self, task_id: str) -> CheckpointRecord | None:
+        """Retrieve the newest checkpoint record for a given task."""
+        results = self.list_checkpoints(task_id=task_id, limit=1)
+        return results[0] if results else None
+
+    def _row_to_checkpoint(self, row: sqlite3.Row) -> CheckpointRecord:
+        """Convert a database row into a CheckpointRecord domain entity."""
+        return CheckpointRecord(
+            id=row["id"],
+            protocol_version=int(row["protocol_version"]),
+            project_id=row["project_id"],
+            task_id=row["task_id"],
+            session_id=row["session_id"],
+            git_snapshot_id=row["git_snapshot_id"],
+            kind=CheckpointKind(row["kind"]),
+            payload=CheckpointPayload.model_validate_json(row["payload"]),
+            created_at=_parse_utc_datetime(row["created_at"]),
             metadata=json.loads(row["metadata"]),
         )

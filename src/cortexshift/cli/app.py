@@ -13,12 +13,14 @@ from rich.table import Table
 
 from cortexshift import __version__
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
+from cortexshift.application.checkpoint_service import CheckpointService
 from cortexshift.application.doctor import DoctorService, UnknownProviderError
 from cortexshift.application.handoff_renderer import RenderedHandoffContext
 from cortexshift.application.handoff_service import HandoffService
 from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.application.locator import DATABASE_FILE_NAME, STATE_DIR_NAME, ProjectLocator
 from cortexshift.application.native_session import is_native_resumable, native_capabilities
+from cortexshift.application.recovery_service import RecoveryReport, RecoveryService
 from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.resume_service import ResumeDryRunResult, ResumeService
 from cortexshift.application.run_service import ProviderRuntimeRegistry, RunService
@@ -26,12 +28,15 @@ from cortexshift.application.session_service import SessionService
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.switch_service import SwitchService
 from cortexshift.application.task_service import TaskService
+from cortexshift.domain.checkpoint import CheckpointKind, CheckpointRecord
 from cortexshift.domain.doctor import AuthenticationStatus, DoctorReport
 from cortexshift.domain.errors import (
+    CheckpointNotFoundError,
     CortexShiftError,
     DatabaseStateError,
     HandoffDeliveryError,
     HandoffNotFoundError,
+    InvalidCheckpointInputError,
     NativeResumeError,
     NoActiveTaskError,
     NoSourceSessionError,
@@ -41,6 +46,7 @@ from cortexshift.domain.errors import (
     RepositoryInspectionError,
     SameProviderSwitchError,
     SessionNotFoundError,
+    SessionRecoveryError,
     SessionTaskMismatchError,
     SnapshotNotFoundError,
     StateCorruptionError,
@@ -100,6 +106,13 @@ handoff_app = typer.Typer(
 )
 app.add_typer(handoff_app, name="handoff")
 
+checkpoint_app = typer.Typer(
+    name="checkpoint",
+    help="Manage immutable development checkpoints.",
+    no_args_is_help=True,
+)
+app.add_typer(checkpoint_app, name="checkpoint")
+
 
 def print_version() -> None:
     """Print the version string."""
@@ -131,6 +144,9 @@ def _handle_error(err: Exception) -> None:
             SessionTaskMismatchError,
             HandoffDeliveryError,
             NativeResumeError,
+            CheckpointNotFoundError,
+            InvalidCheckpointInputError,
+            SessionRecoveryError,
         ),
     ):
         err_console.print(f"\n{err}\n")
@@ -1827,6 +1843,322 @@ def switch_command(
         if session.exit_code:
             raise typer.Exit(code=session.exit_code)
         raise typer.Exit(code=1)
+
+
+# --- Checkpoint Commands ---
+
+
+def _render_checkpoint_details(checkpoint: CheckpointRecord) -> None:
+    p = checkpoint.payload
+    task = p.task
+    git = p.git_state
+
+    console.print("\n[bold]CortexShift Checkpoint[/bold]")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+    grid.add_row("ID", checkpoint.id)
+    grid.add_row("Kind", checkpoint.kind.value)
+    grid.add_row("Task", f"{escape(task.task_title)} ({task.task_id}, {task.task_status})")
+    if checkpoint.session_id:
+        grid.add_row("Session", checkpoint.session_id)
+    if checkpoint.git_snapshot_id:
+        grid.add_row("Git Snapshot", checkpoint.git_snapshot_id)
+    grid.add_row("Created", checkpoint.created_at.strftime("%Y-%m-%d %H:%M:%S UTC"))
+    console.print(grid)
+
+    console.print("\n[bold]Progress[/bold]")
+    pgrid = Table.grid(padding=(0, 2))
+    pgrid.add_column(style="dim", justify="left")
+    pgrid.add_column(style="default", justify="left")
+    pgrid.add_row(
+        "Completed",
+        f"{len(task.completed)} items" if task.completed else "(none recorded)",
+    )
+    pgrid.add_row("Current", escape(task.current_work or "(no in-flight work recorded)"))
+    pgrid.add_row(
+        "Remaining",
+        f"{len(task.remaining)} items" if task.remaining else "(none recorded)",
+    )
+    console.print(pgrid)
+
+    console.print("\n[bold]Decisions[/bold]")
+    if p.decisions:
+        for d in p.decisions[:10]:
+            console.print(f"  - {escape(d)}")
+        if len(p.decisions) > 10:
+            console.print(
+                f"  [dim]... {len(p.decisions) - 10} more decisions omitted from summary[/dim]"
+            )
+    else:
+        console.print("  [dim](none recorded)[/dim]")
+
+    if task.known_issues:
+        console.print("\n[bold]Issues[/bold]")
+        for issue in task.known_issues[:10]:
+            console.print(f"  - {escape(issue)}")
+        if len(task.known_issues) > 10:
+            console.print(f"  [dim]... {len(task.known_issues) - 10} more issues omitted[/dim]")
+
+    console.print("\n[bold]Tests[/bold]")
+    if p.test_status.known:
+        console.print(f"  Status: {p.test_status.provenance.value}")
+        console.print(f"  Summary: {escape(p.test_status.summary)}")
+    else:
+        console.print("  [dim]Unknown (not verified)[/dim]")
+
+    if p.operator_note:
+        console.print(f"\n[bold]Operator Note[/bold]\n  {escape(p.operator_note)}")
+
+    console.print("\n[bold]Repository[/bold]")
+    rgrid = Table.grid(padding=(0, 2))
+    rgrid.add_column(style="dim", justify="left")
+    rgrid.add_column(style="default", justify="left")
+    rgrid.add_row("Status", git.status.value)
+    if git.available:
+        rgrid.add_row("Branch", git.branch or "(detached)")
+        rgrid.add_row("HEAD", git.head_sha[:12] if git.head_sha else "(unborn)")
+        rgrid.add_row("Working tree", "dirty" if git.dirty else "clean")
+        rgrid.add_row("Files touched", f"{len(p.files_touched)} files")
+    console.print(rgrid)
+
+    if p.files_touched:
+        console.print("\n[bold]Files Touched[/bold]")
+        for f in p.files_touched[:15]:
+            console.print(f"  {escape(f)}")
+        if len(p.files_touched) > 15:
+            console.print(
+                f"  [dim]... {len(p.files_touched) - 15} more files omitted from summary[/dim]"
+            )
+
+
+@checkpoint_app.command(name="create")
+def checkpoint_create_cmd(
+    decision: Annotated[
+        list[str] | None,
+        typer.Option("--decision", "-d", help="Structured engineering decision (repeatable)."),
+    ] = None,
+    test_summary: Annotated[
+        str | None,
+        typer.Option("--test-summary", "-t", help="Reported test execution summary."),
+    ] = None,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", "-n", help="Optional operator note."),
+    ] = None,
+    session: Annotated[
+        str | None,
+        typer.Option("--session", "-s", help="Explicit session ID to associate with."),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON."),
+    ] = False,
+) -> None:
+    """Create an immutable checkpoint of current Task and repository state.
+
+    Can be safely called while a provider session is actively executing;
+    does not acquire the workspace lease.
+    """
+    service = CheckpointService()
+    try:
+        cp = service.create_checkpoint(
+            kind=CheckpointKind.MANUAL,
+            session_id=session,
+            decisions=decision,
+            test_summary=test_summary,
+            note=note,
+        )
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(cp.model_dump_json(indent=2) + "\n")
+        return
+
+    console.print(f"\nCreated checkpoint [bold]{cp.id}[/bold] ({cp.kind.value})")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+    grid.add_row("Task", escape(cp.payload.task.task_title))
+    if cp.session_id:
+        grid.add_row("Session", cp.session_id)
+    if cp.git_snapshot_id:
+        grid.add_row("Git Snapshot", cp.git_snapshot_id)
+    grid.add_row("Files Touched", str(len(cp.payload.files_touched)))
+    console.print(grid)
+
+
+@checkpoint_app.command(name="list")
+def checkpoint_list_cmd(
+    limit: Annotated[
+        int,
+        typer.Option("--limit", "-l", help="Maximum number of checkpoints to display."),
+    ] = 20,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON."),
+    ] = False,
+) -> None:
+    """List historical checkpoints, newest first."""
+    service = CheckpointService()
+    try:
+        checkpoints = service.list_checkpoints(limit=limit)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(
+            json.dumps([cp.model_dump(mode="json") for cp in checkpoints], indent=2) + "\n"
+        )
+        return
+
+    if not checkpoints:
+        console.print("\nNo checkpoints found.")
+        return
+
+    console.print(f"\n[bold]Checkpoints ({len(checkpoints)})[/bold]")
+    table = Table(box=box.SIMPLE, show_header=True)
+    table.add_column("Checkpoint", style="bold cyan", no_wrap=True)
+    table.add_column("Kind", style="default")
+    table.add_column("Session", style="dim")
+    table.add_column("Created (UTC)", style="default")
+
+    for cp in checkpoints:
+        created_str = cp.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        sess_str = f"{cp.session_id[:10]}…" if cp.session_id else "-"
+        table.add_row(
+            cp.id,
+            cp.kind.value,
+            sess_str,
+            created_str,
+        )
+    console.print(table)
+
+
+@checkpoint_app.command(name="show")
+def checkpoint_show_cmd(
+    checkpoint_id: Annotated[str, typer.Argument(help="Checkpoint ID to inspect.")],
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON."),
+    ] = False,
+) -> None:
+    """Display detailed structured state for a specific checkpoint."""
+    service = CheckpointService()
+    try:
+        cp = service.get_checkpoint(checkpoint_id)
+        if cp is None:
+            raise CheckpointNotFoundError(checkpoint_id)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(cp.model_dump_json(indent=2) + "\n")
+        return
+
+    _render_checkpoint_details(cp)
+
+
+@checkpoint_app.command(name="latest")
+def checkpoint_latest_cmd(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON."),
+    ] = False,
+) -> None:
+    """Display the newest checkpoint for the active task."""
+    service = CheckpointService()
+    try:
+        cp = service.get_latest_checkpoint()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if cp is None:
+        if json_output:
+            sys.stdout.write("{}\n")
+        else:
+            console.print("\nNo checkpoints found for the active task.")
+        return
+
+    if json_output:
+        sys.stdout.write(cp.model_dump_json(indent=2) + "\n")
+        return
+
+    _render_checkpoint_details(cp)
+
+
+# --- Recovery Command ---
+
+
+def _render_recovery_report(report: RecoveryReport) -> None:
+    console.print("\n[bold]CortexShift Recovery[/bold]\n")
+    if report.dry_run:
+        console.print(
+            "[yellow bold]Dry Run Preview — no changes were made to state.[/yellow bold]\n"
+        )
+
+    console.print("[bold]Task[/bold]")
+    console.print(f"  {escape(report.task_title)}\n")
+
+    console.print("[bold]Recovered Sessions[/bold]")
+    if report.reconciled_session_ids:
+        for s_id in report.reconciled_session_ids:
+            console.print(f"  {s_id}   unexpected termination")
+    else:
+        console.print("  [dim]No stale running or initializing sessions found.[/dim]")
+    console.print()
+
+    if report.checkpoint_id:
+        console.print("[bold]Checkpoint[/bold]")
+        console.print(f"  {report.checkpoint_id}\n")
+
+    console.print("[bold]Repository[/bold]")
+    console.print(f"  {'Dirty' if report.dirty else 'Clean'}")
+    console.print(f"  {len(report.files_touched)} changed files\n")
+
+    if not report.dry_run and report.reconciled_session_ids:
+        console.print("[bold]Next[/bold]")
+        if report.checkpoint_id:
+            console.print(
+                f"  Review checkpoint:\n    cortexshift checkpoint show {report.checkpoint_id}\n"
+            )
+        console.print(
+            "  Then continue with:\n"
+            "    cortexshift resume <provider>\n"
+            "  or\n"
+            "    cortexshift switch <provider>\n"
+        )
+
+
+@app.command(name="recover")
+def recover_cmd(
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview recovery actions without modifying state."),
+    ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output machine-readable JSON."),
+    ] = False,
+) -> None:
+    """Reconcile crashed or interrupted sessions and capture recovery state."""
+    service = RecoveryService()
+    try:
+        report = service.recover(dry_run=dry_run)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if json_output:
+        sys.stdout.write(report.model_dump_json(indent=2) + "\n")
+        return
+
+    _render_recovery_report(report)
 
 
 if __name__ == "__main__":

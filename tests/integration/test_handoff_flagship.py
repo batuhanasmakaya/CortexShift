@@ -24,6 +24,7 @@ import pytest
 from typer.testing import CliRunner
 
 from cortexshift.adapters.providers.codex import CODEX_BOOTSTRAP_PREFIX
+from cortexshift.adapters.sqlite.migrations import CURRENT_SCHEMA_VERSION
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.switch_service import SwitchService
 from cortexshift.cli.app import app
@@ -344,7 +345,7 @@ def test_flagship_state_survives_full_restart(
         reopened_project = store.get_default_project()
         assert reopened_project is not None
         assert reopened_project.id == project.id
-        assert store.get_schema_version() == 5
+        assert store.get_schema_version() == CURRENT_SCHEMA_VERSION
         assert store.get_active_task_id(reopened_project.id) == expected_task
 
         handoffs = store.list_handoffs(project_id=reopened_project.id)

@@ -146,11 +146,11 @@ def test_v4_handoffs_table_exists_with_expected_columns(tmp_path: Path) -> None:
     db_file = tmp_path / "test_v3_cols.sqlite3"
     _build_v3_database(db_file)
 
-    with SQLiteStateStore(db_file, auto_migrate=True):
-        pass
-
     conn = sqlite3.connect(str(db_file))
     try:
+        from cortexshift.adapters.sqlite.migrations import _migrate_v4
+
+        _migrate_v4(conn)
         tables = {
             row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
         }

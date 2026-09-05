@@ -17,7 +17,7 @@ Foundation    Provider      Task State    Git Context   Native        Manual
 Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
 Native        Checkpoints   MCP Server    TUI           Public        Experimental
 Resume        & Recovery                                Release
-(Complete)    (Planned)
+(Complete)    (Complete)    (Planned)
 ```
 
 ---
@@ -144,13 +144,21 @@ Add exact provider-native history continuity while preserving canonical Task and
 
 ---
 
-## Phase 7 — Checkpoints & Recovery
+## Phase 7 — Checkpoints, Crash Recovery & Handoff Enrichment *(Completed)*
 
-Automate checkpointing during active sessions to safeguard against abrupt session termination.
+Make development state resilient to unexpected terminations (rate limit exhaustion, process crashes, terminal drops).
 
-- **Goals**:
-  - Background checkpoint synthesis.
-  - Disaster recovery command to restore context after quota or process crashes.
+- **Deliverables**:
+  - **Checkpoint Protocol v1**: Immutable `CheckpointRecord` entities with structured `CheckpointPayload` (task snapshot, Git state, source session, decisions, test status with provenance, operator note). Strict character limits enforced at domain boundaries.
+  - **Cooperative Milestones**: `cortexshift checkpoint create` captures progress milestones without acquiring the workspace lease, ensuring zero lock contention during productive sessions.
+  - **Crash Recovery & Reconciliation**: `cortexshift recover` acquires the workspace lease and reconciles unfinalized sessions (`INITIALIZING`/`RUNNING`), honestly setting `status=interrupted` with `exit_reason=unexpected_termination` and recording `reconciled_at` without fabricating unobserved process end times (`ended_at=None`).
+  - **Recovery Checkpoints**: Captures an immutable `RECOVERY` checkpoint observing live Git state to bridge crash recovery into the next provider invocation.
+  - **Automatic Session-End Checkpoints**: Deterministically captured on provider exit under the active workspace lease before lease release, with safe error handling to protect session outcomes.
+  - **Checkpoint-Enriched Handoffs**: `HandoffBuilder` enriches decisions and test execution status from the newest checkpoint. Unverified tests are explicitly flagged with `reported_unverified` provenance disclaimers.
+  - **Persistence & Schema v6**: Forward-safe transactional migration adds `checkpoints` table with 4 indexes, alters `sessions` with `reconciled_at`, and alters `handoffs` with `source_checkpoint_id REFERENCES checkpoints(id) ON DELETE SET NULL`.
+  - **CLI Inspection**: `cortexshift checkpoint create`, `list`, `show`, `latest`, and `cortexshift recover` (`--dry-run`, `--json`).
+  - **Comprehensive Verification**: 524 passing unit and integration tests with 89% branch/statement coverage. Full crash-recovery and restart simulations verify that state survives across SQLite store recreation.
+  - [ADR-0008](decisions/ADR-0008-checkpoint-and-recovery.md) documents architectural decisions and invariants.
 
 ---
 

@@ -1,3 +1,4 @@
+from cortexshift.ports.checkpoint_store import CheckpointStore
 from cortexshift.ports.command_runner import CommandResult, CommandRunner
 from cortexshift.ports.discovery import ProviderDiscoveryPort, ProviderProbe
 from cortexshift.ports.handoff_delivery import (
@@ -15,6 +16,7 @@ from cortexshift.ports.state_store import StateStore
 from cortexshift.ports.workspace_lease import WorkspaceLease, WorkspaceLeaseManager
 
 __all__ = [
+    "CheckpointStore",
     "CommandResult",
     "CommandRunner",
     "HandoffDeliveryPreparation",

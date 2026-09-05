@@ -421,28 +421,6 @@ See [ADR-0006](decisions/ADR-0006-canonical-agent-handoff.md) and the [Canonical
 
 ---
 
-## 12. Checkpoints & Resilient Recovery
-
-AI coding sessions terminate abruptly due to rate limits, context exhaustion, network timeouts, or user interruptions. Waiting for an agent to generate an exit handoff is unreliable.
-
-CortexShift's checkpointing model guarantees recovery:
-- **Canonical Structure**: Every checkpoint captures `DONE`, `CURRENT`, `NEXT`, `DECISIONS`, `ISSUES`, `FILES`, and `TESTS`.
-- **Unexpected Exit Recovery**: When an agent exits prematurely without generating a final handoff, CortexShift synthesizes an emergency handoff package from the latest valid checkpoint and the current Git status.
-
----
-
-## 13. What is Explicitly Out of Scope for Initial Phases
-
-To maintain strict engineering focus, the following are explicitly out of scope for Phase 0 and initial milestones:
-- Parallel multi-agent editing
-- Cloud sync, hosted dashboards, or team sharing
-- Direct LLM API calling or prompt engineering inside the core
-- Raw conversation transcript transplantation
-- Vector databases, semantic search, or RAG frameworks
-- Electron or GUI applications (CLI/TUI first)
-- Non-Git version control systems
-
-
 ## 12. Native Session Continuity (Phase 6)
 
 ```text
@@ -469,3 +447,73 @@ All provider transport variance remains behind runtime and handoff adapters. Cla
 Fresh canonical handoff context explicitly supersedes stale native assumptions while preserving the repository/Git/test truth hierarchy. Native conversation memory cannot replace the Task. No private provider storage is read; no transcripts, rendered context, bootstrap responses, credentials, or SDKs are introduced. Interactive stdio passes through directly and both stdin/stdout must be TTYs. All actual runs hold the OS advisory workspace lease; dry runs create no canonical state and perform no provider work.
 
 Plain Codex and Antigravity launches may have unknown IDs. App Server empty-thread-to-CLI continuity is not assumed; arbitrary user prompts never trigger hidden bootstrap turns. See [ADR-0007](decisions/ADR-0007-native-session-continuity.md) for exact contracts and limitations.
+
+---
+
+## 13. Checkpoints, Crash Recovery & Handoff Enrichment (Phase 7)
+
+```text
+Agent Active in Workspace
+  │
+  ├─► Periodic / Milestone: cortexshift checkpoint create (No lease acquired, zero contention)
+  │
+  ▼
+Unexpected Termination (Quota, SIGKILL, Terminal close, Machine crash)
+  │ (Workspace lease released via OS advisory lock mechanics)
+  ▼
+Operator / Agent invokes: cortexshift recover
+  │
+  ├─► Acquires exclusive workspace lease (.cortexshift/agent.lock)
+  ├─► Identifies unfinalized sessions (INITIALIZING, RUNNING)
+  ├─► Honestly reconciles: status=interrupted, exit_reason=unexpected_termination
+  │   Records reconciled_at=<UTC>, leaves ended_at=None
+  ├─► Inspects live Git working tree and commit state
+  ├─► Creates immutable RECOVERY checkpoint
+  └─► Releases workspace lease
+  ▼
+Next Agent Switch: cortexshift switch <target>
+  │
+  ├─► Ingests latest checkpoint (RECOVERY, MANUAL, or SESSION_END)
+  ├─► Enriches handoff with decisions & reported test status (provenance disclaimer)
+  └─► Delivers enriched handoff package to incoming provider
+```
+
+### Checkpoint Protocol v1
+Checkpoints are stored as immutable `CheckpointRecord` records wrapping a structured `CheckpointPayload`:
+- **`task`**: Snapshot of canonical task metadata, objective, status, and completion state.
+- **`git`**: Observed live commit SHA, branch, detached HEAD, dirty flag, modified files, diff summaries.
+- **`source_session`**: Details of the session that generated the checkpoint.
+- **`decisions`**: Bounded engineering decisions (`MAX_DECISION_CHARS = 1000`).
+- **`test_status`**: Reported test execution outcome with explicit `reported_unverified` provenance.
+- **`operator_note`**: Contextual human or agent note (`MAX_OPERATOR_NOTE_CHARS = 2000`).
+
+### Persistence Port: `CheckpointStore`
+Persistence boundaries are encapsulated behind `CheckpointStore`, implemented on `SQLiteStateStore` in schema v6:
+- `checkpoints` table with FK constraints to `projects`, `tasks`, `sessions`, and `git_snapshots`.
+- Four dedicated indexes: `idx_checkpoints_task_created`, `idx_checkpoints_session`, `idx_checkpoints_snapshot`, `idx_checkpoints_kind`.
+- `sessions.reconciled_at TEXT` tracks honest reconciliation timestamps.
+- `handoffs.source_checkpoint_id TEXT REFERENCES checkpoints(id) ON DELETE SET NULL` links handoffs to their source checkpoint.
+
+### Honest Reconciliation Invariants
+1. **Never Fabricate Process End Times**: Stale sessions record `reconciled_at`, preserving `ended_at = None`.
+2. **Never Fabricate Test Verification**: Checkpoint test summaries are qualified as unverified reports in handoff payloads.
+3. **Historical State Never Outranks Live Truth**: Live Git inspection and verified commands always outrank historical checkpoint observations.
+4. **Cooperative Milestones Without Lease**: Manual checkpoint creation never contends for the workspace lease.
+5. **Crash Recovery Under Exclusive Lease**: Recovery operations strictly require exclusive workspace leasing.
+
+See [ADR-0008](decisions/ADR-0008-checkpoint-and-recovery.md) for detailed decisions.
+
+---
+
+## 14. What is Explicitly Out of Scope for Initial Phases
+
+To maintain strict engineering focus, the following are explicitly out of scope for Phase 0 through Phase 7:
+- Parallel multi-agent editing
+- Cloud sync, hosted dashboards, or team sharing
+- Direct LLM API calling or prompt engineering inside the core
+- Raw conversation transcript transplantation
+- Vector databases, semantic search, or RAG frameworks
+- Electron or GUI applications (CLI/TUI first)
+- Non-Git version control systems
+- MCP integration (Phase 8)
+

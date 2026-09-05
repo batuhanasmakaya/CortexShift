@@ -11,6 +11,7 @@ from cortexshift.domain import (
     PROVIDER_CLAUDE,
     PROVIDER_CODEX,
     Checkpoint,
+    CheckpointPayload,
     GitSnapshot,
     HandoffFailureCode,
     HandoffGitState,
@@ -195,36 +196,88 @@ class TestSessionModel:
 
 
 class TestCheckpointModel:
-    """Tests for the Checkpoint progress snapshot entity."""
+    """Tests for the Checkpoint Protocol v1 domain entities."""
+
+    @staticmethod
+    def _make_payload() -> CheckpointPayload:
+        from cortexshift.domain.checkpoint import (
+            CheckpointGitState,
+            CheckpointPayload,
+            CheckpointTaskSnapshot,
+            CheckpointTestProvenance,
+            CheckpointTestStatus,
+        )
+
+        return CheckpointPayload(
+            task=CheckpointTaskSnapshot(
+                task_id="task_123",
+                task_title="Test Task",
+                task_status="in_progress",
+                objective="Deliver Feature X",
+                completed=["Created data models"],
+                current_work="Writing unit tests",
+                remaining=["Implement CLI command"],
+            ),
+            git_state=CheckpointGitState(
+                status=RepositoryInspectionStatus.READY,
+                available=True,
+                note="Historical observation.",
+                branch="main",
+                dirty=True,
+            ),
+            files_touched=["src/cortexshift/domain/task.py"],
+            decisions=["Use Pydantic v2"],
+            test_status=CheckpointTestStatus(
+                known=True,
+                summary="15 passed in 0.2s",
+                provenance=CheckpointTestProvenance.REPORTED,
+            ),
+            operator_note="Manual checkpoint during test",
+        )
 
     def test_checkpoint_defaults(self) -> None:
+        from cortexshift.domain.checkpoint import (
+            CHECKPOINT_PROTOCOL_VERSION,
+            CheckpointKind,
+            CheckpointRecord,
+        )
+
+        payload = self._make_payload()
         checkpoint = Checkpoint(
+            project_id="proj_123",
             task_id="task_123",
-            done=["Created data models"],
-            current="Writing unit tests",
-            next_steps=["Implement CLI command"],
-            decisions=["Use Pydantic v2"],
-            issues=["None"],
-            files=["src/cortexshift/domain/task.py"],
-            test_summary="15 passed in 0.2s",
+            kind=CheckpointKind.MANUAL,
+            payload=payload,
         )
         assert checkpoint.id.startswith("cp_")
+        assert checkpoint.protocol_version == CHECKPOINT_PROTOCOL_VERSION == 1
         assert checkpoint.task_id == "task_123"
-        assert checkpoint.done == ["Created data models"]
-        assert checkpoint.current == "Writing unit tests"
-        assert checkpoint.test_summary == "15 passed in 0.2s"
+        assert checkpoint.project_id == "proj_123"
+        assert checkpoint.kind == CheckpointKind.MANUAL
+        assert checkpoint.session_id is None
+        assert checkpoint.git_snapshot_id is None
+        assert checkpoint.payload.task.completed == ["Created data models"]
+        assert checkpoint.payload.task.current_work == "Writing unit tests"
+        assert checkpoint.payload.test_status.summary == "15 passed in 0.2s"
         assert checkpoint.created_at.tzinfo == UTC
+        assert isinstance(checkpoint, CheckpointRecord)
 
     def test_checkpoint_serialization_roundtrip(self) -> None:
+        from cortexshift.domain.checkpoint import CheckpointKind
+
         checkpoint = Checkpoint(
+            project_id="proj_abc",
             task_id="task_abc",
             session_id="sess_123",
-            done=["Step 1"],
-            next_steps=["Step 2"],
+            git_snapshot_id="snap_123",
+            kind=CheckpointKind.SESSION_END,
+            payload=self._make_payload(),
         )
         json_data = checkpoint.model_dump_json()
         restored = Checkpoint.model_validate_json(json_data)
         assert restored == checkpoint
+        assert restored.payload.decisions == ["Use Pydantic v2"]
+        assert restored.payload.files_touched == ["src/cortexshift/domain/task.py"]
 
 
 class TestGitSnapshotModel:

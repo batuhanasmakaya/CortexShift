@@ -42,9 +42,9 @@ Claude Code      Codex        Antigravity
 ## Status: Pre-Alpha
 
 > [!NOTE]
-> CortexShift is currently in **Phase 6 (Native Session Identity, Resume & Return-to-Provider Continuity)**. A single Task can now move between Claude Code, Codex, and Antigravity through `cortexshift switch`, carrying deterministic canonical context. Crucially, the outgoing agent does **not** need to still be available: handoffs are derived from durable local state and live Git, never from an outgoing model call.
+> CortexShift is currently in **Phase 7 (Checkpoints, Crash Recovery & Handoff Enrichment)**. Development state is resilient to unexpected terminations (rate limits, crashes, terminal drops). Checkpoints capture immutable task and Git progress, crash recovery reconciles interrupted sessions honestly, and handoffs enrich receiving agents with historical decisions and reported test results.
 
-### What Works Today (Phase 6)
+### What Works Today (Phase 7)
 
 ```text
 ✓ native provider discovery
@@ -63,7 +63,23 @@ Claude Code      Codex        Antigravity
 ✓ Antigravity exact resume when its conversation ID is known
 ✓ return-to-provider continuity with fresh handoff injection
 ✓ new CortexShift Session and durable lineage on every resume
+✓ Checkpoint Protocol v1 immutable state records
+✓ automatic SESSION_END checkpoints on provider completion
+✓ cooperative milestone checkpoints during active sessions (`cortexshift checkpoint create`)
+✓ crash recovery and honest reconciliation of interrupted sessions (`cortexshift recover`)
+✓ RECOVERY checkpoints preserving observed repository state after unexpected terminations
+✓ checkpoint-enriched canonical handoffs with honest test provenance disclaimers
+✓ durable schema v6 migrations with foreign-key cascade protections
 ```
+
+- **Checkpoints, Crash Recovery & Handoff Enrichment (Phase 7)**:
+  - **Cooperative Milestone Checkpoints**: Record progress milestones with `cortexshift checkpoint create -d "<decision>" -t "<test-summary>" -n "<note>"`. Deliberately does **not** acquire the exclusive workspace lease, allowing active agents or operators to checkpoint progress during running sessions without lock contention.
+  - **Crash Recovery & Reconciliation**: Detect and reconcile unfinalized sessions (`INITIALIZING` or `RUNNING`) after unexpected agent or machine crashes with `cortexshift recover` (or preview with `--dry-run`). Strictly acquires the workspace lease, updates stale sessions to `status=interrupted` with `exit_reason=unexpected_termination` and records `reconciled_at` without fabricating unobserved process end times (`ended_at=None`).
+  - **Recovery Checkpoints**: Each recovery operation captures an immutable `RECOVERY` checkpoint observing the current live Git state and canonical Task state, bridging the gap between the crash and the next agent invocation.
+  - **Automatic Session-End Checkpoints**: Captured deterministically on provider process exit (exit 0, non-zero, or interrupt) under the active workspace lease before lease release. Safe execution ensures repository inspection or persistence warnings do not fail completed sessions.
+  - **Checkpoint-Enriched Handoffs**: `cortexshift switch` extracts decisions and reported test execution from the latest checkpoint for the task, enriching the handoff context. Test summaries are explicitly qualified with `reported_unverified` provenance disclaimers so receiving agents know they were reported by prior agents rather than independently verified by CortexShift.
+  - **Durable Checkpoint Inspection**: Inspect checkpoints via `cortexshift checkpoint list`, `cortexshift checkpoint show <id>`, and `cortexshift checkpoint latest` with tabular formatting and clean `--json` machine-readable output.
+
 
 - **Canonical Handoff & Agent Switching (Phase 5)**:
   - Move the active task to another coding agent with `cortexshift switch claude|codex|antigravity`.

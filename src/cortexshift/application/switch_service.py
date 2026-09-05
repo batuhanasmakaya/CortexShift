@@ -30,6 +30,7 @@ from cortexshift.adapters.providers.claude import ClaudeHandoffAdapter
 from cortexshift.adapters.providers.codex import CodexHandoffAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
+from cortexshift.application.checkpoint_service import CheckpointService
 from cortexshift.application.handoff_builder import HandoffBuilder
 from cortexshift.application.handoff_renderer import HandoffRenderer, RenderedHandoffContext
 from cortexshift.application.locator import ProjectLocator
@@ -195,6 +196,7 @@ class SwitchService:
         renderer: HandoffRenderer | None = None,
         which_fn: Callable[[str], str | None] | None = None,
         is_tty_fn: Callable[[], bool] | None = None,
+        checkpoint_service: CheckpointService | None = None,
     ) -> None:
         self._registry = registry or ProviderHandoffRegistry()
         self._native_registry = native_registry or ProviderRuntimeRegistry()
@@ -205,6 +207,9 @@ class SwitchService:
         self._renderer = renderer or HandoffRenderer()
         self._which = which_fn if which_fn is not None else (lambda cmd: shutil.which(cmd))
         self._is_tty = is_tty_fn if is_tty_fn is not None else self._check_tty
+        self._checkpoint_service = checkpoint_service or CheckpointService(
+            inspector=self._inspector
+        )
 
     @staticmethod
     def _check_tty() -> bool:
@@ -328,6 +333,7 @@ class SwitchService:
         )
         try:
             inspection = self._inspect(context)
+            latest_checkpoint = context.store.get_latest_checkpoint(context.task.id)
             payload = self._builder.build(
                 project=context.project,
                 task=context.task,
@@ -336,6 +342,7 @@ class SwitchService:
                 target_provider_id=context.adapter.provider_id,
                 snapshot_id=None,
                 operator_note=note,
+                latest_checkpoint=latest_checkpoint,
             )
             rendered = self._renderer.render(payload, handoff_id=None)
 
@@ -373,6 +380,7 @@ class SwitchService:
         try:
             self._select_target(context, new_session, resume_session_id)
             inspection = self._inspect(context)
+            latest_checkpoint = context.store.get_latest_checkpoint(context.task.id)
             payload = self._builder.build(
                 project=context.project,
                 task=context.task,
@@ -381,6 +389,7 @@ class SwitchService:
                 target_provider_id=context.adapter.provider_id,
                 snapshot_id=None,
                 operator_note=note,
+                latest_checkpoint=latest_checkpoint,
             )
             rendered = self._renderer.render(payload, handoff_id=None)
             snapshot = inspection.snapshot
@@ -460,6 +469,7 @@ class SwitchService:
                 inspection = self._inspect(context)
                 snapshot_id = self._persist_snapshot(inspection, store)
 
+                latest_checkpoint = store.get_latest_checkpoint(context.task.id)
                 payload = self._builder.build(
                     project=context.project,
                     task=context.task,
@@ -468,6 +478,7 @@ class SwitchService:
                     target_provider_id=context.adapter.provider_id,
                     snapshot_id=snapshot_id,
                     operator_note=note,
+                    latest_checkpoint=latest_checkpoint,
                 )
 
                 handoff = HandoffRecord(
@@ -477,6 +488,7 @@ class SwitchService:
                     source_session_id=context.source_session.id,
                     source_provider_id=context.source_session.provider_id,
                     target_provider_id=context.adapter.provider_id,
+                    source_checkpoint_id=latest_checkpoint.id if latest_checkpoint else None,
                     git_snapshot_id=snapshot_id,
                     status=HandoffStatus.PREPARED,
                     payload=payload,
@@ -530,7 +542,11 @@ class SwitchService:
     ) -> SwitchResult:
         """Deliver the rendered context through the target provider's strategy."""
         store = context.store
-        launcher = ProviderSessionLauncher(process_runner=self._runner, store=store)
+        launcher = ProviderSessionLauncher(
+            process_runner=self._runner,
+            store=store,
+            checkpoint_service=self._checkpoint_service,
+        )
 
         target_session = launcher.start_session(
             task_id=context.task.id,

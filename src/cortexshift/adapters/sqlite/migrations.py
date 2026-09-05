@@ -7,7 +7,7 @@ from collections.abc import Callable
 from cortexshift.domain.errors import DatabaseStateError, UnsupportedSchemaVersionError
 from cortexshift.domain.identifiers import utc_now
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 
 def _migrate_v1(conn: sqlite3.Connection) -> None:
@@ -153,6 +153,39 @@ def _migrate_v5(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v6(conn: sqlite3.Connection) -> None:
+    """Apply Schema Version 6: checkpoints table, session reconciliation,
+    and handoff source checkpoint reference.
+    """
+    conn.execute(
+        """
+        CREATE TABLE checkpoints (
+            id TEXT PRIMARY KEY,
+            protocol_version INTEGER NOT NULL,
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+            git_snapshot_id TEXT REFERENCES git_snapshots(id) ON DELETE SET NULL,
+            kind TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            metadata TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute("CREATE INDEX idx_checkpoints_project_id ON checkpoints(project_id);")
+    conn.execute("CREATE INDEX idx_checkpoints_task_id ON checkpoints(task_id);")
+    conn.execute(
+        "CREATE INDEX idx_checkpoints_created_at ON checkpoints(task_id, created_at DESC);"
+    )
+    conn.execute("CREATE INDEX idx_checkpoints_session_id ON checkpoints(session_id);")
+    conn.execute("ALTER TABLE sessions ADD COLUMN reconciled_at TEXT;")
+    conn.execute(
+        "ALTER TABLE handoffs ADD COLUMN source_checkpoint_id TEXT "
+        "REFERENCES checkpoints(id) ON DELETE SET NULL;"
+    )
+
+
 # Ordered registry of migration functions: index 0 is v1, index 1 is v2, index 2 is v3, etc.
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v1,
@@ -160,6 +193,7 @@ MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     _migrate_v3,
     _migrate_v4,
     _migrate_v5,
+    _migrate_v6,
 ]
 
 

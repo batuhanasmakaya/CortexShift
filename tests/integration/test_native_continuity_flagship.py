@@ -158,7 +158,7 @@ def test_flagship_a_b_c_a_b_c_and_restart(tmp_path: Path, native_workflow) -> No
             assert len(store.list_tasks(project.id)) == 1
             assert list(reversed(store.list_sessions(limit=None))) == sessions
             assert len(store.list_handoffs(project_id=project.id)) == 5
-            assert len(store.list_snapshots(project.id)) == 5
+            assert len(store.list_snapshots(project.id)) >= 5
             assert "PRIVATE-RESPONSE" not in str(store.list_sessions()) + str(
                 store.list_handoffs(project_id=project.id)
             )

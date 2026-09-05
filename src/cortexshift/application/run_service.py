@@ -14,6 +14,7 @@ from cortexshift.adapters.providers.claude import ClaudeRuntimeAdapter
 from cortexshift.adapters.providers.codex import CodexRuntimeAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
+from cortexshift.application.checkpoint_service import CheckpointService
 from cortexshift.application.locator import ProjectLocator
 from cortexshift.application.session_launcher import ProviderSessionLauncher
 from cortexshift.domain.errors import (
@@ -101,12 +102,14 @@ class RunService:
         lease_manager: WorkspaceLeaseManager | None = None,
         which_fn: Callable[[str], str | None] | None = None,
         is_tty_fn: Callable[[], bool] | None = None,
+        checkpoint_service: CheckpointService | None = None,
     ) -> None:
         self._registry = registry or ProviderRuntimeRegistry()
         self._runner = process_runner or SubprocessInteractiveProcessRunner()
         self._lease_manager = lease_manager or FileWorkspaceLeaseManager()
         self._which = which_fn if which_fn is not None else (lambda cmd: shutil.which(cmd))
         self._is_tty = is_tty_fn if is_tty_fn is not None else self._check_tty
+        self._checkpoint_service = checkpoint_service or CheckpointService()
 
     @staticmethod
     def _check_tty() -> bool:
@@ -229,7 +232,11 @@ class RunService:
                 raise WorkspaceLockedError(lock_path=lease.lock_path)
 
             # 4. Delegate Session creation and lifecycle to the shared launcher
-            launcher = ProviderSessionLauncher(process_runner=self._runner, store=store)
+            launcher = ProviderSessionLauncher(
+                process_runner=self._runner,
+                store=store,
+                checkpoint_service=self._checkpoint_service,
+            )
             try:
                 session = launcher.start_session(
                     task_id=task.id,

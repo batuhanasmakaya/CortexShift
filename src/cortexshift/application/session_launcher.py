@@ -7,6 +7,7 @@ exclusive workspace lease, which keeps `switch` from nesting a second advisory l
 around the same workspace.
 """
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -25,9 +26,11 @@ class ProviderSessionLauncher:
         self,
         process_runner: InteractiveProcessRunner,
         store: SessionStore,
+        checkpoint_service: Any | None = None,
     ) -> None:
         self._runner = process_runner
         self._store = store
+        self._checkpoint_service = checkpoint_service
 
     def start_session(
         self,
@@ -144,4 +147,15 @@ class ProviderSessionLauncher:
             raise
 
         self._store.save_session(session)
+
+        # Automatic session-end checkpoint capture for completed, failed, or interrupted runs
+        if self._checkpoint_service is not None and hasattr(
+            self._checkpoint_service, "capture_session_end_checkpoint"
+        ):
+            with contextlib.suppress(Exception):
+                self._checkpoint_service.capture_session_end_checkpoint(
+                    session=session,
+                    store=self._store,
+                )
+
         return session

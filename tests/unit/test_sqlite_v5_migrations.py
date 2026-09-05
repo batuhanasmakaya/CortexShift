@@ -61,7 +61,7 @@ def test_v4_to_v5_preserves_all_state_and_nullable_legacy_identity(tmp_path: Pat
     ids = build_v4(path)
     before = rows(path)
     with SQLiteStateStore(path) as store:
-        assert store.get_schema_version() == 5
+        assert store.get_schema_version() == migrations.CURRENT_SCHEMA_VERSION
         assert store.get_project(ids["project"]) is not None
         assert store.get_task(ids["task"]) is not None
         assert store.get_active_task_id(ids["project"]) == ids["task"]
@@ -71,10 +71,11 @@ def test_v4_to_v5_preserves_all_state_and_nullable_legacy_identity(tmp_path: Pat
         assert old.resumed_from_session_id is None
         assert store.get_handoff("handoff_v4") is not None
     after = rows(path)
-    assert after.pop("sessions") == [(*row, None) for row in before.pop("sessions")]
+    assert after.pop("sessions") == [(*row, None, None) for row in before.pop("sessions")]
+    assert after.pop("handoffs") == [(*row, None) for row in before.pop("handoffs")]
     assert before == after
     with SQLiteStateStore(path) as store:
-        assert store.migrate() == 5
+        assert store.migrate() == migrations.CURRENT_SCHEMA_VERSION
     after_noop = rows(path)
     assert after_noop["sessions"][0][-1] is None
 
@@ -142,16 +143,12 @@ def test_migration_chain_and_noop(tmp_path: Path, start_version: int) -> None:
                 "INSERT INTO schema_metadata VALUES (?, ?)", (n + 1, utc_now().isoformat())
             )
         conn.commit()
-        assert migrations.run_migrations(conn) == 5
-        assert [row[0] for row in conn.execute("SELECT schema_version FROM schema_metadata")] == [
-            1,
-            2,
-            3,
-            4,
-            5,
-        ]
+        assert migrations.run_migrations(conn) == migrations.CURRENT_SCHEMA_VERSION
+        assert [
+            row[0] for row in conn.execute("SELECT schema_version FROM schema_metadata")
+        ] == list(range(1, migrations.CURRENT_SCHEMA_VERSION + 1))
         before = conn.total_changes
-        assert migrations.run_migrations(conn) == 5
+        assert migrations.run_migrations(conn) == migrations.CURRENT_SCHEMA_VERSION
         assert conn.total_changes == before
 
 
