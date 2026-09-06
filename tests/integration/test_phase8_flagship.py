@@ -211,7 +211,7 @@ def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "-c" in inv2["argv"]
     c_indices = [i for i, a in enumerate(inv2["argv"]) if a == "-c"]
     c_values = [inv2["argv"][i + 1] for i in c_indices]
-    assert f'mcp_servers.cortexshift.command="{sys.executable}"' in c_values
+    assert f"mcp_servers.cortexshift.command={json.dumps(sys.executable)}" in c_values
 
     # -------------------------------------------------------------------------
     # 4. Codex resumes work and updates state via MCP

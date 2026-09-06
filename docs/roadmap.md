@@ -206,14 +206,11 @@ CortexShift's first persistent human-facing interface: a keyboard-driven Textual
 
 ---
 
-## Phase 10 — Public Release Hardening
+## Phase 10 — Public Release
 
-Prepare CortexShift for public open-source release.
-
-- **Goals**:
-  - Cross-platform verification (macOS, Linux, Windows).
-  - Standalone binary distributions via PyPI and Homebrew.
-  - Public documentation site and contributor onboarding.
+Release candidate complete; external publication pending maintainer authorization. Python wheel/sdist, pipx onboarding, cross-platform CI, Trusted
+Publishing machinery, public documentation, and Homebrew staging are release
+engineering scope. No documentation site or standalone binary is promised.
 
 ---
 

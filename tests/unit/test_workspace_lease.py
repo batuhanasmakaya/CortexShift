@@ -160,3 +160,16 @@ def test_cross_process_lock_concurrency(tmp_path: Path) -> None:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def test_empty_existing_lock_file_probe(tmp_path: Path) -> None:
+    lock_file = tmp_path / "agent.lock"
+    lock_file.touch()
+    lease = FileWorkspaceLease(lock_file)
+    assert not lease.is_locked()
+    with lease:
+        assert lease.is_locked()
+    assert not lease.is_locked()

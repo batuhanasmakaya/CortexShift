@@ -88,7 +88,6 @@ class FileWorkspaceLease(WorkspaceLease):
                 import msvcrt
 
                 if os.path.getsize(str(self._lock_path)) == 0:
-                    os.close(fd)
                     return False
                 os.lseek(fd, 0, os.SEEK_SET)
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)

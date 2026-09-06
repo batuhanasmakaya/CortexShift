@@ -3,7 +3,8 @@
 Provider-agnostic task handoff and state management for AI coding agents.
 """
 
+from importlib.metadata import version
 from typing import Final
 
-__version__: Final[str] = "0.1.0"
+__version__: Final[str] = version("cortexshift")
 __all__ = ["__version__"]

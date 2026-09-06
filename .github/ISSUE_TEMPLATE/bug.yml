@@ -1,0 +1,27 @@
+name: Bug report
+description: Report a reproducible CortexShift issue
+body:
+  - type: markdown
+    attributes:
+      value: Do not paste provider credentials, API keys, private transcripts, sensitive repository code, or your CortexShift database.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: CortexShift version, OS, Python version, provider and provider version.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Give a minimal sanitized example.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: Include a sanitized error message if relevant.
+    validations:
+      required: true

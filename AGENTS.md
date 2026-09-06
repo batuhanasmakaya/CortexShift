@@ -92,3 +92,10 @@ Every agent working on CortexShift must preserve the following architectural inv
   - [ADR-0008: Checkpoints, Crash Recovery & Handoff Enrichment](docs/decisions/ADR-0008-checkpoint-and-recovery.md)
   - [ADR-0009: MCP Shared State & Agent Self-Reporting](docs/decisions/ADR-0009-mcp-shared-state.md)
   - [ADR-0010: Interactive Terminal Control Center](docs/decisions/ADR-0010-terminal-control-center.md)
+
+## Release contracts
+
+- Published SQLite migrations are immutable.
+- Published handoff/checkpoint protocol semantics are versioned contracts.
+- Release workflows use least privilege and no long-lived PyPI tokens.
+- Public privacy/provider-support claims must not exceed verified code behavior.

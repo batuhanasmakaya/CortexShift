@@ -665,3 +665,13 @@ To maintain strict engineering focus, the following are explicitly out of scope 
 - Git mutation, source editing, or an embedded shell inside CortexShift
 
 
+
+## Release distribution and compatibility
+
+CLI / MCP / TUI call application services over domain/ports, implemented by
+SQLite, read-only Git, and native provider adapters. The source and installed
+package use the same architecture, project-local state, and exclusive workspace
+lease for native runs. The initial public alpha is distributed as a Python
+wheel/sdist, primarily through pipx. Schema v6 and Handoff/Checkpoint Protocol v1
+remain unchanged. Published migrations and protocol meanings are immutable.
+See [ADR-0011](decisions/ADR-0011-release-and-distribution.md).

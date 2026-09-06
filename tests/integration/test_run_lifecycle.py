@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -18,6 +19,19 @@ from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def portable_python_fake(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run Python fakes portably; Windows does not execute POSIX shebangs."""
+    original = subprocess.Popen
+
+    def launch(argv: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(argv, list) and argv and str(argv[0]).endswith(".py"):
+            argv = [sys.executable, *argv]
+        return original(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+
+
 def _create_fake_provider_script(tmp_path: Path, filename: str, exit_code: int = 0) -> Path:
     """Create an executable Python script that records its execution context to a JSON file."""
     script_path = tmp_path / filename
@@ -27,7 +41,7 @@ import os
 import sys
 from pathlib import Path
 
-report_file = Path(os.environ.get("CORTEXSHIFT_TEST_REPORT", "{tmp_path / "report.json"}"))
+report_file = Path(os.environ.get("CORTEXSHIFT_TEST_REPORT", {str(tmp_path / "report.json")!r}))
 report_file.parent.mkdir(parents=True, exist_ok=True)
 report_file.write_text(
     json.dumps(

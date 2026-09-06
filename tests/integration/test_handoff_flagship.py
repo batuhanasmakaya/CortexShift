@@ -703,7 +703,9 @@ def test_active_workspace_lease_blocks_switch(
         assert "delete" not in output.lower()
     finally:
         holder.kill()
-        holder.wait()
+        holder.wait(timeout=10)
+        if holder.stdout is not None:
+            holder.stdout.close()
 
     with _db(repo) as store:
         assert store.list_handoffs() == []

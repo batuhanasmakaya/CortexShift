@@ -10,19 +10,17 @@ Whether you are a human developer or an AI coding agent, please review these gui
 
 CortexShift targets **Python 3.12+** and uses **[`uv`](https://docs.astral.sh/uv/)** as its primary package and project manager.
 
-### 1. Clone the Repository
+### 1. Obtain the source
 
-```bash
-git clone https://github.com/cortexshift/cortexshift.git
-cd cortexshift
-```
+Work from a local checkout or extracted source distribution. A canonical public
+repository URL has not yet been configured; no clone URL is assumed.
 
 ### 2. Install Dependencies
 
 Using `uv`:
 
 ```bash
-uv sync
+uv sync --locked
 ```
 
 This creates a local `.venv` and installs all runtime and development dependencies.
@@ -52,7 +50,7 @@ uv run ruff format .
 Mypy is configured in strict mode:
 
 ```bash
-uv run mypy src
+uv run mypy
 ```
 
 ### 3. Automated Tests & Coverage
@@ -103,3 +101,24 @@ src/cortexshift/
 - Keep pull requests focused on a single phase or feature.
 - Include unit tests covering all new domain behavior, ports, and CLI commands.
 - Ensure all CI checks pass on GitHub Actions.
+
+## Provider adapters and persistence
+
+Implement discovery, runtime, handoff, and optional native-session ports in
+`adapters/providers`; register adapters at the composition boundary. Add bounded
+version/help checks and deterministic fakes, never CI model calls. Do not add
+provider conditionals to domain/application code. CLI, MCP, and TUI reuse services.
+
+Persistence and SQL belong in adapters. Published migrations v1–v6 must remain
+unchanged; add transactional forward migrations with rollback and preservation
+tests. Published handoff/checkpoint meanings require explicit protocol versioning.
+Never persist credentials, prompts, provider responses, transcripts, or full patches.
+
+## Release checks
+
+Run `uv run python scripts/release_check.py`, `uv build`, and
+`uv run python scripts/artifact_smoke.py --dist dist`. The latter creates disposable
+install environments and uses package-index access for dependencies. It never calls
+models or publishes. See [Releasing](docs/releasing.md) for the complete sequence.
+Pre-1.0 internal Python imports are not a stable public API. Changes to commands,
+persisted state, and MCP contracts need explicit compatibility review.

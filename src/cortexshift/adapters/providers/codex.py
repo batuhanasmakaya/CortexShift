@@ -175,7 +175,7 @@ def build_codex_mcp_args(python_executable: str | None = None) -> list[str]:
     exe = python_executable or sys.executable
     return [
         "-c",
-        f'mcp_servers.cortexshift.command="{exe}"',
+        f"mcp_servers.cortexshift.command={json.dumps(exe, ensure_ascii=False)}",
         "-c",
         'mcp_servers.cortexshift.args=["-m", "cortexshift", "mcp", "serve"]',
         "-c",

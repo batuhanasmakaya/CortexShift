@@ -61,7 +61,7 @@ def test_codex_runtime_argv_contains_mcp_flags(tmp_path: Path) -> None:
     c_indices = [i for i, a in enumerate(argv) if a == "-c"]
     c_values = [argv[i + 1] for i in c_indices]
 
-    cmd_val = f'mcp_servers.cortexshift.command="{sys.executable}"'
+    cmd_val = f"mcp_servers.cortexshift.command={json.dumps(sys.executable)}"
     assert cmd_val in c_values
 
     args_val = 'mcp_servers.cortexshift.args=["-m", "cortexshift", "mcp", "serve"]'
@@ -81,7 +81,7 @@ def test_codex_handoff_argv_contains_mcp_flags(tmp_path: Path) -> None:
     argv = prep.launch_spec.argv
     c_indices = [i for i, a in enumerate(argv) if a == "-c"]
     c_values = [argv[i + 1] for i in c_indices]
-    assert f'mcp_servers.cortexshift.command="{sys.executable}"' in c_values
+    assert f"mcp_servers.cortexshift.command={json.dumps(sys.executable)}" in c_values
 
 
 def test_antigravity_runtime_no_cli_mcp_flags(tmp_path: Path) -> None:
@@ -95,3 +95,18 @@ def test_antigravity_runtime_no_cli_mcp_flags(tmp_path: Path) -> None:
     assert "--mcp-config" not in spec.argv
     assert "-c" not in spec.argv
     assert spec.argv == ["/bin/antigravity"]
+
+
+def test_codex_mcp_command_preserves_windows_and_quoted_paths() -> None:
+    import tomllib
+
+    from cortexshift.adapters.providers.codex import build_codex_mcp_args
+
+    for executable in [
+        r"C:\Users\developer\My Tools\python.exe",
+        '/opt/My "Tools"/python',
+        r"C:\Tools 🌟\python.exe",
+    ]:
+        argv = build_codex_mcp_args(executable)
+        config = tomllib.loads("\n".join(argv[1::2]))
+        assert config["mcp_servers"]["cortexshift"]["command"] == executable
