@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.providers.codex import CODEX_BOOTSTRAP_PREFIX
 from cortexshift.adapters.sqlite.migrations import CURRENT_SCHEMA_VERSION
@@ -33,9 +32,10 @@ from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY, PROVIDER_CLAUDE, P
 from cortexshift.domain.session import SessionStatus
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
+from tests.cli_runner import AnsiFreeCliRunner
 from tests.factories import FakeCodexBootstrap, patch_which, seed_session
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 BOOTSTRAP_CONVERSATION_ID = "test-conversation-123"
 BOOTSTRAP_SECRET_RESPONSE = "Plan: verify auth module, then wire refresh. NEVER-PERSIST-ME."

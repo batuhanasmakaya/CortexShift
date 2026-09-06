@@ -3,8 +3,6 @@
 import json
 from unittest.mock import patch
 
-from typer.testing import CliRunner
-
 from cortexshift.cli.app import app
 from cortexshift.domain.doctor import (
     AuthenticationStatus,
@@ -19,8 +17,9 @@ from cortexshift.domain.provider import (
     ProviderCapabilities,
     ProviderId,
 )
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 def _make_mock_report() -> DoctorReport:

@@ -4,14 +4,14 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.sqlite.migrations import CURRENT_SCHEMA_VERSION
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.cli.app import app
 from cortexshift.domain.task import Task
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 def test_status_uninitialized_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

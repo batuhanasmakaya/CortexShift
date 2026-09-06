@@ -3,11 +3,11 @@
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.cli.app import app
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 def test_cli_init_fresh_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

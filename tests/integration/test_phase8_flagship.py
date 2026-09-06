@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.providers.antigravity import AntigravityHandoffAdapter
 from cortexshift.adapters.providers.claude import ClaudeHandoffAdapter
@@ -28,8 +27,9 @@ from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 class RecordingProcessRunner(InteractiveProcessRunner):

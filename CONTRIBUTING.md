@@ -59,6 +59,32 @@ uv run mypy
 uv run pytest
 ```
 
+Tests that invoke the CLI must use `AnsiFreeCliRunner` (or `run_cli`, for subprocesses)
+from `tests/cli_runner.py` rather than `typer.testing.CliRunner` or a bare
+`subprocess.run`. Typer renders help through Rich and forces color whenever
+`GITHUB_ACTIONS`, `FORCE_COLOR`, or `PY_COLORS` is set, which splits option names across
+escape sequences — `--json` stops being a substring of the help text. The shared runners
+strip those escapes so assertions describe what the command said, not how the terminal
+painted it. To reproduce CI's rendering locally:
+
+```bash
+FORCE_COLOR=1 uv run pytest
+```
+
+Terminal width stays whatever the caller asked for — `COLUMNS=60 uv run pytest` really
+does run the CLI at 60 columns — so assertions have to cope with it themselves:
+
+- When Rich merely re-wraps a sentence, pass the output through `unwrapped()` from
+  `tests/cli_runner.py` instead of matching a fragment that happens to fit on one line.
+- When a test asserts on a laid-out table or grid, request the `fixed_console_width`
+  fixture. A narrow terminal makes the CLI genuinely truncate cells, and no
+  normalization can recover dropped characters. Use it only for that.
+
+```bash
+COLUMNS=60 uv run pytest
+COLUMNS=200 uv run pytest
+```
+
 ### 4. CLI Smoke Testing
 
 ```bash

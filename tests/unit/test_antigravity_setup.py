@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.providers.antigravity import (
     ANTIGRAVITY_MCP_CONFIG_REL_PATH,
@@ -15,8 +14,9 @@ from cortexshift.adapters.providers.antigravity import (
 from cortexshift.cli.app import app
 from cortexshift.domain.errors import CortexShiftError
 from cortexshift.domain.project import Project
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 def test_setup_creates_new_config(tmp_path: Path) -> None:
@@ -154,7 +154,9 @@ def test_cli_mcp_setup_antigravity(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert "noop" in res.stdout or "already up to date" in res.stdout
 
 
-def test_cli_mcp_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_mcp_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fixed_console_width: int
+) -> None:
     from cortexshift.adapters.sqlite.store import SQLiteStateStore
 
     monkeypatch.chdir(tmp_path)

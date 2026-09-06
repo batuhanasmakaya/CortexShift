@@ -6,12 +6,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.cli.app import app
+from tests.cli_runner import AnsiFreeCliRunner, unwrapped
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 def _setup_git_repo(path: Path) -> None:
@@ -111,7 +111,7 @@ def test_repo_status_non_git_project(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     result = runner.invoke(app, ["repo", "status"])
     assert result.exit_code == 0
-    assert "not inside a Git repository" in result.stdout
+    assert "not inside a Git repository" in unwrapped(result.stdout)
 
     json_result = runner.invoke(app, ["repo", "status", "--json"])
     assert json_result.exit_code == 0

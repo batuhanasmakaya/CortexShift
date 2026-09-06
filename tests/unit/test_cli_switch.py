@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
@@ -12,9 +11,10 @@ from cortexshift.application.switch_service import SwitchService
 from cortexshift.cli.app import app
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.session import SessionExitReason, SessionStatus
+from tests.cli_runner import AnsiFreeCliRunner, unwrapped
 from tests.factories import FakeCodexBootstrap, patch_which, seed_project, seed_session
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 @pytest.fixture
@@ -187,7 +187,7 @@ def test_switch_dry_run_antigravity_reports_bootstrap_turn(
     human = runner.invoke(app, ["switch", "antigravity", "--dry-run"])
     assert human.exit_code == 0
     assert "plan_bootstrap_then_resume" in human.stdout
-    assert "one read-only planning turn would run" in human.stdout
+    assert "one read-only planning turn would run" in unwrapped(human.stdout)
 
     machine = runner.invoke(app, ["switch", "antigravity", "--dry-run", "--json"])
     data = json.loads(machine.stdout)
@@ -292,7 +292,7 @@ def test_switch_reports_failed_target_session(
     assert result.exit_code == 3
     assert "Session failed." in result.stdout
     # Delivery succeeded even though the session did not.
-    assert "was delivered" in result.stdout
+    assert "was delivered" in unwrapped(result.stdout)
 
     with SQLiteStateStore(
         switchable_project / ".cortexshift" / "state.sqlite3", auto_migrate=False

@@ -5,14 +5,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLease
 from cortexshift.cli.app import app
 from cortexshift.domain.session import SessionStatus
+from tests.cli_runner import AnsiFreeCliRunner, unwrapped
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 @pytest.fixture
@@ -208,7 +208,7 @@ def test_run_antigravity_rejects_prompt(
     result = runner.invoke(app, ["run", "antigravity", "--prompt", "Initial prompt", "--dry-run"])
     assert result.exit_code == 1
     output = result.stderr + result.stdout
-    assert "Antigravity does not currently expose a supported interactive" in output
+    assert "Antigravity does not currently expose a supported interactive" in unwrapped(output)
 
 
 def test_run_terminal_required(active_project: Path, monkeypatch: pytest.MonkeyPatch) -> None:

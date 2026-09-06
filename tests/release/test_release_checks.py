@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 from scripts.release_check import validate_names, validate_tag
 
+from tests.cli_runner import run_cli
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -18,9 +20,8 @@ def test_single_version_source() -> None:
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     assert cortexshift.__version__ == importlib.metadata.version("cortexshift") == version
     for args in [["--version"], ["version"]]:
-        result = subprocess.run(
-            [sys.executable, "-m", "cortexshift", *args], check=True, capture_output=True, text=True
-        )
+        result = run_cli([sys.executable, "-m", "cortexshift", *args])
+        assert result.returncode == 0
         assert result.stdout.strip() == f"CortexShift {version}"
 
 

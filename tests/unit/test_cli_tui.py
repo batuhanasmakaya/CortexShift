@@ -7,12 +7,12 @@ not change what plain `cortexshift` does.
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.cli.app import app
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 def test_tui_command_is_registered() -> None:

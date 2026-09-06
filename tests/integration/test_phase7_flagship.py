@@ -6,8 +6,6 @@ import json
 import subprocess
 from pathlib import Path
 
-from typer.testing import CliRunner
-
 from cortexshift.adapters.providers.antigravity import AntigravityHandoffAdapter
 from cortexshift.adapters.providers.claude import ClaudeHandoffAdapter
 from cortexshift.adapters.providers.codex import CodexHandoffAdapter
@@ -24,8 +22,9 @@ from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 from cortexshift.domain.task import Task
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 class RecordingProcessRunner(InteractiveProcessRunner):

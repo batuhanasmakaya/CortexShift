@@ -7,7 +7,6 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.providers.antigravity import (
     AntigravityHandoffAdapter,
@@ -43,6 +42,7 @@ from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX, Provide
 from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
 from cortexshift.ports.headless_runner import HeadlessResult
+from tests.cli_runner import AnsiFreeCliRunner, unwrapped
 from tests.factories import FakeCodexBootstrap, patch_which, seed_project, seed_session
 from tests.unit.test_switch_service import FakeHeadlessRunner, FakeInspector, FakeProcessRunner
 
@@ -329,7 +329,7 @@ def test_resume_cli_json_and_history(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(
         importlib.import_module("cortexshift.cli.app"), "ResumeService", resume_service
     )
-    cli = CliRunner()
+    cli = AnsiFreeCliRunner()
     for cmd in [
         ["resume", "--help"],
         ["resume", "claude", "--dry-run"],
@@ -371,7 +371,7 @@ def test_resume_cli_json_and_history(tmp_path: Path, monkeypatch: pytest.MonkeyP
 def test_resume_cli_expected_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
-    cli = CliRunner()
+    cli = AnsiFreeCliRunner()
     monkeypatch.chdir(tmp_path)
     provider = "claude"
     args = ["resume", provider]
@@ -419,7 +419,8 @@ def test_resume_cli_expected_failures(
     assert len(process.invocations) == (1 if scenario == "provider_failure" else 0)
     assert "Traceback" not in result.output
     if scenario == "provider_failure":
-        assert "no fresh session was started" in result.output
+        # Rich wraps this sentence, and where it breaks depends on the console width.
+        assert "no fresh session was started" in unwrapped(result.output)
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex", "antigravity"])
@@ -432,7 +433,7 @@ def test_switch_cli_native_overrides(
     known(tmp_path, task.id, outgoing_provider)
     monkeypatch.chdir(tmp_path)
     patch_which(monkeypatch, "cortexshift.application.switch_service", lambda cmd: "/fake/" + cmd)
-    cli = CliRunner()
+    cli = AnsiFreeCliRunner()
     result = cli.invoke(app, ["switch", provider, "--dry-run", "--json"])
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)

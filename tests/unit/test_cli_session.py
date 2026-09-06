@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.cli.app import app
@@ -12,8 +11,9 @@ from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY, PROVIDER_CLAUDE, PROVIDER_CODEX
 from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 from cortexshift.domain.task import Task
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 @pytest.fixture
@@ -67,7 +67,9 @@ def test_session_list_empty_json(initialized_project: tuple[Path, str, str]) -> 
     assert data == []
 
 
-def test_session_list_populated(initialized_project: tuple[Path, str, str]) -> None:
+def test_session_list_populated(
+    initialized_project: tuple[Path, str, str], fixed_console_width: int
+) -> None:
     """Verify `cortexshift session list` displays formatted session table."""
     tmp_path, proj_id, task_id = initialized_project
     db_path = tmp_path / ".cortexshift" / "state.sqlite3"
@@ -193,7 +195,9 @@ def test_session_show_not_found(initialized_project: tuple[Path, str, str]) -> N
     assert "Session 'sess_999999999999' was not found." in output
 
 
-def test_session_show_human(initialized_project: tuple[Path, str, str]) -> None:
+def test_session_show_human(
+    initialized_project: tuple[Path, str, str], fixed_console_width: int
+) -> None:
     """Verify human-readable `cortexshift session show` grid output."""
     tmp_path, proj_id, task_id = initialized_project
     db_path = tmp_path / ".cortexshift" / "state.sqlite3"

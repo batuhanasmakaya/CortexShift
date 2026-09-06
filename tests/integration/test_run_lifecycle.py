@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLease
@@ -15,8 +14,9 @@ from cortexshift.cli.app import app
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 @pytest.fixture(autouse=True)
@@ -107,6 +107,7 @@ def git_repo_with_task(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def test_end_to_end_run_from_nested_subdirectory(
     git_repo_with_task: Path,
     monkeypatch: pytest.MonkeyPatch,
+    fixed_console_width: int,
 ) -> None:
     """Verify provider launched from nested directory executes at project root."""
     report_file = git_repo_with_task / "claude_exec_report.json"

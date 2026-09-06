@@ -1,11 +1,10 @@
 """Tests for CLI commands and behavior."""
 
-from typer.testing import CliRunner
-
 from cortexshift import __version__
 from cortexshift.cli.app import app
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 def test_cli_help() -> None:

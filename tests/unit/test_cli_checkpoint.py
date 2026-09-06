@@ -3,16 +3,15 @@
 import json
 from pathlib import Path
 
-from typer.testing import CliRunner
-
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.cli.app import app
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task
+from tests.cli_runner import AnsiFreeCliRunner
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 def _setup_project(tmp_path: Path) -> tuple[Project, Task, Session]:

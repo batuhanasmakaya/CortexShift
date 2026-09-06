@@ -4,15 +4,15 @@ import json
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.cli.app import app
 from cortexshift.domain.handoff import HandoffRecord, HandoffStatus
 from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY, PROVIDER_CLAUDE, PROVIDER_CODEX
+from tests.cli_runner import AnsiFreeCliRunner
 from tests.factories import make_payload, patch_which, seed_project, seed_session
 
-runner = CliRunner()
+runner = AnsiFreeCliRunner()
 
 
 @pytest.fixture
@@ -155,7 +155,7 @@ def test_handoff_list_empty(handoff_project: Path) -> None:
     assert "No handoffs recorded yet." in result.stdout
 
 
-def test_handoff_list_human_table(handoff_project: Path) -> None:
+def test_handoff_list_human_table(handoff_project: Path, fixed_console_width: int) -> None:
     """Verify listing shows source, target, status, and creation time."""
     _persist_handoff(handoff_project)
     _persist_handoff(
