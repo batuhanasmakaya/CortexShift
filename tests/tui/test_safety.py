@@ -19,14 +19,16 @@ from cortexshift.tui.modals import ConfirmModal
 from cortexshift.tui.models import WorkspaceActivity
 from tests.tui.conftest import (
     assert_base_screen,
-    assert_screen,
     build_app,
     build_facade,
+    drain_workers,
     repository,
     seed_project,
     seed_session,
     settle,
     state,
+    wait_for_screen,
+    wait_until,
 )
 
 
@@ -205,9 +207,8 @@ async def test_recovery_preview_precedes_any_mutation(project: Path) -> None:
         await settle(app, pilot)
 
         await pilot.press("R")
-        await settle(app, pilot, rounds=4)
 
-        confirm = assert_screen(app, ConfirmModal)
+        confirm = await wait_for_screen(app, pilot, ConfirmModal)
 
         # The preview is on screen, and nothing has been reconciled yet.
         body = str(confirm.query_one("#confirm-body", Static).content)
@@ -246,8 +247,7 @@ async def test_declining_recovery_reconciles_nothing(project: Path) -> None:
     async with app.run_test() as pilot:
         await settle(app, pilot)
         await pilot.press("R")
-        await settle(app, pilot, rounds=4)
-        assert_screen(app, ConfirmModal)
+        await wait_for_screen(app, pilot, ConfirmModal)
 
         await pilot.press("escape")
         await settle(app, pilot)
@@ -361,13 +361,21 @@ async def test_a_persistently_failing_state_refresh_is_reported_once(project: Pa
         def get_status(self, start_path: object = None) -> None:
             raise DatabaseStateError("state.sqlite3 is unreadable")
 
+    def failures() -> list[object]:
+        return [n for n in app._notifications if "unreadable" in str(n.message)]
+
     app = build_app(project, refresh_seconds=0.05, status_service=BrokenStatusService())
     async with app.run_test() as pilot:
+        # Wait for the first report rather than for a fixed number of ticks: the state
+        # refresh is exclusive, so a tick can supersede the worker that would have
+        # raised, and awaiting that worker's result would fail for a cancellation the
+        # dashboard intends.
+        await wait_until(pilot, lambda: bool(failures()), description="the failure is reported")
+
+        # Let many more ticks fail the same way; the report must not repeat.
         for _ in range(12):
             await pilot.pause(0.05)
-            await app.workers.wait_for_complete()
-            await pilot.pause()
+        await drain_workers(app, pilot)
 
-        failures = [n for n in app._notifications if "unreadable" in str(n.message)]
-        assert len(failures) == 1, f"the same failure was reported {len(failures)} times"
+        assert len(failures()) == 1, f"the same failure was reported {len(failures())} times"
         assert app.is_running

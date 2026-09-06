@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
+from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
@@ -21,6 +22,7 @@ from tests.tui.conftest import (
     seed_session,
     settle,
     state,
+    wait_for_state,
     widget_text,
 )
 
@@ -77,15 +79,23 @@ async def test_an_open_dashboard_reflects_agent_progress_reported_over_mcp(
             facade.record_issue(["Parser mis-handles rotated displays"])
         finally:
             store.close()
+        reported_at = utc_now()
 
         # The dashboard is never told; its own refresh timer must surface the change.
-        for _ in range(60):
-            await pilot.pause(0.05)
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            current = active_task(app)
-            if len(current.remaining) == 1 and len(current.known_issues) == 1:
-                break
+        # The wait is on the state the dashboard publishes, not on a refresh worker: the
+        # refresh is exclusive, so the tick that finally reads the agent's write may
+        # cancel whichever worker a test happened to be holding.
+        await wait_for_state(
+            app,
+            pilot,
+            lambda snapshot: (
+                snapshot.active_task is not None
+                and len(snapshot.active_task.remaining) == 1
+                and len(snapshot.active_task.known_issues) == 1
+            ),
+            since=reported_at,
+            description="surfaced the agent's reported progress",
+        )
 
         task_view = active_task(app)
         assert task_view.current_work == "Parsing multi-monitor geometry"
@@ -124,13 +134,15 @@ async def test_an_agent_checkpoint_appears_in_the_open_dashboard(tmp_path: Path)
             )
         finally:
             store.close()
+        reported_at = utc_now()
 
-        for _ in range(60):
-            await pilot.pause(0.05)
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            if state(app).checkpoints:
-                break
+        await wait_for_state(
+            app,
+            pilot,
+            lambda snapshot: bool(snapshot.checkpoints),
+            since=reported_at,
+            description="surfaced the agent's checkpoint",
+        )
 
         assert len(state(app).checkpoints) == 1
 

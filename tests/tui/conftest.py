@@ -5,24 +5,28 @@ deterministic double: these tests never touch a real coding agent, never open a 
 connection, and never consume model quota.
 """
 
+import shutil
 import subprocess
+import time
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from rich.console import Console
 from textual.pilot import Pilot
 from textual.screen import Screen
 from textual.widgets import Static
+from textual.worker import WorkerState
 
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.doctor import DoctorService
 from cortexshift.application.handoff_builder import HandoffBuilder
 from cortexshift.application.init_service import ProjectInitializationService
+from cortexshift.application.switch_service import SwitchService
 from cortexshift.application.task_workspace import TaskWorkspaceService
 from cortexshift.domain.doctor import (
     AuthenticationStatus,
@@ -46,12 +50,33 @@ from cortexshift.tui.app import CortexShiftApp
 from cortexshift.tui.facade import TuiFacade
 from cortexshift.tui.models import TuiRepositoryModel, TuiStateSnapshot, TuiTaskModel
 from cortexshift.tui.screens import TuiSection
+from tests.cli_runner import PROVIDER_EXECUTABLES, path_without_providers
 
 # The dashboard's Pilot is parameterised by the app's return type: an exit request, or
 # nothing when the operator simply quit.
 TuiPilot = Pilot[TuiExitRequest | None]
 
 INSTALLED_PROVIDERS = {"claude": "/usr/local/bin/claude", "codex": "/usr/local/bin/codex"}
+
+# How the waits below pace themselves. The poll interval only decides how promptly a
+# satisfied condition is noticed; the timeout only decides how a genuine failure is
+# reported. Neither is a wait for a race to resolve -- every wait has a condition.
+WORKER_POLL_SECONDS = 0.01
+WORKER_TIMEOUT_SECONDS = 15.0
+_WORKER_ACTIVE_STATES = (WorkerState.PENDING, WorkerState.RUNNING)
+
+
+@pytest.fixture
+def provider_free_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove every provider CLI from `PATH` for one test, keeping Git and Python.
+
+    A GitHub runner has no coding agent installed, and deliberately so. Reproducing that
+    here means a test that quietly leans on the developer's own install fails on the
+    laptop, where it is cheap to notice, instead of only in CI.
+    """
+    monkeypatch.setenv("PATH", path_without_providers())
+    for name in PROVIDER_EXECUTABLES:
+        assert shutil.which(name) is None, f"{name} is still on PATH: the fixture is ineffective"
 
 
 def run_git(args: list[str], cwd: Path) -> None:
@@ -244,11 +269,44 @@ def seed_handoff(
         return record
 
 
+class NoLaunchProcessRunner:
+    """An interactive runner that proves nothing is ever launched.
+
+    Every dashboard path these tests exercise is a preview or a dry run, so reaching a
+    real process would itself be the defect. Failing loudly beats spawning a provider.
+    """
+
+    def run_interactive(
+        self,
+        argv: list[str],
+        cwd: Path | str,
+        env: dict[str, str] | None = None,
+    ) -> int:
+        raise AssertionError(f"a provider process was launched by a test: {argv!r}")
+
+
 def build_facade(root: Path, **overrides: object) -> TuiFacade:
-    """Build a facade bound to a project with deterministic provider discovery."""
+    """Build a facade bound to a project with deterministic provider discovery.
+
+    Provider presence comes entirely from fakes. The dashboard resolves provider
+    executables in two independent places -- its own `which_fn`, used to decide which
+    palette actions are offered, and the `SwitchService` behind `preview_switch`, whose
+    dry run legitimately requires the target to be installed. Only the first was faked,
+    so `preview_switch` fell through to the real `PATH`: the switch confirmation appeared
+    on a machine that happened to have Codex installed and not on a CI runner, which has
+    no provider CLI at all. Both now share one resolver.
+    """
+    which = cast(
+        Callable[[str], str | None],
+        overrides.pop("which_fn", None) or fake_which(),
+    )
     kwargs: dict[str, object] = {
         "doctor_service": FakeDoctorService(),
-        "which_fn": fake_which(),
+        "which_fn": which,
+        "switch_service": SwitchService(
+            which_fn=which,
+            process_runner=NoLaunchProcessRunner(),
+        ),
         "provider_cache_seconds": 0.0,
     }
     kwargs.update(overrides)
@@ -283,12 +341,91 @@ def screen_text(app: CortexShiftApp, size: tuple[int, int]) -> str:
     return buffer.getvalue()
 
 
+async def drain_workers(
+    app: CortexShiftApp, pilot: TuiPilot, *, timeout: float = WORKER_TIMEOUT_SECONDS
+) -> None:
+    """Let every worker scheduled so far reach a terminal state.
+
+    Deliberately not `WorkerManager.wait_for_complete()`. The state, repository, and
+    provider refreshes are `exclusive` workers: one still in flight when the next starts
+    is cancelled *by design*, and the app's generation guard drops its result. Awaiting
+    such a worker raises `WorkerCancelled` for an outcome the application intends -- the
+    dashboard is fine, only the wait is wrong. Waiting for the work to finish, rather
+    than for a result no caller needed, states what the tests actually mean.
+
+    Workers started while draining are picked up by the next `settle` round, exactly as
+    they were before.
+    """
+    scheduled = list(app.workers)
+    deadline = time.monotonic() + timeout
+    while unfinished := [w for w in scheduled if w.state in _WORKER_ACTIVE_STATES]:
+        if time.monotonic() > deadline:
+            raise AssertionError(
+                f"workers did not finish within {timeout:g}s: "
+                + ", ".join(f"{w.name}={w.state.name}" for w in unfinished)
+            )
+        await pilot.pause(WORKER_POLL_SECONDS)
+
+
 async def settle(app: CortexShiftApp, pilot: TuiPilot, rounds: int = 3) -> None:
     """Let pending workers finish and the resulting UI updates apply."""
     for _ in range(rounds):
         await pilot.pause()
-        await app.workers.wait_for_complete()
+        await drain_workers(app, pilot)
         await pilot.pause()
+
+
+async def wait_until(
+    pilot: TuiPilot,
+    predicate: Callable[[], bool],
+    *,
+    description: str,
+    timeout: float = WORKER_TIMEOUT_SECONDS,
+) -> None:
+    """Pump the event loop until `predicate` holds.
+
+    Every wait in these tests has a condition: the loop ends the moment the application
+    reaches the state under test, so a fast machine is never made to wait and a slow one
+    is never cut short. The timeout only decides how a genuine failure is reported.
+    """
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out after {timeout:g}s waiting until {description}")
+        await pilot.pause(WORKER_POLL_SECONDS)
+
+
+async def wait_for_state(
+    app: CortexShiftApp,
+    pilot: TuiPilot,
+    accept: Callable[[TuiStateSnapshot], bool],
+    *,
+    since: datetime,
+    description: str,
+    timeout: float = WORKER_TIMEOUT_SECONDS,
+) -> TuiStateSnapshot:
+    """Wait for the dashboard's own refresh to publish state that `accept` approves.
+
+    For tests where nothing tells the dashboard to reload: its timer has to surface the
+    change on its own. The wait is on the published snapshot -- the app's observable
+    state -- and never on a refresh worker, because the tick that finally reads the new
+    data may cancel whichever worker the test happens to be holding.
+
+    `since` makes the result authoritative: a snapshot assembled before that instant
+    cannot end the wait even if it satisfies `accept`, so a stale read can never be
+    mistaken for the refreshed one.
+    """
+
+    def published() -> bool:
+        snapshot = app._snapshot
+        if snapshot is None or snapshot.loaded_at is None or snapshot.loaded_at < since:
+            return False
+        return accept(snapshot)
+
+    await wait_until(pilot, published, description=f"the dashboard {description}", timeout=timeout)
+    snapshot = app._snapshot
+    assert snapshot is not None
+    return snapshot
 
 
 def state(app: CortexShiftApp) -> TuiStateSnapshot:
@@ -322,6 +459,32 @@ def exit_request(app: CortexShiftApp) -> TuiExitRequest:
 def assert_no_exit_request(app: CortexShiftApp) -> None:
     """Assert the dashboard has not asked for any provider launch."""
     assert app.return_value is None, f"unexpected provider launch request: {app.return_value!r}"
+
+
+async def wait_for_screen[ScreenT: Screen[Any]](
+    app: CortexShiftApp,
+    pilot: TuiPilot,
+    screen_type: type[ScreenT],
+    *,
+    timeout: float = WORKER_TIMEOUT_SECONDS,
+) -> ScreenT:
+    """Wait for a screen to be pushed, then assert it and return it.
+
+    A modal built from a service result arrives in two hops: a worker thread computes
+    the result, then the completion callback pushes the screen. Waiting for the screen
+    to be mounted -- rather than for a number of settle rounds and hoping both hops fit
+    inside them -- is what makes the assertion independent of how fast the machine is.
+
+    The assertion is not weakened: the wait ends only when a screen of exactly this type
+    is on top, and a failure still reports which screen was actually there.
+    """
+    await wait_until(
+        pilot,
+        lambda: isinstance(app.screen, screen_type),
+        description=f"the {screen_type.__name__} is mounted (saw {type(app.screen).__name__})",
+        timeout=timeout,
+    )
+    return assert_screen(app, screen_type)
 
 
 def assert_screen[ScreenT: Screen[Any]](app: CortexShiftApp, screen_type: type[ScreenT]) -> ScreenT:

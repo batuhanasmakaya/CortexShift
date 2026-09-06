@@ -9,6 +9,7 @@ from textual.widgets import DataTable
 from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.task_workspace import TaskWorkspaceService
 from cortexshift.domain.git import RepositoryInspection, RepositoryInspectionStatus
+from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.tui.screens import TuiSection
 from cortexshift.tui.screens.sessions import SessionsSection
@@ -20,6 +21,7 @@ from tests.tui.conftest import (
     repository,
     settle,
     state,
+    wait_for_state,
     widget_text,
 )
 
@@ -121,15 +123,22 @@ async def test_lightweight_timer_reflects_state_written_through_mcp(project: Pat
             mcp.record_issue(["Parser chokes on unicode paths"])
         finally:
             store.close()
+        reported_at = utc_now()
 
-        # No explicit refresh: the lightweight timer alone must surface the change.
-        for _ in range(40):
-            await pilot.pause(0.05)
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-            current = active_task(app)
-            if len(current.remaining) == 1 and len(current.known_issues) == 2:
-                break
+        # No explicit refresh: the lightweight timer alone must surface the change. The
+        # wait is on the state the dashboard publishes, never on a refresh worker, which
+        # the next tick may supersede.
+        await wait_for_state(
+            app,
+            pilot,
+            lambda snapshot: (
+                snapshot.active_task is not None
+                and len(snapshot.active_task.remaining) == 1
+                and len(snapshot.active_task.known_issues) == 2
+            ),
+            since=reported_at,
+            description="surfaced the MCP write",
+        )
 
         final = active_task(app)
         assert list(final.remaining) == ["Add regression tests"]

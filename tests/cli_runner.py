@@ -27,7 +27,9 @@ which a narrow terminal genuinely truncates.
 """
 
 import importlib
+import os
 import re
+import shutil
 import subprocess
 from typing import Any
 
@@ -73,6 +75,28 @@ def pin_console_width(monkeypatch: pytest.MonkeyPatch, width: int = FIXED_TERMIN
         original: Console = getattr(cli, name)
         monkeypatch.setattr(cli, name, Console(stderr=original.stderr, width=width))
     return width
+
+
+PROVIDER_EXECUTABLES = ("claude", "codex", "agy")
+
+
+def path_without_providers() -> str:
+    """A `PATH` with every directory holding a provider CLI removed.
+
+    A GitHub runner has no coding agent installed, and that is deliberate: CortexShift is
+    tested against fakes and must never invoke a real agent -- not even for the version
+    and auth probes that provider discovery runs. Handing this to a subprocess makes
+    discovery answer the same way on a laptop as it does on a runner.
+
+    Whole directories are dropped rather than the executables inside them, so nothing on
+    the machine is touched and Git, Python, and uv stay resolvable.
+    """
+    kept = [
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry and not any(shutil.which(name, path=entry) for name in PROVIDER_EXECUTABLES)
+    ]
+    return os.pathsep.join(kept)
 
 
 def unwrapped(text: str) -> str:

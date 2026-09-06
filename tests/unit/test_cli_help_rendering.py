@@ -23,6 +23,7 @@ from cortexshift.cli.app import app
 from tests.cli_runner import (
     FIXED_TERMINAL_WIDTH,
     AnsiFreeCliRunner,
+    path_without_providers,
     pin_console_width,
     run_cli,
     strip_ansi,
@@ -158,7 +159,10 @@ def test_machine_readable_output_is_never_styled_in_the_first_place(variable: st
         capture_output=True,
         text=True,
         check=False,
-        env={**os.environ, variable: "1"},
+        # `doctor` is the one command that executes provider CLIs, for version and auth
+        # probes. Hiding them keeps this test from running whatever agent the developer
+        # happens to have installed -- CI has none, and the suite must match.
+        env={**os.environ, variable: "1", "PATH": path_without_providers()},
     )
 
     assert result.returncode == 0

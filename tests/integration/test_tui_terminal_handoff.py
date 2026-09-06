@@ -24,6 +24,7 @@ from tests.tui.conftest import (
     seed_project,
     seed_session,
     settle,
+    wait_for_screen,
 )
 
 
@@ -101,9 +102,8 @@ async def test_the_provider_launches_only_after_the_dashboard_run_loop_ends(
             palette.query_one("#provider-actions", OptionList).highlighted = index
             await pilot.pause()
             await pilot.press("enter")
-            await settle(app, pilot, rounds=4)
 
-            assert_screen(app, ConfirmModal)
+            await wait_for_screen(app, pilot, ConfirmModal)
             # Nothing launched while the dashboard is alive.
             assert provider.launches == []
 

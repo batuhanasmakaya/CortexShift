@@ -33,6 +33,7 @@ from tests.tui.conftest import (
     seed_project,
     seed_session,
     settle,
+    wait_for_screen,
     widget_text,
 )
 
@@ -229,9 +230,8 @@ async def test_phase9_flagship_control_center_workflow(tmp_path: Path) -> None:
         palette.query_one("#provider-actions", OptionList).highlighted = index
         await pilot.pause()
         await pilot.press("enter")
-        await settle(app, pilot, rounds=4)
 
-        confirm = assert_screen(app, ConfirmModal)
+        confirm = await wait_for_screen(app, pilot, ConfirmModal)
         preview = str(confirm.query_one("#confirm-body", Static).content)
         assert "Codex" in preview
         assert "resume_existing" in preview

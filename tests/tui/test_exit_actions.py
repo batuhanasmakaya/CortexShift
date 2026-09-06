@@ -17,6 +17,7 @@ from tests.tui.conftest import (
     exit_request,
     seed_session,
     settle,
+    wait_for_screen,
 )
 
 
@@ -31,10 +32,7 @@ def _active_task_id(root: Path) -> str:
 async def open_provider_palette(app: CortexShiftApp, pilot: TuiPilot) -> ProviderActionModal:
     """Open the provider action palette and return it."""
     await pilot.press("x")
-    await settle(app, pilot)
-    modal = app.screen
-    assert isinstance(modal, ProviderActionModal)
-    return modal
+    return await wait_for_screen(app, pilot, ProviderActionModal)
 
 
 def highlight(modal: ProviderActionModal, action: TuiExitAction, provider: str) -> None:
@@ -111,10 +109,10 @@ async def test_switch_returns_an_exit_request_and_launches_nothing(project: Path
         highlight(modal, TuiExitAction.SWITCH, "codex")
         await pilot.pause()
         await pilot.press("enter")
-        await settle(app, pilot, rounds=4)
 
-        # A confirmation appears first, built from the switch dry run.
-        assert_screen(app, ConfirmModal)
+        # A confirmation appears first, built from the switch dry run. Waiting for it to
+        # be mounted proves it was actually pushed; a swallowed error would time out here.
+        await wait_for_screen(app, pilot, ConfirmModal)
         # Still running: nothing has been launched and nothing has been persisted.
         assert app.is_running
         assert_no_exit_request(app)
@@ -140,8 +138,7 @@ async def test_declining_the_switch_confirmation_keeps_the_dashboard_open(projec
         highlight(modal, TuiExitAction.SWITCH, "codex")
         await pilot.pause()
         await pilot.press("enter")
-        await settle(app, pilot, rounds=4)
-        assert_screen(app, ConfirmModal)
+        await wait_for_screen(app, pilot, ConfirmModal)
 
         await pilot.press("escape")
         await settle(app, pilot)
@@ -229,9 +226,8 @@ async def test_handoff_preview_persists_nothing_and_launches_nothing(project: Pa
         highlight(modal, TuiExitAction.SWITCH, "codex")
         await pilot.pause()
         await pilot.press("enter")
-        await settle(app, pilot, rounds=4)
 
-        assert_screen(app, InfoModal)
+        await wait_for_screen(app, pilot, InfoModal)
         assert app.is_running
         assert_no_exit_request(app)
 
