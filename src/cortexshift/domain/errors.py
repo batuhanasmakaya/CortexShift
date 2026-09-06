@@ -267,3 +267,11 @@ class InvalidCheckpointInputError(CortexShiftError):
 
 class SessionRecoveryError(CortexShiftError):
     """Raised when crash recovery encounters an unrecoverable orchestration condition."""
+
+
+class McpContextError(CortexShiftError):
+    """Raised when MCP execution context resolution or validation fails."""
+
+
+class McpReadOnlyError(CortexShiftError):
+    """Raised when a state-mutating MCP tool is invoked in read-only or unmanaged mode."""

@@ -135,7 +135,9 @@ def test_flagship_a_b_c_a_b_c_and_restart(tmp_path: Path, native_workflow) -> No
     assert len({h.git_snapshot_id for h in handoffs}) == 5
     assert len({h.id for h in handoffs}) == 5
     claude_return = process.invocations[3]["argv"]
-    assert claude_return[1:3] == ["--resume", first.native_session_id]
+    assert "--mcp-config" in claude_return
+    assert "--resume" in claude_return
+    assert claude_return[claude_return.index("--resume") + 1] == first.native_session_id
     prompts = [claude_return[-1]]
     for call in bootstrap.calls:
         prompt = call[-1] if "exec" in call else call[call.index("-p") + 1]

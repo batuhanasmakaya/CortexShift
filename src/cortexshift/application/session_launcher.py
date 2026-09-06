@@ -93,9 +93,20 @@ class ProviderSessionLauncher:
             if on_launch:
                 on_launch(launch_spec, session)
 
+            binding_env: dict[str, str] = {
+                "CORTEXSHIFT_PROJECT_ROOT": str(launch_spec.cwd),
+                "CORTEXSHIFT_TASK_ID": session.task_id,
+                "CORTEXSHIFT_SESSION_ID": session.id,
+                "CORTEXSHIFT_PROVIDER_ID": str(session.provider_id),
+                "CORTEXSHIFT_MCP_READ_ONLY": "0",
+            }
+            if launch_spec.env:
+                binding_env.update(launch_spec.env)
+
             exit_code = self._runner.run_interactive(
                 argv=launch_spec.argv,
                 cwd=launch_spec.cwd,
+                env=binding_env,
             )
 
             ended_at = utc_now()

@@ -15,9 +15,9 @@ Foundation    Provider      Task State    Git Context   Native        Manual
 (Complete)    (Complete)    (Complete)    (Complete)    (Complete)    (Complete)
 
 Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
-Native        Checkpoints   MCP Server    TUI           Public        Experimental
-Resume        & Recovery                                Release
-(Complete)    (Complete)    (Planned)
+Native        Checkpoints   MCP Shared    TUI           Public        Experimental
+Resume        & Recovery    State                       Release
+(Complete)    (Complete)    (Complete)    (Planned)
 ```
 
 ---
@@ -162,13 +162,24 @@ Make development state resilient to unexpected terminations (rate limit exhausti
 
 ---
 
-## Phase 8 — MCP Integration
+## Phase 8 — MCP Shared State & Agent Self-Reporting *(Completed)*
 
-Expose CortexShift capabilities and state to agents via Model Context Protocol.
+Give active coding agents a first-class structured channel to read canonical project/task state and self-report progress mid-flight using the Model Context Protocol (MCP).
 
-- **Goals**:
-  - Lightweight local MCP server.
-  - Tools for active agents to query task requirements, log decisions, and update task status directly.
+- **Deliverables**:
+  - **Local Stdio Transport Exclusively**: MCP server (`cortexshift mcp serve`) running over local stdio only. Pure stdout wire protocol with all diagnostics and logs routed strictly to stderr.
+  - **Context Binding & Safety**: `McpExecutionContext` resolving project, task, session, provider, and read-only flags from environment variables. Strict binding prevents cross-task state pollution.
+  - **Dual Capability Mode**: Managed active sessions receive 10 tools (4 read + 6 write); unmanaged and read-only sessions receive 4 read tools only.
+  - **Exposed Tools**:
+    - Read: `get_project_context`, `get_current_task`, `get_latest_checkpoint`, `get_repository_status`.
+    - Write: `set_current_work`, `mark_completed`, `add_remaining`, `record_issue`, `record_decision`, `create_checkpoint`.
+  - **Exposed Resources**: `cortexshift://project`, `cortexshift://task`, `cortexshift://checkpoint/latest`, `cortexshift://repository` (all `application/json`).
+  - **Workspace Lease Bypass & WAL Concurrency**: MCP tool executions deliberately bypass the OS advisory lock (`agent.lock`) to avoid self-deadlocks with parent agent processes, relying on SQLite WAL concurrency mode and `check_same_thread=False`.
+  - **Provider Integration Transports**: Automatic launch configuration for Claude Code (`--mcp-config <inline JSON>`), OpenAI Codex (`-c` flags), and Google Antigravity (`.agents/mcp_config.json` via `cortexshift mcp setup antigravity`). Headless bootstrap turns run read-only (`CORTEXSHIFT_MCP_READ_ONLY=1`).
+  - **Schema Stability**: Retains SQLite schema version strictly at **v6** without migrations.
+  - **CLI Commands**: `cortexshift mcp serve`, `cortexshift mcp status` (`--json`), `cortexshift mcp setup antigravity` (`--dry-run`, `--force`).
+  - **Quality Gates & Verification**: 572 passing unit and integration tests, strict mypy typing across source and tests, 0 Ruff lint warnings. Flagship workflow verifies multi-agent self-reporting and checkpoint-enriched continuity across Claude and Codex.
+  - [ADR-0009](decisions/ADR-0009-mcp-shared-state.md) documents architectural decisions, wire protocol guarantees, and provider transports.
 
 ---
 

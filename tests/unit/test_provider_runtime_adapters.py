@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 from cortexshift.adapters.providers.antigravity import AntigravityRuntimeAdapter
-from cortexshift.adapters.providers.claude import ClaudeRuntimeAdapter
-from cortexshift.adapters.providers.codex import CodexRuntimeAdapter
+from cortexshift.adapters.providers.claude import ClaudeRuntimeAdapter, build_claude_mcp_config
+from cortexshift.adapters.providers.codex import CodexRuntimeAdapter, build_codex_mcp_args
 from cortexshift.domain.errors import UnsupportedPromptError
 from cortexshift.domain.provider import (
     PROVIDER_ANTIGRAVITY,
@@ -26,7 +26,13 @@ def test_claude_launch_spec_without_prompt(tmp_path: Path) -> None:
     assert spec.provider_id == PROVIDER_CLAUDE
     assert spec.executable == "/bin/claude"
     assert spec.cwd == tmp_path
-    assert spec.argv == ["/bin/claude", "--session-id", spec.native_session_id]
+    assert spec.argv == [
+        "/bin/claude",
+        "--mcp-config",
+        build_claude_mcp_config(),
+        "--session-id",
+        spec.native_session_id,
+    ]
     assert spec.interactive is True
     assert spec.initial_prompt_supported is True
     assert spec.prompt_supplied is False
@@ -41,7 +47,14 @@ def test_claude_launch_spec_with_prompt(tmp_path: Path) -> None:
         executable_path="/bin/claude",
         prompt="Inspect the repo",
     )
-    assert spec.argv == ["/bin/claude", "--session-id", spec.native_session_id, "Inspect the repo"]
+    assert spec.argv == [
+        "/bin/claude",
+        "--mcp-config",
+        build_claude_mcp_config(),
+        "--session-id",
+        spec.native_session_id,
+        "Inspect the repo",
+    ]
     assert spec.prompt_supplied is True
     assert "-p" not in spec.argv
 
@@ -54,7 +67,7 @@ def test_codex_launch_spec_without_prompt(tmp_path: Path) -> None:
     assert adapter.executable == "codex"
 
     spec = adapter.build_launch_spec(project_root=tmp_path, executable_path="/bin/codex")
-    assert spec.argv == ["/bin/codex"]
+    assert spec.argv == ["/bin/codex", *build_codex_mcp_args()]
     assert spec.interactive is True
     assert spec.initial_prompt_supported is True
     assert spec.prompt_supplied is False
@@ -69,7 +82,7 @@ def test_codex_launch_spec_with_prompt(tmp_path: Path) -> None:
         executable_path="/bin/codex",
         prompt="Fix the tests",
     )
-    assert spec.argv == ["/bin/codex", "Fix the tests"]
+    assert spec.argv == ["/bin/codex", *build_codex_mcp_args(), "Fix the tests"]
     assert spec.prompt_supplied is True
     assert "exec" not in spec.argv
 
@@ -126,8 +139,7 @@ def test_command_injection_regression_preserves_single_argument(
         executable_path="/bin/claude",
         prompt=malicious_prompt,
     )
-    # Must be exactly 2 items: executable and the raw prompt string
-    assert len(spec_claude.argv) == 4
+    assert len(spec_claude.argv) == 6
     assert spec_claude.argv[0] == "/bin/claude"
     assert spec_claude.argv[-1] == malicious_prompt
 
@@ -137,6 +149,6 @@ def test_command_injection_regression_preserves_single_argument(
         executable_path="/bin/codex",
         prompt=malicious_prompt,
     )
-    assert len(spec_codex.argv) == 2
+    assert len(spec_codex.argv) == len(build_codex_mcp_args()) + 2
     assert spec_codex.argv[0] == "/bin/codex"
-    assert spec_codex.argv[1] == malicious_prompt
+    assert spec_codex.argv[-1] == malicious_prompt

@@ -13,8 +13,12 @@ from cortexshift.adapters.providers.antigravity import (
     AntigravityHandoffAdapter,
     AntigravityRuntimeAdapter,
 )
-from cortexshift.adapters.providers.claude import ClaudeRuntimeAdapter
-from cortexshift.adapters.providers.codex import CodexHandoffAdapter, CodexRuntimeAdapter
+from cortexshift.adapters.providers.claude import ClaudeRuntimeAdapter, build_claude_mcp_config
+from cortexshift.adapters.providers.codex import (
+    CodexHandoffAdapter,
+    CodexRuntimeAdapter,
+    build_codex_mcp_args,
+)
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.native_session import (
@@ -64,16 +68,19 @@ def resume_service(runner: FakeProcessRunner | None = None, tty: bool = True) ->
 
 
 @pytest.mark.parametrize(
-    ("adapter", "argv"),
+    ("adapter", "expected_suffix"),
     [
-        (ClaudeRuntimeAdapter(), ["--resume", "native-A"]),
-        (CodexRuntimeAdapter(), ["resume", "native-A"]),
+        (
+            ClaudeRuntimeAdapter(),
+            ["--mcp-config", build_claude_mcp_config(), "--resume", "native-A"],
+        ),
+        (CodexRuntimeAdapter(), [*build_codex_mcp_args(), "resume", "native-A"]),
         (AntigravityRuntimeAdapter(), ["--conversation", "native-A"]),
     ],
 )
-def test_exact_resume_contract(adapter, argv, tmp_path: Path) -> None:
+def test_exact_resume_contract(adapter, expected_suffix, tmp_path: Path) -> None:
     spec = adapter.build_exact_resume(tmp_path, "/fake/tool", "native-A")
-    assert spec.argv == ["/fake/tool", *argv]
+    assert spec.argv == ["/fake/tool", *expected_suffix]
     assert spec.cwd == tmp_path
     assert spec.native_session_id == "native-A"
     assert spec.to_redacted_argv() == spec.argv
@@ -101,6 +108,8 @@ def test_claude_uuid_persisted_before_launch_and_prompt_not_persisted(tmp_path: 
     )
     assert runner.invocations[0]["argv"] == [
         "/fake/claude",
+        "--mcp-config",
+        build_claude_mcp_config(),
         "--session-id",
         session.native_session_id,
         "SECRET-USER-PROMPT",
@@ -121,7 +130,8 @@ def test_plain_run_keeps_unknown_id_without_model_turn(
     )
     session = service.run(provider, start_dir=tmp_path)
     assert session.native_session_id is None
-    assert len(process.invocations[0]["argv"]) == 1
+    expected_len = 1 + len(build_codex_mcp_args()) if provider == "codex" else 1
+    assert len(process.invocations[0]["argv"]) == expected_len
     assert not codex_bootstrap.invocations
     with pytest.raises(NativeResumeError, match="will not guess"):
         resume_service().resume(provider, start_dir=tmp_path)
@@ -455,5 +465,9 @@ def test_codex_plain_prompt_does_not_bootstrap(
     )
     result = service.run("codex", prompt="USER-PROMPT", start_dir=tmp_path)
     assert result.native_session_id is None
-    assert process.invocations[0]["argv"] == ["/fake/codex", "USER-PROMPT"]
+    assert process.invocations[0]["argv"] == [
+        "/fake/codex",
+        *build_codex_mcp_args(),
+        "USER-PROMPT",
+    ]
     assert not codex_bootstrap.invocations

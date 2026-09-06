@@ -280,7 +280,8 @@ def test_switch_delivers_context_and_creates_target_session(
 
     argv = runner.invocations[0]["argv"]
     assert argv[0] == "/bin/codex"
-    assert argv[1:] == ["resume", "test-codex-native-id"]
+    assert "-c" in argv
+    assert argv[-2:] == ["resume", "test-codex-native-id"]
     context = codex_bootstrap.invocations[-1][-1]
     assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in context
     assert task.objective in context
@@ -487,7 +488,9 @@ def test_command_injection_stays_inert(tmp_path: Path, codex_bootstrap: FakeCode
     _service(inspector=inspector, process_runner=runner).switch("codex", start_dir=tmp_path)
 
     argv = runner.invocations[0]["argv"]
-    assert argv[1:] == ["resume", "test-codex-native-id"]
+    assert argv[0] == "/bin/codex"
+    assert "-c" in argv
+    assert argv[-2:] == ["resume", "test-codex-native-id"]
     assert "$(touch" in codex_bootstrap.invocations[-1][-1]
     assert not marker.exists()
 

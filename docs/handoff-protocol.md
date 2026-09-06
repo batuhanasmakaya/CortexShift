@@ -419,3 +419,22 @@ The authority preamble warns that an existing provider-native conversation conta
 Codex uses `codex exec --sandbox read-only --json <bootstrap-context>` for new managed handoffs, or `codex exec --sandbox read-only resume --json ID <bootstrap-context>` on return. JSONL must report a native thread, completed turn and no failure. Only the ID leaves the adapter; response data is discarded. Antigravity adds `--conversation ID` to its existing plan bootstrap on return. Both providers must confirm the requested ID before interactive resume. Bootstrap failure marks the new handoff failed without altering the old native reference or falling back to a fresh chat.
 
 Codex and Antigravity bootstrap model turns are explicit transport costs. Dry-run exposes the selected native mode, prior target Session, native-ID availability, delivery strategy and model-turn requirement without running that transport. See [ADR-0007](decisions/ADR-0007-native-session-continuity.md).
+
+---
+
+## 19. Phase 8: Real-Time MCP Shared State & Agent Self-Reporting
+
+With Phase 8, the receiving agent has access to the CortexShift Model Context Protocol (MCP) server running via local stdio.
+
+### Instructions for Incoming Agents
+
+1. **Explore Canonical Context**: Use read tools `get_project_context`, `get_current_task`, `get_latest_checkpoint`, and `get_repository_status` (or read `cortexshift://` resources) to inspect current constraints, decisions, and live Git status.
+2. **Report In-Flight Progress**: Use write tools during execution:
+   - `set_current_work(str)`: Record what is currently being edited or debugged.
+   - `add_remaining(list[str])`: Add newly identified requirements or edge cases.
+   - `mark_completed(list[str])`: Move completed work items from `remaining_items` to `completed_items`.
+   - `record_issue(list[str])`: Log known bugs, blocker issues, or test failures.
+   - `record_decision(str)`: Log crucial architectural decisions (persists an automatic checkpoint).
+   - `create_checkpoint(decisions, test_summary, note)`: Capture cooperative milestone checkpoints with reported test execution summaries.
+3. **Continuous Handoff Enrichment**: When the next handoff or switch occurs, all self-reported state captured via MCP is automatically synthesized into the next canonical handoff payload, ensuring subsequent agents inherit high-fidelity context without manual operator intervention.
+

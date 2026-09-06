@@ -5,10 +5,12 @@ import re
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from cortexshift.adapters.headless_runner import SubprocessHeadlessProviderRunner
 from cortexshift.domain.doctor import AuthenticationStatus, ProviderDiagnostic
 from cortexshift.domain.errors import (
+    CortexShiftError,
     HandoffDeliveryError,
     NativeResumeError,
     UnsupportedPromptError,
@@ -339,6 +341,7 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
             ],
             cwd=project_root,
             timeout=self._timeout,
+            env={"CORTEXSHIFT_MCP_READ_ONLY": "1"},
         )
 
         if result.timed_out:
@@ -397,3 +400,131 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
             native_session_id=conversation_id,
             bootstrap_performed=True,
         )
+
+
+ANTIGRAVITY_MCP_CONFIG_REL_PATH = Path(".agents/mcp_config.json")
+
+CORTEXSHIFT_ANTIGRAVITY_MCP_SERVER = {
+    "command": "cortexshift",
+    "args": ["mcp", "serve"],
+}
+
+ANTIGRAVITY_MCP_MISSING_NOTICE = (
+    "CortexShift MCP is not configured for Antigravity in this workspace.\n\n"
+    "Run:\n  cortexshift mcp setup antigravity"
+)
+
+
+def is_antigravity_mcp_configured(project_root: Path) -> bool:
+    """Check if Antigravity workspace MCP config contains the cortexshift server."""
+    config_path = project_root / ANTIGRAVITY_MCP_CONFIG_REL_PATH
+    if not config_path.is_file():
+        return False
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return False
+        servers = data.get("mcpServers")
+        if not isinstance(servers, dict):
+            return False
+        entry = servers.get("cortexshift")
+        return (
+            isinstance(entry, dict)
+            and entry.get("command") == CORTEXSHIFT_ANTIGRAVITY_MCP_SERVER["command"]
+            and entry.get("args") == CORTEXSHIFT_ANTIGRAVITY_MCP_SERVER["args"]
+        )
+    except Exception:
+        return False
+
+
+def setup_antigravity_mcp(
+    project_root: Path,
+    dry_run: bool = False,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Safely configure project-local .agents/mcp_config.json for Antigravity.
+
+    Preserves unrelated MCP servers and top-level keys.
+    Fails on configuration conflicts unless force=True.
+    Supports dry_run without modifying the filesystem.
+
+    Returns:
+        A dictionary describing the action performed and configuration details.
+
+    Raises:
+        CortexShiftError: If the existing file contains invalid JSON or has a conflict.
+    """
+    config_path = project_root / ANTIGRAVITY_MCP_CONFIG_REL_PATH
+    target_entry = dict(CORTEXSHIFT_ANTIGRAVITY_MCP_SERVER)
+
+    if not config_path.is_file():
+        new_data: dict[str, Any] = {
+            "mcpServers": {
+                "cortexshift": target_entry,
+            }
+        }
+        if not dry_run:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(json.dumps(new_data, indent=2) + "\n", encoding="utf-8")
+        return {
+            "action": "created",
+            "path": str(config_path),
+            "changed": True,
+            "dry_run": dry_run,
+            "servers": ["cortexshift"],
+        }
+
+    # File exists: read and parse safely
+    raw_content = config_path.read_text(encoding="utf-8")
+    try:
+        data = json.loads(raw_content)
+    except json.JSONDecodeError as err:
+        raise CortexShiftError(
+            f"Cannot safely configure MCP: {config_path} contains invalid JSON."
+        ) from err
+
+    if not isinstance(data, dict):
+        raise CortexShiftError(
+            f"Cannot safely configure MCP: {config_path} must contain a JSON object."
+        )
+
+    mcp_servers = data.get("mcpServers")
+    if mcp_servers is None:
+        mcp_servers = {}
+        data["mcpServers"] = mcp_servers
+    elif not isinstance(mcp_servers, dict):
+        raise CortexShiftError(
+            f"Cannot safely configure MCP: 'mcpServers' in {config_path} must be a JSON object."
+        )
+
+    existing_entry = mcp_servers.get("cortexshift")
+    if existing_entry == target_entry:
+        return {
+            "action": "noop",
+            "path": str(config_path),
+            "changed": False,
+            "dry_run": dry_run,
+            "servers": list(mcp_servers.keys()),
+        }
+
+    if existing_entry is not None and not force:
+        raise CortexShiftError(
+            f"Conflicting configuration for 'cortexshift' already exists in {config_path}.\n"
+            "Use --force to overwrite only the 'cortexshift' entry while preserving other servers."
+        )
+
+    mcp_servers["cortexshift"] = target_entry
+
+    if not dry_run:
+        # Atomic write: write to temp file then replace
+        temp_path = config_path.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        temp_path.replace(config_path)
+
+    return {
+        "action": "updated",
+        "path": str(config_path),
+        "changed": True,
+        "dry_run": dry_run,
+        "servers": list(mcp_servers.keys()),
+    }

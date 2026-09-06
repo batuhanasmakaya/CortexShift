@@ -129,7 +129,10 @@ def test_end_to_end_run_from_nested_subdirectory(
         sessions = store.list_sessions()
         assert len(sessions) == 1
         s = sessions[0]
-        assert report_data["argv"] == [str(fake_claude), "--session-id", s.native_session_id]
+        assert report_data["argv"][0] == str(fake_claude)
+        assert "--mcp-config" in report_data["argv"]
+        sess_arg_idx = report_data["argv"].index("--session-id") + 1
+        assert report_data["argv"][sess_arg_idx] == s.native_session_id
         assert s.provider_id == "claude"
         assert s.status == SessionStatus.COMPLETED
         assert s.exit_code == 0

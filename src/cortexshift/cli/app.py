@@ -1,10 +1,12 @@
 """CortexShift Typer CLI application."""
 
 import json
+import os
 import sys
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
+import mcp
 import typer
 from rich import box
 from rich.console import Console
@@ -12,6 +14,11 @@ from rich.markup import escape
 from rich.table import Table
 
 from cortexshift import __version__
+from cortexshift.adapters.providers.antigravity import (
+    ANTIGRAVITY_MCP_CONFIG_REL_PATH,
+    is_antigravity_mcp_configured,
+    setup_antigravity_mcp,
+)
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.checkpoint_service import CheckpointService
 from cortexshift.application.doctor import DoctorService, UnknownProviderError
@@ -37,6 +44,8 @@ from cortexshift.domain.errors import (
     HandoffDeliveryError,
     HandoffNotFoundError,
     InvalidCheckpointInputError,
+    McpContextError,
+    McpReadOnlyError,
     NativeResumeError,
     NoActiveTaskError,
     NoSourceSessionError,
@@ -68,6 +77,12 @@ from cortexshift.domain.provider import ProviderId
 from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.status import ProjectStatus
 from cortexshift.domain.task import Task, TaskStatus
+from cortexshift.mcp.context import (
+    ENV_MCP_READ_ONLY,
+    ENV_SESSION_ID,
+    resolve_mcp_context,
+)
+from cortexshift.mcp.server import run_mcp_server
 
 console = Console()
 err_console = Console(stderr=True)
@@ -112,6 +127,20 @@ checkpoint_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(checkpoint_app, name="checkpoint")
+
+mcp_app = typer.Typer(
+    name="mcp",
+    help="Model Context Protocol (MCP) server, diagnostics, and setup.",
+    no_args_is_help=True,
+)
+app.add_typer(mcp_app, name="mcp")
+
+mcp_setup_app = typer.Typer(
+    name="setup",
+    help="Configure provider workspace integration for CortexShift MCP.",
+    no_args_is_help=True,
+)
+mcp_app.add_typer(mcp_setup_app, name="setup")
 
 
 def print_version() -> None:
@@ -165,6 +194,8 @@ def _handle_error(err: Exception) -> None:
             SnapshotNotFoundError,
             SessionNotFoundError,
             HandoffNotFoundError,
+            McpContextError,
+            McpReadOnlyError,
             UnknownProviderError,
         ),
     ):
@@ -2159,6 +2190,215 @@ def recover_cmd(
         return
 
     _render_recovery_report(report)
+
+
+# --- MCP Commands ---
+
+
+@mcp_app.command("serve")
+def mcp_serve_command() -> None:
+    """Run the CortexShift stdio MCP server for coding agents.
+
+    Standard output is reserved strictly for the MCP wire protocol.
+    Diagnostics and logs route exclusively to standard error.
+    """
+    try:
+        context, store = resolve_mcp_context()
+        run_mcp_server(context=context, store=store)
+    except Exception as err:
+        sys.stderr.write(f"CortexShift MCP server failed to start: {err}\n")
+        raise typer.Exit(code=1) from err
+
+
+@mcp_app.command("status")
+def mcp_status_command(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Output machine-readable JSON format.",
+        ),
+    ] = False,
+) -> None:
+    """Show MCP SDK status, capabilities, and provider integration modes."""
+    project_root = ProjectLocator.find_project_root()
+    project_info: dict[str, Any] | None = None
+    managed_session_info: dict[str, Any] | None = None
+
+    if project_root is not None:
+        db_path = ProjectLocator.get_database_path(project_root)
+        try:
+            with SQLiteStateStore(db_path, auto_migrate=False) as store:
+                proj = store.get_default_project()
+                if proj:
+                    project_info = {
+                        "id": proj.id,
+                        "name": proj.name,
+                        "root": str(project_root),
+                        "active_task_id": store.get_active_task_id(proj.id),
+                    }
+                    sess_id = os.environ.get(ENV_SESSION_ID)
+                    if sess_id:
+                        sess = store.get_session(sess_id)
+                        if sess:
+                            managed_session_info = {
+                                "id": sess.id,
+                                "provider_id": str(sess.provider_id),
+                                "task_id": sess.task_id,
+                                "status": sess.status.value,
+                            }
+        except Exception:
+            pass
+
+    antigravity_configured = is_antigravity_mcp_configured(project_root) if project_root else False
+
+    status_data: dict[str, Any] = {
+        "mcp_sdk": {
+            "available": True,
+            "version": getattr(mcp, "__version__", "unknown"),
+            "transport": "stdio",
+        },
+        "server": {
+            "name": "cortexshift",
+            "capabilities": ["tools", "resources"],
+            "read_tools": [
+                "get_project_context",
+                "get_current_task",
+                "get_latest_checkpoint",
+                "get_repository_status",
+            ],
+            "write_tools": [
+                "set_current_work",
+                "mark_completed",
+                "add_remaining",
+                "record_issue",
+                "record_decision",
+                "create_checkpoint",
+            ],
+            "resources": [
+                "cortexshift://project",
+                "cortexshift://task",
+                "cortexshift://checkpoint/latest",
+                "cortexshift://repository",
+            ],
+        },
+        "project": project_info,
+        "session_binding": {
+            "managed": managed_session_info is not None,
+            "session": managed_session_info,
+            "read_only": (
+                os.environ.get(ENV_MCP_READ_ONLY, "0").strip().lower() in ("1", "true", "yes")
+            ),
+        },
+        "providers": {
+            "claude": {
+                "integration": "automatic per CortexShift launch",
+                "mechanism": "--mcp-config",
+            },
+            "codex": {
+                "integration": "automatic per CortexShift launch",
+                "mechanism": "-c overrides",
+            },
+            "antigravity": {
+                "integration": "workspace config",
+                "config_path": (
+                    str(project_root / ANTIGRAVITY_MCP_CONFIG_REL_PATH) if project_root else None
+                ),
+                "configured": antigravity_configured,
+            },
+        },
+    }
+
+    if json_output:
+        sys.stdout.write(json.dumps(status_data, indent=2) + "\n")
+        return
+
+    console.print("\n[bold]CortexShift MCP Status[/bold]\n")
+
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+    grid.add_row("MCP SDK Version", str(status_data["mcp_sdk"]["version"]))
+    grid.add_row("Transport", "stdio (local only)")
+    if project_info:
+        grid.add_row("Project", f"{project_info['name']} ({project_info['id']})")
+        grid.add_row("Project Root", str(project_info["root"]))
+    else:
+        grid.add_row("Project", "Not inside an initialized CortexShift project")
+
+    if managed_session_info:
+        sess_label = f"{managed_session_info['id']} ({managed_session_info['provider_id']})"
+        grid.add_row("Managed Session", sess_label)
+        grid.add_row("Bound Task", str(managed_session_info["task_id"]))
+    else:
+        grid.add_row("Execution Mode", "Unmanaged (Read-Only)")
+
+    console.print(grid)
+
+    console.print("\n[bold]Provider Integrations[/bold]\n")
+    p_table = Table(box=box.ROUNDED)
+    p_table.add_column("Provider", style="bold")
+    p_table.add_column("Integration Mode")
+    p_table.add_column("Status / Mechanism")
+
+    p_table.add_row("Claude Code", "Automatic per launch", "--mcp-config (inline JSON)")
+    p_table.add_row("OpenAI Codex", "Automatic per launch", "-c mcp_servers.cortexshift (inline)")
+    ag_status = (
+        "[green]Configured[/green]"
+        if antigravity_configured
+        else "[yellow]Not configured (run: cortexshift mcp setup antigravity)[/yellow]"
+    )
+    p_table.add_row("Google Antigravity", "Workspace config (.agents/mcp_config.json)", ag_status)
+    console.print(p_table)
+    console.print()
+
+
+@mcp_setup_app.command("antigravity")
+def mcp_setup_antigravity_command(
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Preview configuration changes without writing to disk.",
+        ),
+    ] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Overwrite existing conflicting cortexshift entry.",
+        ),
+    ] = False,
+) -> None:
+    """Safely configure project-local .agents/mcp_config.json for Antigravity."""
+    project_root = ProjectLocator.find_project_root()
+    if project_root is None:
+        _handle_error(ProjectNotInitializedError())
+        return
+
+    try:
+        result = setup_antigravity_mcp(project_root, dry_run=dry_run, force=force)
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    console.print("\n[bold]Antigravity Workspace MCP Configuration[/bold]\n")
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", justify="left")
+    grid.add_column(style="default", justify="left")
+    grid.add_row("Config Path", str(result["path"]))
+    grid.add_row("Action", str(result["action"]))
+    grid.add_row("Dry Run", str(result["dry_run"]))
+    grid.add_row("Configured Servers", ", ".join(result["servers"]))
+    console.print(grid)
+
+    console.print(
+        "\n[dim]Notice: .agents/mcp_config.json is a workspace configuration file "
+        "and may appear in Git.[/dim]"
+    )
+    console.print(
+        "[dim]CortexShift will not automatically modify .gitignore or Git configuration.[/dim]\n"
+    )
 
 
 if __name__ == "__main__":

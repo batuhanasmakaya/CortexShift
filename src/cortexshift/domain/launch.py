@@ -26,6 +26,7 @@ class LaunchSpecification(BaseModel):
     initial_prompt_supported: bool = True
     prompt_supplied: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
 
     def to_redacted_argv(self) -> list[str]:
         """Return the argument list with any raw prompt replaced with '<prompt>'.

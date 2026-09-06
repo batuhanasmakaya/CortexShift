@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
@@ -165,8 +166,25 @@ class ClaudeProviderProbe(ProviderProbe):
         )
 
 
+def build_claude_mcp_config(python_executable: str | None = None) -> str:
+    """Build the inline JSON string for Claude Code --mcp-config."""
+    exe = python_executable or sys.executable
+    config = {
+        "mcpServers": {
+            "cortexshift": {
+                "command": exe,
+                "args": ["-m", "cortexshift", "mcp", "serve"],
+            }
+        }
+    }
+    return json.dumps(config)
+
+
 class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
     """Runtime adapter for launching Claude Code interactive sessions."""
+
+    def __init__(self, python_executable: str | None = None) -> None:
+        self._python_executable = python_executable
 
     @property
     def provider_id(self) -> ProviderId:
@@ -205,11 +223,18 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
     ) -> LaunchSpecification:
         if not valid_native_id(native_session_id):
             raise NativeResumeError("Invalid native session identifier.")
+        mcp_config = build_claude_mcp_config(self._python_executable)
         return LaunchSpecification(
             provider_id=self.provider_id,
             executable=executable_path,
             cwd=project_root,
-            argv=[executable_path, "--resume", native_session_id],
+            argv=[
+                executable_path,
+                "--mcp-config",
+                mcp_config,
+                "--resume",
+                native_session_id,
+            ],
             native_session_id=native_session_id,
         )
 
@@ -221,7 +246,14 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
     ) -> LaunchSpecification:
         """Build argument vector for native Claude launch."""
         native_id = str(uuid4())
-        argv = [executable_path, "--session-id", native_id]
+        mcp_config = build_claude_mcp_config(self._python_executable)
+        argv = [
+            executable_path,
+            "--mcp-config",
+            mcp_config,
+            "--session-id",
+            native_id,
+        ]
         prompt_supplied = False
         if prompt is not None and prompt.strip():
             argv.append(prompt)

@@ -87,7 +87,10 @@ def test_dry_run_success(tmp_path: Path) -> None:
     assert result.provider_id == PROVIDER_CLAUDE
     assert result.executable == "/bin/claude"
     assert result.cwd == tmp_path
-    assert result.argv == ["/bin/claude", "--session-id", result.argv[2], "<prompt>"]
+    assert result.argv[0] == "/bin/claude"
+    assert "--mcp-config" in result.argv
+    assert "--session-id" in result.argv
+    assert result.argv[-1] == "<prompt>"
     assert result.prompt_supplied is True
     assert "Sensitive prompt text" not in result.argv
 
@@ -124,12 +127,10 @@ def test_run_success_lifecycle(tmp_path: Path) -> None:
 
     # Verify process runner was invoked with exact prompt and project root
     assert len(runner.invocations) == 1
-    assert runner.invocations[0]["argv"] == [
-        "/bin/claude",
-        "--session-id",
-        session.native_session_id,
-        "Execute task",
-    ]
+    assert runner.invocations[0]["argv"][0] == "/bin/claude"
+    assert "--mcp-config" in runner.invocations[0]["argv"]
+    assert "--session-id" in runner.invocations[0]["argv"]
+    assert runner.invocations[0]["argv"][-1] == "Execute task"
     assert runner.invocations[0]["cwd"] == tmp_path
 
     # Verify persisted in database

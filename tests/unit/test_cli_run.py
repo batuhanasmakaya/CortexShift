@@ -129,7 +129,9 @@ def test_run_claude_dry_run_with_prompt(
     assert result.exit_code == 0
     assert "Prompt" in result.stdout
     assert "supplied" in result.stdout
-    assert "Command: /usr/local/bin/claude --session-id" in result.stdout
+    assert "Command: /usr/local/bin/claude" in result.stdout
+    assert "--mcp-config" in result.stdout
+    assert "--session-id" in result.stdout
     assert "<prompt>" in result.stdout
     assert "Secret user instruction" not in result.stdout
 
@@ -151,7 +153,10 @@ def test_run_claude_dry_run_json(active_project: Path, monkeypatch: pytest.Monke
     assert data["display_name"] == "Claude Code"
     assert data["executable"] == "/usr/local/bin/claude"
     assert data["prompt_supplied"] is True
-    assert data["argv"] == ["/usr/local/bin/claude", "--session-id", data["argv"][2], "<prompt>"]
+    assert data["argv"][0] == "/usr/local/bin/claude"
+    assert "--mcp-config" in data["argv"]
+    assert "--session-id" in data["argv"]
+    assert data["argv"][-1] == "<prompt>"
     assert data["task_title"] == "Build Launch Feature"
     assert "Super confidential task" not in result.stdout
 
@@ -168,11 +173,13 @@ def test_run_codex_dry_run(active_project: Path, monkeypatch: pytest.MonkeyPatch
     assert res1.exit_code == 0
     assert "Codex" in res1.stdout
     assert "Command: /opt/homebrew/bin/codex" in res1.stdout
+    assert "-c" in res1.stdout
 
     # With prompt
     res2 = runner.invoke(app, ["run", "codex", "-p", "Investigate logs", "--dry-run"])
     assert res2.exit_code == 0
-    assert "Command: /opt/homebrew/bin/codex <prompt>" in res2.stdout
+    assert "Command: /opt/homebrew/bin/codex" in res2.stdout
+    assert "<prompt>" in res2.stdout
     assert "Investigate logs" not in res2.stdout
 
 
@@ -250,8 +257,10 @@ def test_run_interactive_success(active_project: Path, monkeypatch: pytest.Monke
     assert "Launching native provider..." in result.stdout
     assert "Session completed." in result.stdout
     assert len(invoked_args) == 1
-    assert invoked_args[0][:2] == ["/usr/local/bin/claude", "--session-id"]
-    assert len(invoked_args[0]) == 3
+    assert invoked_args[0][0] == "/usr/local/bin/claude"
+    assert "--mcp-config" in invoked_args[0]
+    assert "--session-id" in invoked_args[0]
+    assert len(invoked_args[0]) == 5
 
     # Verify session persisted in DB
     db_path = active_project / ".cortexshift" / "state.sqlite3"

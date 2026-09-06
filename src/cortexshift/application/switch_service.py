@@ -25,7 +25,11 @@ from pydantic import BaseModel, ConfigDict
 
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
 from cortexshift.adapters.process_runner import SubprocessInteractiveProcessRunner
-from cortexshift.adapters.providers.antigravity import AntigravityHandoffAdapter
+from cortexshift.adapters.providers.antigravity import (
+    ANTIGRAVITY_MCP_MISSING_NOTICE,
+    AntigravityHandoffAdapter,
+    is_antigravity_mcp_configured,
+)
 from cortexshift.adapters.providers.claude import ClaudeHandoffAdapter
 from cortexshift.adapters.providers.codex import CodexHandoffAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
@@ -61,6 +65,7 @@ from cortexshift.domain.handoff import (
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.project import Project
+from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY
 from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
 from cortexshift.ports.handoff_delivery import ProviderHandoffAdapter
@@ -599,6 +604,11 @@ class SwitchService:
             target_session_id=target_session.id,
             delivered_at=delivered.delivered_at,
         )
+
+        if str(context.adapter.provider_id) == str(
+            PROVIDER_ANTIGRAVITY
+        ) and not is_antigravity_mcp_configured(Path(context.project.repo_path)):
+            sys.stderr.write(f"\n{ANTIGRAVITY_MCP_MISSING_NOTICE}\n\n")
 
         try:
             target_session = launcher.run(

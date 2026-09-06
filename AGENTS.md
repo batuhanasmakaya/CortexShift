@@ -47,6 +47,9 @@ Every agent working on CortexShift must preserve the following architectural inv
 22. **Zero Outgoing Model Calls for Checkpoints & Recovery**: Checkpoint creation and crash recovery are entirely deterministic and derived from durable local state and live repository inspection. CortexShift must never invoke any LLM or require the outgoing provider to summarize its state during checkpoint or recovery.
 23. **Never Fabricate Test Verification or Process End Times**: If tests are reported in a checkpoint, they are explicitly tagged as unverified reported provenance. When reconciling stale sessions, CortexShift records `status=interrupted`, `exit_reason=unexpected_termination`, and `reconciled_at=<timestamp>`, leaving `ended_at=None` to avoid fabricating an unobserved process termination time.
 24. **Cooperative Milestone Checkpoints Without Lease**: Agents and operators may capture cooperative milestone checkpoints (`cortexshift checkpoint create`) while a provider session is actively running without acquiring the exclusive workspace lease. Crash recovery (`cortexshift recover`) strictly requires acquiring the exclusive workspace lease to ensure no other agent is actively modifying the repository.
+25. **Pure Stdout Wire Protocol for MCP**: Standard output (`stdout`) of `cortexshift mcp serve` is strictly and exclusively reserved for valid MCP JSON-RPC protocol frames. All diagnostic logging, notices, and errors are routed strictly to `stderr` or silenced. Polluting `stdout` breaks client JSON-RPC parsers.
+26. **Workspace Lease Bypass for MCP Operations**: Because an active provider session already holds the exclusive workspace lease (`.cortexshift/agent.lock`), MCP server operations initiated by that agent deliberately bypass the lease to avoid self-deadlocks. Process and thread safety are guaranteed by SQLite WAL concurrency.
+27. **Bound Context Isolation**: MCP operations are bound strictly at launch to a specific `Project`, `Task`, `Session`, and `ProviderId`. Tool mutations affect only the task assigned at launch, preventing cross-task state corruption regardless of external changes to the default active task.
 
 ---
 
@@ -79,3 +82,4 @@ Every agent working on CortexShift must preserve the following architectural inv
   - [ADR-0006: Canonical Agent Handoff & Manual Provider Switching](docs/decisions/ADR-0006-canonical-agent-handoff.md)
   - [ADR-0007: Native Session Continuity](docs/decisions/ADR-0007-native-session-continuity.md)
   - [ADR-0008: Checkpoints, Crash Recovery & Handoff Enrichment](docs/decisions/ADR-0008-checkpoint-and-recovery.md)
+  - [ADR-0009: MCP Shared State & Agent Self-Reporting](docs/decisions/ADR-0009-mcp-shared-state.md)

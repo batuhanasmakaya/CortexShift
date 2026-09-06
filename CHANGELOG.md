@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 8: MCP Shared State & Agent Self-Reporting** (unreleased):
+  - Model Context Protocol (MCP) server integration (`cortexshift mcp serve`) using official Python MCP SDK (`mcp>=2,<3`) over local stdio only. No network listeners, HTTP/SSE endpoints, or sockets.
+  - Pure stdout wire protocol: stdout is strictly reserved for valid MCP JSON-RPC protocol frames; all diagnostics, informational logs, and errors are routed to stderr or silenced.
+  - Context binding and safety via `McpExecutionContext` resolving project, task, session, provider, and read-only flags from environment variables. Strict binding isolates tool execution to the bound task, preventing cross-task state pollution.
+  - Dual-mode capability exposure: managed active sessions receive all 10 tools (4 read + 6 write); unmanaged and read-only sessions receive 4 read tools only. Write tools are not registered on read-only servers.
+  - Real-time read tools: `get_project_context`, `get_current_task`, `get_latest_checkpoint`, `get_repository_status`.
+  - Real-time write tools: `set_current_work`, `mark_completed` (moves matching items from remaining to completed without marking whole task complete), `add_remaining`, `record_issue`, `record_decision` (persists an automatic decision checkpoint), `create_checkpoint` (milestone checkpoint with explicit reported test provenance).
+  - JSON resources: `cortexshift://project`, `cortexshift://task`, `cortexshift://checkpoint/latest`, `cortexshift://repository` (`application/json`).
+  - Workspace lease bypass: MCP server operations deliberately bypass the OS advisory lock (`.cortexshift/agent.lock`) to avoid self-deadlocks with the parent agent process, relying on SQLite WAL concurrency mode and `check_same_thread=False`.
+  - Automated provider launch integration: Claude Code (`--mcp-config <inline JSON>`), OpenAI Codex (`-c` flags), and Google Antigravity (`.agents/mcp_config.json` via `cortexshift mcp setup antigravity`). Headless bootstrap turns run read-only (`CORTEXSHIFT_MCP_READ_ONLY=1`).
+  - Retains SQLite schema version strictly at **v6** without migrations.
+  - CLI commands: `cortexshift mcp serve`, `cortexshift mcp status` (`--json`), and `cortexshift mcp setup antigravity` (`--dry-run`, `--force`).
+  - Architectural Decision Record `ADR-0009-mcp-shared-state.md` documenting MCP architecture, pure stdout wire protocol, context binding, and provider transports.
+  - 572 passing unit and integration tests with strict mypy typing across source and tests, zero Ruff lint errors, and verified flagship cross-agent workflow.
+
 - **Phase 7: Checkpoints, Crash Recovery & Handoff Enrichment** (unreleased):
   - Checkpoint Protocol v1 domain entities: immutable `CheckpointRecord` with structured `CheckpointPayload` (task snapshot, Git state, source session, operator note, engineering decisions, test status with provenance).
   - Strict input boundary limits: `MAX_OPERATOR_NOTE_CHARS = 2000`, `MAX_DECISION_CHARS = 1000`, `MAX_TEST_SUMMARY_CHARS = 1000`. No conversational transcripts, provider reasoning, credentials, or full file diffs stored.

@@ -9,7 +9,11 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 
 from cortexshift.adapters.process_runner import SubprocessInteractiveProcessRunner
-from cortexshift.adapters.providers.antigravity import AntigravityRuntimeAdapter
+from cortexshift.adapters.providers.antigravity import (
+    ANTIGRAVITY_MCP_MISSING_NOTICE,
+    AntigravityRuntimeAdapter,
+    is_antigravity_mcp_configured,
+)
 from cortexshift.adapters.providers.claude import ClaudeRuntimeAdapter
 from cortexshift.adapters.providers.codex import CodexRuntimeAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
@@ -28,6 +32,7 @@ from cortexshift.domain.errors import (
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import (
+    PROVIDER_ANTIGRAVITY,
     ProviderId,
 )
 from cortexshift.domain.session import Session
@@ -247,6 +252,11 @@ class RunService:
                 def _forward(spec: LaunchSpecification, current: Session) -> None:
                     if on_launch:
                         on_launch(spec, current, task, project)
+
+                if str(adapter.provider_id) == str(
+                    PROVIDER_ANTIGRAVITY
+                ) and not is_antigravity_mcp_configured(Path(project.repo_path)):
+                    sys.stderr.write(f"\n{ANTIGRAVITY_MCP_MISSING_NOTICE}\n\n")
 
                 return launcher.run(session, launch_spec, on_launch=_forward)
             finally:

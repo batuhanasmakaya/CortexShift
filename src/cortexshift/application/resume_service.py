@@ -1,11 +1,17 @@
 """Exact native resume without creating a handoff or repository snapshot."""
 
+import sys
 from pathlib import Path
 
+from cortexshift.adapters.providers.antigravity import (
+    ANTIGRAVITY_MCP_MISSING_NOTICE,
+    is_antigravity_mcp_configured,
+)
 from cortexshift.application.native_session import select_native_session
 from cortexshift.application.run_service import DryRunResult, RunService
 from cortexshift.application.session_launcher import ProviderSessionLauncher
 from cortexshift.domain.errors import NativeResumeError, TerminalRequiredError, WorkspaceLockedError
+from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY
 from cortexshift.domain.session import Session
 from cortexshift.ports.native_session import ProviderNativeSessionAdapter
 
@@ -101,6 +107,11 @@ class ResumeService(RunService):
                     native_session_id=source.native_session_id,
                     resumed_from_session_id=source.id,
                 )
+                if str(adapter.provider_id) == str(
+                    PROVIDER_ANTIGRAVITY
+                ) and not is_antigravity_mcp_configured(Path(project.repo_path)):
+                    sys.stderr.write(f"\n{ANTIGRAVITY_MCP_MISSING_NOTICE}\n\n")
+
                 return launcher.run(invocation, spec)
             finally:
                 lease.release()

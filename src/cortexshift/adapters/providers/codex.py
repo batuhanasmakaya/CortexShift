@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -107,7 +108,7 @@ class CodexProviderProbe(ProviderProbe):
             supports_headless=True,
             supports_native_resume=True,
             supports_structured_output=True,
-            supports_mcp=False,
+            supports_mcp=True,
             supports_usage_metrics=True,
         )
 
@@ -169,8 +170,24 @@ class CodexProviderProbe(ProviderProbe):
         )
 
 
+def build_codex_mcp_args(python_executable: str | None = None) -> list[str]:
+    """Build the argument list of -c overrides for Codex MCP configuration."""
+    exe = python_executable or sys.executable
+    return [
+        "-c",
+        f'mcp_servers.cortexshift.command="{exe}"',
+        "-c",
+        'mcp_servers.cortexshift.args=["-m", "cortexshift", "mcp", "serve"]',
+        "-c",
+        "mcp_servers.cortexshift.required=true",
+    ]
+
+
 class CodexRuntimeAdapter(ProviderRuntimeAdapter):
     """Runtime adapter for launching OpenAI Codex interactive sessions."""
+
+    def __init__(self, python_executable: str | None = None) -> None:
+        self._python_executable = python_executable
 
     @property
     def provider_id(self) -> ProviderId:
@@ -192,7 +209,7 @@ class CodexRuntimeAdapter(ProviderRuntimeAdapter):
             supports_headless=True,
             supports_native_resume=True,
             supports_structured_output=True,
-            supports_mcp=False,
+            supports_mcp=True,
             supports_usage_metrics=True,
         )
 
@@ -210,11 +227,12 @@ class CodexRuntimeAdapter(ProviderRuntimeAdapter):
     ) -> LaunchSpecification:
         if not valid_native_id(native_session_id):
             raise NativeResumeError("Invalid native session identifier.")
+        mcp_args = build_codex_mcp_args(self._python_executable)
         return LaunchSpecification(
             provider_id=self.provider_id,
             executable=executable_path,
             cwd=project_root,
-            argv=[executable_path, "resume", native_session_id],
+            argv=[executable_path, *mcp_args, "resume", native_session_id],
             native_session_id=native_session_id,
         )
 
@@ -225,7 +243,8 @@ class CodexRuntimeAdapter(ProviderRuntimeAdapter):
         prompt: str | None = None,
     ) -> LaunchSpecification:
         """Build argument vector for native Codex launch."""
-        argv = [executable_path]
+        mcp_args = build_codex_mcp_args(self._python_executable)
+        argv = [executable_path, *mcp_args]
         prompt_supplied = False
         if prompt is not None and prompt.strip():
             argv.append(prompt)
@@ -299,7 +318,9 @@ class CodexHandoffAdapter(ProviderHandoffAdapter):
         else:
             argv.append("--json")
         argv.append(CODEX_BOOTSTRAP_PREFIX + rendered_context)
-        result = self._headless.run_headless(argv, project_root, timeout=self._timeout)
+        result = self._headless.run_headless(
+            argv, project_root, timeout=self._timeout, env={"CORTEXSHIFT_MCP_READ_ONLY": "1"}
+        )
         if result.timed_out:
             raise HandoffDeliveryError("bootstrap_timeout", "Codex handoff bootstrap timed out.")
         if result.not_found:

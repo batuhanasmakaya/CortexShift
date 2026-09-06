@@ -42,9 +42,9 @@ Claude Code      Codex        Antigravity
 ## Status: Pre-Alpha
 
 > [!NOTE]
-> CortexShift is currently in **Phase 7 (Checkpoints, Crash Recovery & Handoff Enrichment)**. Development state is resilient to unexpected terminations (rate limits, crashes, terminal drops). Checkpoints capture immutable task and Git progress, crash recovery reconciles interrupted sessions honestly, and handoffs enrich receiving agents with historical decisions and reported test results.
+> CortexShift is currently in **Phase 8 (MCP Shared State & Agent Self-Reporting)**. Development state is accessible and mutable directly by active coding agents via the Model Context Protocol (MCP) running over local stdio. Agents dynamically inspect project context, live Git status, and checkpoints, while self-reporting progress, completing backlog items, recording issues, and creating checkpoints mid-flight.
 
-### What Works Today (Phase 7)
+### What Works Today (Phase 8)
 
 ```text
 ✓ native provider discovery
@@ -70,7 +70,22 @@ Claude Code      Codex        Antigravity
 ✓ RECOVERY checkpoints preserving observed repository state after unexpected terminations
 ✓ checkpoint-enriched canonical handoffs with honest test provenance disclaimers
 ✓ durable schema v6 migrations with foreign-key cascade protections
+✓ MCP stdio server with pure stdout wire protocol (`cortexshift mcp serve`)
+✓ 10 context-bound MCP tools for active agent reading and self-reporting
+✓ 4 canonical JSON resources (`cortexshift://` URI scheme)
+✓ workspace lease bypass avoiding self-deadlocks during active agent sessions
+✓ automated MCP wiring for Claude Code (`--mcp-config`) and Codex (`-c` flags)
+✓ workspace MCP setup helper for Antigravity (`cortexshift mcp setup antigravity`)
+✓ CLI status inspection: `cortexshift mcp status` and `cortexshift mcp status --json`
 ```
+
+- **MCP Shared State & Agent Self-Reporting (Phase 8)**:
+  - **Local Stdio MCP Server**: Run `cortexshift mcp serve` via local child process stdio only. Pure stdout wire protocol with all diagnostics and notices routed strictly to stderr.
+  - **10 Context-Bound Tools**: Managed active sessions receive 4 read tools (`get_project_context`, `get_current_task`, `get_latest_checkpoint`, `get_repository_status`) and 6 write tools (`set_current_work`, `mark_completed`, `add_remaining`, `record_issue`, `record_decision`, `create_checkpoint`).
+  - **4 JSON Resources**: Query `cortexshift://project`, `cortexshift://task`, `cortexshift://checkpoint/latest`, and `cortexshift://repository` with standard JSON formatting.
+  - **Safe Lease Coexistence**: MCP operations bypass the OS advisory workspace lease (`agent.lock`) because the caller process already owns the lease, relying on SQLite WAL concurrency for multi-process safety.
+  - **Provider Transports**: Automatic launch configuration for Claude Code and Codex; workspace helper command `cortexshift mcp setup antigravity` (`--dry-run`, `--force`).
+  - **Read-Only Guarantees**: Headless bootstraps and unmanaged runs execute strictly read-only (`CORTEXSHIFT_MCP_READ_ONLY=1`).
 
 - **Checkpoints, Crash Recovery & Handoff Enrichment (Phase 7)**:
   - **Cooperative Milestone Checkpoints**: Record progress milestones with `cortexshift checkpoint create -d "<decision>" -t "<test-summary>" -n "<note>"`. Deliberately does **not** acquire the exclusive workspace lease, allowing active agents or operators to checkpoint progress during running sessions without lock contention.
@@ -167,15 +182,13 @@ To upgrade existing local state to schema v5, rerun `cortexshift init`; migratio
 ✗ automatic outgoing-agent summaries
 ✗ automatic quota detection
 ✗ automatic switching
-✗ automatic periodic checkpoints
-✗ MCP shared state
+✗ automatic periodic background daemon checkpoints
 ✗ transcript transplantation
 ```
 
 - ✗ Automatic outgoing-agent summaries are deliberately absent — and always will be as a *requirement*. CortexShift must work when the outgoing agent cannot answer.
 - ✗ Automatic quota/rate-limit detection and automatic provider switching (explicitly out of scope; switching is manual).
-- ✗ Automatic periodic checkpoints and disaster recovery (planned for Phase 7).
-- ✗ Model Context Protocol (MCP) shared state (planned for Phase 8).
+- ✗ Automatic periodic background daemon checkpoints (planned for future phases).
 - ✗ Transcript transplantation between providers (deliberately never — see [ADR-0006](docs/decisions/ADR-0006-canonical-agent-handoff.md)).
 
 

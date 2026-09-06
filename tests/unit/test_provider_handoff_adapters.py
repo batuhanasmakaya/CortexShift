@@ -84,12 +84,10 @@ def test_direct_adapters_pass_context_as_single_argument(
         rendered_context=CONTEXT,
     )
 
-    assert preparation.launch_spec.argv == [
-        f"/bin/{executable}",
-        "--session-id",
-        preparation.native_session_id,
-        CONTEXT,
-    ]
+    assert preparation.launch_spec.argv[0] == f"/bin/{executable}"
+    assert "--mcp-config" in preparation.launch_spec.argv
+    assert "--session-id" in preparation.launch_spec.argv
+    assert preparation.launch_spec.argv[-1] == CONTEXT
     assert preparation.launch_spec.cwd == tmp_path
     assert preparation.launch_spec.interactive is True
     assert preparation.launch_spec.prompt_supplied is True
@@ -108,7 +106,8 @@ def test_direct_adapters_never_use_headless_or_exec_subcommands(
         rendered_context=CONTEXT,
     ).launch_spec.argv
 
-    assert len(argv) == 4
+    assert len(argv) == 6
+    assert "--mcp-config" in argv
     for forbidden in (
         "exec",
         "-p",
@@ -134,7 +133,9 @@ def test_direct_adapters_keep_shell_metacharacters_inert(tmp_path: Path) -> None
         .launch_spec.argv
     )
 
-    assert argv[0:2] == ["/bin/claude", "--session-id"]
+    assert argv[0] == "/bin/claude"
+    assert "--mcp-config" in argv
+    assert "--session-id" in argv
     assert argv[-1] == hostile
 
 
