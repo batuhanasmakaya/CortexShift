@@ -16,8 +16,9 @@ Foundation    Provider      Task State    Git Context   Native        Manual
 
 Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  Phase 10 ──▶  Future
 Native        Checkpoints   MCP Shared    TUI           Public        Experimental
-Resume        & Recovery    State                       Release
-(Complete)    (Complete)    (Complete)    (Planned)
+Resume        & Recovery    State         Control       Release
+                                          Center
+(Complete)    (Complete)    (Complete)    (Complete)    (Planned)
 ```
 
 ---
@@ -183,13 +184,25 @@ Give active coding agents a first-class structured channel to read canonical pro
 
 ---
 
-## Phase 9 — Terminal User Interface (TUI)
+## Phase 9 — Interactive Terminal Control Center *(Completed)*
 
-Build an interactive terminal experience using Textual or Rich.
+CortexShift's first persistent human-facing interface: a keyboard-driven Textual dashboard over the state CortexShift already owns.
 
-- **Goals**:
-  - Visual task dashboard.
-  - Real-time session monitoring and interactive agent switcher.
+- **Deliverables**:
+  - **`cortexshift tui`**: an explicit entrypoint opening a keyboard-first control center. Plain `cortexshift` is unchanged, and every existing command keeps its semantics. The command requires an initialized project (reported before any terminal check) and a real TTY on both stdin and stdout.
+  - **Textual 8.x**: `textual>=8,<9` as the sole new runtime dependency, using stable public APIs only (`App`, `ModalScreen`, `DataTable`, `OptionList`, `ContentSwitcher`, `Binding`, Workers, the built-in command palette, and `App.run_test()`/`Pilot`).
+  - **Seven primary sections plus Help**: Overview, Task, Repository, Sessions, Checkpoints, Handoffs, Providers — every one backed by real data, with a useful empty state that names the next command.
+  - **TUI as an adapter**: `TuiFacade` aggregates the existing application services and assembles immutable read models. The dashboard contains no SQL, opens no SQLite connection, runs no Git subprocess, and constructs no provider argv.
+  - **Task control**: set current work, mark an item completed, add a remaining item, record an issue, and activate a task — each through an explicit confirmation modal, each reusing canonical services. "Mark completed" was promoted to `Task.complete_items()` in the domain so the dashboard and MCP agents share one rule.
+  - **Checkpoint and recovery control**: MANUAL checkpoint capture without contending for the workspace lease, and crash recovery gated behind a non-mutating `RecoveryService` dry-run preview.
+  - **Honest authority labelling**: repository state is *Live*, checkpoints and handoffs are *Historical observation*, reported tests are *Reported / unverified*, and an unfinalized session row is *Last-known* — never asserted as crashed. Progress is derived only from structured task items.
+  - **Refresh model**: a lightweight ~2 second SQLite-only timer surfaces MCP-driven task updates in an open dashboard; live Git runs on startup, on Repository screen entry, and on explicit refresh only. All slow work runs in Textual thread Workers, with exclusive worker groups plus generation tokens so a stale result can never overwrite newer data.
+  - **Terminal handoff boundary**: choosing run, resume, or switch exits the application with a structured `TuiExitRequest`; only after `App.run()` returns does `TuiCoordinator` invoke the run/resume/switch service. **No provider TUI is embedded, scraped, multiplexed, or relayed through a pseudo-terminal**, and no PTY or terminal-emulator dependency is added.
+  - **Workspace safety**: the dashboard holds no workspace lease for its lifetime, so an open dashboard never blocks a coding agent; exclusivity is enforced by the services that own it. Workspace activity is probed through the OS advisory lock, never inferred from the lock file's existence.
+  - **Read-only boundaries**: no Git mutation, no source editor, no shell panel, no transcript viewing, no browser or remote interface.
+  - **Schema stability**: SQLite remains at **v6**; all dashboard state is ephemeral and no migration is introduced.
+  - **Verification**: 684 passing unit and integration tests at 88% branch/statement coverage, strict mypy across source and tests, zero Ruff findings. Headless Textual `run_test()`/`Pilot` coverage spans navigation, modals, refresh, worker race handling, exit requests, and an 80×24 / 100×30 / 120×40 size matrix. Three flagship integration tests cover the full control-center workflow, MCP-driven live state landing in an open dashboard, and the dashboard-before-provider launch ordering.
+  - [ADR-0010](decisions/ADR-0010-terminal-control-center.md) documents the framework choice, the alternatives rejected (curses, prompt_toolkit, a custom Rich `Live` UI, PTY embedding, a browser UI), and the trade-offs.
 
 ---
 

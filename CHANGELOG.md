@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase 9: Interactive Terminal Control Center** (unreleased):
+  - Textual TUI (`textual>=8,<9`) exposed through an explicit `cortexshift tui` entrypoint. Plain `cortexshift` still prints help; no existing command semantics change.
+  - Overview dashboard: project identity, active Task with structured progress, live repository state, latest Session/Checkpoint/Handoff activity, compact provider availability, and an honest notice when unfinalized sessions exist.
+  - Task controls: complete canonical Task rendering plus confirmed modals for set current work, mark completed, add remaining, and record issue, along with task activation from a navigable table.
+  - Repository dashboard: live, strictly read-only Git inspection showing branch, HEAD, detached and dirty state, staged/modified/untracked/conflicted files, and diff shortstats. No full diffs, and no Git mutation of any kind.
+  - Session history: CortexShift orchestration metadata only, including native session IDs, derived exact resumability, invocation lineage, exit reason/code, and reconciliation timestamps. No provider transcripts are read or displayed.
+  - Checkpoint history and MANUAL checkpoint creation from the dashboard, without contending for the workspace lease. Historical snapshots are labelled as historical observations and reported test summaries as *Reported / unverified*.
+  - Handoff history with full canonical payload detail, plus zero-quota handoff preview that persists nothing and starts no bootstrap turn.
+  - Provider and MCP status: passive discovery results, native resume capability, MCP integration mode per provider, and a guarded action to configure workspace MCP for Antigravity that preserves unrelated servers and refuses to force a conflicting entry.
+  - Crash recovery control gated behind a non-mutating `RecoveryService` dry-run preview; reconciliation itself remains the service's responsibility and is refused safely when another agent owns the workspace.
+  - TUI provider action handoff: run, resume, and switch exit the Textual application with a structured `TuiExitRequest`; `TuiCoordinator` invokes the run/resume/switch service only after `App.run()` has returned and the terminal has been restored. **No provider TUI is embedded, scraped, multiplexed, or relayed through a pseudo-terminal**, and no PTY or terminal-emulator dependency is introduced.
+  - The dashboard holds no workspace lease for its lifetime, so leaving it open never blocks a coding agent. Workspace activity is probed through the OS advisory lock and never inferred from the lock file's existence.
+  - Refresh model: a lightweight ~2 second SQLite-only timer surfaces MCP-driven Task updates in an already-open dashboard; live Git runs on startup, on Repository screen entry, and on explicit refresh only. Slow work runs in Textual thread Workers, with exclusive worker groups plus generation tokens so a stale result can never overwrite newer data.
+  - Keyboard-first throughout: `1`–`7` navigation, `r` refresh, `c` checkpoint, `w`/`m`/`n`/`i` task progress, `a` activate, `x` provider actions, `p` handoff preview, `g` Antigravity MCP setup, `shift+R` recovery, `?` help, `q` quit, plus Textual's built-in command palette. Status meaning always pairs a glyph with its styling, so nothing depends on colour alone. Usable at 80×24 through 120×40, with the sidebar folding away below 90 columns and a clear message rather than a broken render below 60×12.
+  - Architectural Decision Record `ADR-0010-terminal-control-center.md` documenting the framework choice, the alternatives rejected (curses, prompt_toolkit, a custom Rich `Live` UI, PTY embedding, a browser UI), and the trade-offs.
+  - 684 passing unit and integration tests at 88% coverage, including headless Textual `run_test()`/`Pilot` suites for navigation, screens, modals, refresh, worker race handling and exit requests; an 80×24 / 100×30 / 120×40 size matrix; and flagship coverage of the full control-center workflow, MCP-driven live state, and dashboard-before-provider launch ordering.
+
+### Changed
+
+- `Task.complete_items()` now owns the canonical "mark completed" rule — append to completed (deduplicated), drop any exactly matching remaining entry, and never complete the Task itself. `McpApplicationFacade.mark_completed` was refactored onto it so MCP agents and the dashboard cannot drift apart. Behaviour is unchanged.
+- Task input bounds (`MAX_CURRENT_WORK_CHARS`, `MAX_ITEM_CHARS`, `MAX_ITEMS_PER_CALL`) moved to `cortexshift.domain.task` and are re-exported from `cortexshift.mcp.models`.
+- Added `TaskWorkspaceService` to the application layer so path-addressed callers get canonical Task operations without opening a persistence store themselves.
+
+### Fixed
+
+- `RepositoryService` now closes the SQLite connections it opens (injected stores are still left to their owner). The leak predated Phase 9 and was harmless at CLI cadence, but a dashboard inspecting the repository on every refresh made it consequential.
+
 - **Phase 8: MCP Shared State & Agent Self-Reporting** (unreleased):
   - Model Context Protocol (MCP) server integration (`cortexshift mcp serve`) using official Python MCP SDK (`mcp>=2,<3`) over local stdio only. No network listeners, HTTP/SSE endpoints, or sockets.
   - Pure stdout wire protocol: stdout is strictly reserved for valid MCP JSON-RPC protocol frames; all diagnostics, informational logs, and errors are routed to stderr or silenced.

@@ -1,5 +1,7 @@
 """Application service for Git repository inspection and snapshot persistence."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
@@ -39,10 +41,16 @@ class RepositoryService:
         self._store = store
         self._locator = locator
 
+    @contextmanager
     def _resolve_project_and_store(
         self, start_path: Path | None = None
-    ) -> tuple[Path, Project, RepositorySnapshotStore]:
-        """Locate initialized CortexShift project and open its snapshot store."""
+    ) -> Iterator[tuple[Path, Project, RepositorySnapshotStore]]:
+        """Locate the initialized project and yield its snapshot store.
+
+        A store opened here is closed on exit. An injected store belongs to its caller
+        and is left open, so callers that share one connection (the MCP server, for
+        instance) keep working.
+        """
         project_root = self._locator.find_project_root(start_path)
         if project_root is None:
             raise ProjectNotInitializedError()
@@ -60,21 +68,23 @@ class RepositoryService:
                     name=project_root.name,
                     repo_path=str(project_root),
                 )
-            return project_root, project, store
+            yield project_root, project, store
+            return
 
         db_path = self._locator.get_database_path(project_root)
         sqlite_store = SQLiteStateStore(db_path, auto_migrate=True)
-        project = sqlite_store.get_default_project()
-        if project is None:
+        try:
+            project = sqlite_store.get_default_project()
+            if project is None:
+                raise ProjectNotInitializedError()
+            yield project_root, project, sqlite_store
+        finally:
             sqlite_store.close()
-            raise ProjectNotInitializedError()
-
-        return project_root, project, sqlite_store
 
     def inspect_repository(self, start_path: Path | None = None) -> RepositoryInspection:
         """Perform a live, non-persisting inspection of the repository."""
-        project_root, project, _ = self._resolve_project_and_store(start_path)
-        return self._inspector.inspect(project_root=project_root, project_id=project.id)
+        with self._resolve_project_and_store(start_path) as (project_root, project, _):
+            return self._inspector.inspect(project_root=project_root, project_id=project.id)
 
     def capture_snapshot(self, start_path: Path | None = None) -> GitSnapshot:
         """Perform live inspection and persist the snapshot if successful.
@@ -85,7 +95,16 @@ class RepositoryService:
             GitProbeTimeoutError: If inspection timed out.
             GitProbeError: If inspection failed.
         """
-        project_root, project, store = self._resolve_project_and_store(start_path)
+        with self._resolve_project_and_store(start_path) as (project_root, project, store):
+            return self._capture(project_root, project, store)
+
+    def _capture(
+        self,
+        project_root: Path,
+        project: Project,
+        store: RepositorySnapshotStore,
+    ) -> GitSnapshot:
+        """Inspect the working tree and persist the resulting snapshot."""
         inspection = self._inspector.inspect(project_root=project_root, project_id=project.id)
 
         if inspection.status == RepositoryInspectionStatus.GIT_NOT_INSTALLED:
@@ -117,11 +136,11 @@ class RepositoryService:
         start_path: Path | None = None,
     ) -> list[GitSnapshot]:
         """List historical snapshots for a project, newest first."""
-        _, project, store = self._resolve_project_and_store(start_path)
-        pid = project_id or project.id
-        return store.list_snapshots(project_id=pid, limit=limit)
+        with self._resolve_project_and_store(start_path) as (_, project, store):
+            pid = project_id or project.id
+            return store.list_snapshots(project_id=pid, limit=limit)
 
     def get_snapshot(self, snapshot_id: str, start_path: Path | None = None) -> GitSnapshot | None:
         """Retrieve a stored snapshot by ID."""
-        _, _, store = self._resolve_project_and_store(start_path)
-        return store.get_snapshot(snapshot_id)
+        with self._resolve_project_and_store(start_path) as (_, _, store):
+            return store.get_snapshot(snapshot_id)

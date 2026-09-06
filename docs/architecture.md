@@ -119,7 +119,10 @@ These three scopes are strictly separated in domain entities and must never be c
 CortexShift follows Ports and Adapters (Hexagonal Architecture) to ensure absolute isolation between domain logic, persistence, and provider tooling:
 
 ```text
-  CLI Layer (Typer / Rich)
+  Interface Adapters
+   ├── CLI Layer (Typer / Rich)
+   ├── MCP Layer (local stdio server)
+   └── TUI Layer (Textual control center)
          │
          ▼
   Application Layer (Use-Cases / Workflows)
@@ -151,6 +154,7 @@ CortexShift follows Ports and Adapters (Hexagonal Architecture) to ensure absolu
 - `application` coordinates workflows using `domain` and `ports`.
 - `adapters` implement `ports` and may use third-party tools or external CLIs.
 - `cli` invokes `application` services and formats output using Rich.
+- `mcp` and `tui` are peer interface adapters: they invoke the same `application` services, never reimplement their rules, and never reach past them into persistence, Git, or provider transports.
 
 ---
 
@@ -554,9 +558,100 @@ See [ADR-0009](decisions/ADR-0009-mcp-shared-state.md) for detailed decisions.
 
 ---
 
-## 15. What is Explicitly Out of Scope for Initial Phases
+## 15. Interactive Terminal Control Center (Phase 9)
 
-To maintain strict engineering focus, the following are explicitly out of scope for Phase 0 through Phase 8:
+Phase 9 adds CortexShift's first persistent human-facing interface: a keyboard-driven Textual dashboard over the state CortexShift already owns. It is a control center, not a new product surface — no new backend, no second persistence system, no replacement for the CLI, and not a terminal emulator for the coding agents.
+
+The dashboard is a third adapter beside the CLI and the MCP server. All three call the same application services:
+
+```text
+                 ┌──── CLI (Typer / Rich)
+                 │
+Application ◄────┼──── MCP (local stdio server)
+Services         │
+                 └──── TUI / Textual
+                         │
+                         ▼
+                   presentation state
+```
+
+```text
+cortexshift tui
+ │
+ ▼
+TuiCoordinator (locates the project, requires a TTY)
+ │
+ ▼
+CortexShiftApp (Textual)
+ │
+ ▼
+TuiFacade  ──▶ read models (TuiStateSnapshot, TuiTaskModel, TuiRepositoryModel, …)
+ │
+ ├── ProjectStatusService      project identity, active task summary
+ ├── TaskWorkspaceService      canonical Task reads and progress mutations
+ ├── SessionService            CortexShift orchestration history
+ ├── CheckpointService         checkpoint history and MANUAL capture
+ ├── HandoffService            canonical handoff history
+ ├── RepositoryService         live, strictly read-only Git inspection
+ ├── RecoveryService           crash-recovery preview and reconciliation
+ ├── SwitchService             handoff preview and switch dry run
+ └── DoctorService             passive provider discovery
+ │
+ ▼
+Domain / Ports ──▶ Adapters / SQLite / Git
+```
+
+### Sections
+
+`Overview` (default), `Task`, `Repository`, `Sessions`, `Checkpoints`, `Handoffs`, `Providers`, plus a `Help` modal. Number keys `1`–`7` jump directly to a section; `r` refreshes; `c` captures a checkpoint; `w`/`m`/`n`/`i` drive task progress; `x` opens the provider action palette; `p` previews a handoff; `g` configures workspace MCP for Antigravity; `shift+R` runs crash recovery; `?` opens help; `q` quits. Every action is reachable without a mouse, and Textual's built-in command palette (`ctrl+p`) exposes the same actions semantically.
+
+### Refresh model
+
+- **Persisted state** refreshes on a lightweight ~2 second timer. It is SQLite-only: no Git, no provider probe, no subprocess. Its purpose is that an agent self-reporting through MCP appears in an open dashboard with no operator action.
+- **Live Git** runs on startup, on entry to the Repository screen, and on explicit refresh only. `git status` is never polled on a timer.
+- **Provider discovery** runs on startup and on explicit refresh, with a short in-memory cache for the life of the process. Nothing is persisted.
+- All slow work runs in Textual thread Workers. Refresh races are resolved by exclusive worker groups plus a generation token checked on the UI thread, so a stale result can never overwrite newer data.
+
+### Provider launch: the terminal is released first
+
+CortexShift never embeds, wraps, scrapes, multiplexes, or emulates a provider's terminal UI. Choosing run, resume, or switch exits the Textual application with a structured `TuiExitRequest`; only after `App.run()` has returned does the coordinator invoke the provider service.
+
+```text
+Textual App
+   │
+   │ returns TuiExitRequest
+   ▼
+terminal restored
+   │
+   ▼
+Run / Resume / Switch Service
+   │
+   ▼
+Native provider TUI (owns the terminal)
+```
+
+**Why native provider TUIs are not embedded.** Relaying a provider's terminal through a pseudo-terminal would contradict the native-agent-first and direct-passthrough invariants established in Phase 4, and it degrades precisely what makes those agents usable: full-screen redraws, mouse handling, bracketed paste, resize propagation, and colour fidelity. It would also place CortexShift in the position of observing agent conversations, which the zero-transcript invariant forbids. Releasing the terminal is simpler, more faithful to the agents, and more honest about what CortexShift is: an orchestrator, not a multiplexer. Consequently no PTY or terminal-emulator dependency exists (`pexpect`, `ptyprocess`, `pyte`, tmux wrappers), and a regression test asserts none is introduced.
+
+### Control-center invariants
+
+- **The dashboard holds no workspace lease.** An open dashboard must never block a coding agent. Operations requiring exclusivity (run, resume, switch, recover) acquire the lease inside their own services, which reject unsafe attempts. Reading and cooperative task/checkpoint editing keep working while another agent owns the workspace.
+- **Workspace activity is probed, never inferred.** A non-blocking acquire-and-release of the OS advisory lock is authoritative; the presence of `.cortexshift/agent.lock` on disk proves nothing, and users are never told to delete it.
+- **Data authority is labelled honestly**: repository inspection is *Live*; checkpoints and handoffs are *Historical observation*; reported test summaries are *Reported / unverified*; an unfinalized session row is *Last-known*, never asserted as crashed. Progress is derived only from structured task items; with no denominator the dashboard says "No structured progress yet" rather than inventing a percentage.
+- **Read-only with respect to the repository and source.** No Git mutation, no full diffs, no source editor, no shell panel, no transcripts.
+- **No new persistence.** SQLite remains at schema **v6**; all dashboard state is ephemeral.
+- **Local terminal only.** No Textual Web, no browser serving, no localhost listener, no telemetry.
+
+### Shared canonical rules
+
+"Mark completed" — append to `completed` (deduplicated), drop any exactly matching `remaining` entry, and never complete the Task itself — lives once, as `Task.complete_items()` in the domain. Both the MCP write path and the dashboard call it, so an agent and an operator cannot drift apart. `TaskWorkspaceService` gives path-addressed callers Task operations without opening a store themselves, keeping persistence out of the TUI entirely.
+
+See [ADR-0010](decisions/ADR-0010-terminal-control-center.md) for the framework choice, alternatives considered, and detailed trade-offs.
+
+---
+
+## 16. What is Explicitly Out of Scope for Initial Phases
+
+To maintain strict engineering focus, the following are explicitly out of scope for Phase 0 through Phase 9:
 - Parallel multi-agent editing
 - Cloud sync, hosted dashboards, or team sharing
 - Direct LLM API calling or prompt engineering inside the core
@@ -565,5 +660,8 @@ To maintain strict engineering focus, the following are explicitly out of scope 
 - Electron or GUI applications (CLI/TUI first)
 - Non-Git version control systems
 - Network-based MCP transports (HTTP/SSE/WebSockets)
+- Embedded provider terminal UIs, PTY relaying, or terminal multiplexing
+- Browser-served or remote terminal interfaces (Textual Web and equivalents)
+- Git mutation, source editing, or an embedded shell inside CortexShift
 
 

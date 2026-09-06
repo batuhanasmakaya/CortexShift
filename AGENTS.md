@@ -51,6 +51,14 @@ Every agent working on CortexShift must preserve the following architectural inv
 26. **Workspace Lease Bypass for MCP Operations**: Because an active provider session already holds the exclusive workspace lease (`.cortexshift/agent.lock`), MCP server operations initiated by that agent deliberately bypass the lease to avoid self-deadlocks. Process and thread safety are guaranteed by SQLite WAL concurrency.
 27. **Bound Context Isolation**: MCP operations are bound strictly at launch to a specific `Project`, `Task`, `Session`, and `ProviderId`. Tool mutations affect only the task assigned at launch, preventing cross-task state corruption regardless of external changes to the default active task.
 
+28. **Interface Adapters Reuse Application Services**: The CLI, the MCP server, and the TUI are peer interface adapters over one set of application services. None of them may contain SQL, open a persistence store directly, invoke Git, construct provider arguments, or duplicate task, recovery, or handoff rules. A rule needed by two adapters belongs in the domain or application layer, not copied into both.
+
+29. **CortexShift Releases Terminal Ownership Before Launching a Native Provider**: Provider-native terminal UIs are never embedded, scraped, multiplexed, or relayed through a pseudo-terminal. The TUI exits with a structured `TuiExitRequest`, and only after the Textual application's run loop has returned may the run/resume/switch service be invoked. No PTY or terminal-emulator dependency (`pexpect`, `ptyprocess`, `pyte`, tmux wrappers) may be introduced.
+
+30. **The Dashboard Must Not Hold the Workspace Lease**: An open TUI must never block a coding agent. Observation and cooperative editing acquire no lease; operations requiring exclusivity (run, resume, switch, recover) acquire it inside their own services, which are the authority on refusing unsafe attempts. Workspace activity is probed through the OS advisory lock and never inferred from the lock file's existence.
+
+31. **Historical State Is Labelled Honestly and Never Presented as Live Truth**: Every human-facing surface states the authority of what it shows — live repository inspection, historical checkpoint or handoff observation, reported-and-unverified test status, or last-known session state. Unfinalized sessions are never asserted as crashed, and progress is never inferred from Git state or a process exit code.
+
 ---
 
 ## 3. Engineering & Workflow Rules
@@ -60,7 +68,7 @@ Every agent working on CortexShift must preserve the following architectural inv
 - **Persistence Boundaries**: Domain, application, and CLI layers must NEVER contain SQL statements or SQLite dependencies. All persistence logic belongs strictly behind ports in adapters (`SQLiteStateStore`).
 - **Data Integrity & Non-Destruction**: Never automatically wipe, reset, or silently overwrite user database state. Migrations must be forward-safe, deterministic, and transactional. If state is incompatible, fail safely.
 - **Private State Area**: `.cortexshift/` is local private runtime state. It must never store provider credentials, auth tokens, or conversational transcripts.
-- **Minimal Dependencies**: Do not introduce heavy frameworks (no LangChain, LlamaIndex, vector DBs, Redis, ORMs, or cloud SDKs). Rely on Python stdlib, Pydantic, Typer, and Rich.
+- **Minimal Dependencies**: Do not introduce heavy frameworks (no LangChain, LlamaIndex, vector DBs, Redis, ORMs, or cloud SDKs). Rely on Python stdlib, Pydantic, Typer, Rich, the official MCP SDK, and Textual. Exactly one TUI framework: do not add `prompt_toolkit`, `urwid`, `blessed`, or curses wrappers alongside Textual.
 - **Tests Are Mandatory**: Every new domain behavior, CLI command, and adapter must include automated, deterministic unit tests. Run `pytest`, `ruff check .`, and `mypy src` before declaring work complete.
 - **Scope Discipline**: Strictly keep changes scoped to the current phase and requested task. Do NOT prematurely implement future roadmap phases (e.g., do not add provider execution or database schemas until requested).
 - **Document Changes**: When modifying architecture or adding cross-cutting features, record an Architectural Decision Record (ADR) in `docs/decisions/` and update relevant documentation.
@@ -83,3 +91,4 @@ Every agent working on CortexShift must preserve the following architectural inv
   - [ADR-0007: Native Session Continuity](docs/decisions/ADR-0007-native-session-continuity.md)
   - [ADR-0008: Checkpoints, Crash Recovery & Handoff Enrichment](docs/decisions/ADR-0008-checkpoint-and-recovery.md)
   - [ADR-0009: MCP Shared State & Agent Self-Reporting](docs/decisions/ADR-0009-mcp-shared-state.md)
+  - [ADR-0010: Interactive Terminal Control Center](docs/decisions/ADR-0010-terminal-control-center.md)

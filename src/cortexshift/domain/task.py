@@ -8,6 +8,12 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 
 from cortexshift.domain.identifiers import generate_id, utc_now
 
+# Canonical input bounds for task progress mutations. Shared by every adapter that
+# accepts operator or agent supplied task text (MCP tools, the TUI control center).
+MAX_CURRENT_WORK_CHARS = 2000
+MAX_ITEM_CHARS = 500
+MAX_ITEMS_PER_CALL = 50
+
 
 class TaskStatus(StrEnum):
     """Lifecycle status of a persistent development task."""
@@ -150,6 +156,28 @@ class Task(BaseModel):
         return self.model_copy(
             update={
                 "known_issues": new_items,
+                "updated_at": utc_now(),
+            }
+        )
+
+    def complete_items(self, items: list[str]) -> "Task":
+        """Return a copy with items marked completed and dropped from remaining.
+
+        This is the canonical "mark completed" rule: items are appended to
+        `completed_items` (deduplicated) and any exactly matching entry is removed from
+        `remaining_items`. It never completes the Task itself — see `mark_completed`.
+        """
+        cleaned = [stripped for item in items if (stripped := item.strip())]
+        if not cleaned:
+            return self
+
+        updated = self.add_completed_items(cleaned)
+        completed_set = set(cleaned)
+        return updated.model_copy(
+            update={
+                "remaining_items": [
+                    item for item in updated.remaining_items if item not in completed_set
+                ],
                 "updated_at": utc_now(),
             }
         )

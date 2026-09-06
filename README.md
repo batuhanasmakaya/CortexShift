@@ -42,9 +42,9 @@ Claude Code      Codex        Antigravity
 ## Status: Pre-Alpha
 
 > [!NOTE]
-> CortexShift is currently in **Phase 8 (MCP Shared State & Agent Self-Reporting)**. Development state is accessible and mutable directly by active coding agents via the Model Context Protocol (MCP) running over local stdio. Agents dynamically inspect project context, live Git status, and checkpoints, while self-reporting progress, completing backlog items, recording issues, and creating checkpoints mid-flight.
+> CortexShift is currently in **Phase 9 (Interactive Terminal Control Center)**. `cortexshift tui` opens a keyboard-driven dashboard over everything CortexShift knows: the active Task and its progress, live repository state, session and checkpoint history, canonical handoffs, and provider/MCP status — with task edits, checkpoints, crash recovery, and agent launches available from the same interface.
 
-### What Works Today (Phase 8)
+### What Works Today (Phase 9)
 
 ```text
 ✓ native provider discovery
@@ -77,7 +77,68 @@ Claude Code      Codex        Antigravity
 ✓ automated MCP wiring for Claude Code (`--mcp-config`) and Codex (`-c` flags)
 ✓ workspace MCP setup helper for Antigravity (`cortexshift mcp setup antigravity`)
 ✓ CLI status inspection: `cortexshift mcp status` and `cortexshift mcp status --json`
+✓ interactive terminal dashboard (`cortexshift tui`)
+✓ Task overview and progress management from the dashboard
+✓ live repository view (read-only)
+✓ Session and native-continuity history
+✓ Checkpoint history and MANUAL checkpoint creation
+✓ Handoff history and zero-quota handoff preview
+✓ provider discovery and MCP integration status
+✓ crash recovery control with a non-mutating preview
+✓ provider run / resume / switch launched from the dashboard
 ```
+
+#### The dashboard
+
+```bash
+cortexshift tui
+```
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ CortexShift                                                   │
+├──────────────┬───────────────────────────────────────────────┤
+│ 1 Overview   │ ─ACTIVE TASK──────────────────────────────    │
+│ 2 Task       │ Implement screen understanding  · in_progress │
+│ 3 Repository │ ███████░░░░░░░░░░░░░  1/3 · 33%               │
+│ 4 Sessions   │                                               │
+│ 5 Checkpoints│  Current work  Provider-specific runtime       │
+│ 6 Handoffs   │                                               │
+│ 7 Providers  │ ─REPOSITORY────────────────────  Live         │
+│              │  Branch  main    State  ! dirty               │
+├──────────────┴───────────────────────────────────────────────┤
+│ Luna │ main · dirty │ workspace free │ updated just now       │
+│ r Refresh  c Checkpoint  x Provider  ? Help  q Quit          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+| Key | Action | | Key | Action |
+| --- | --- | --- | --- | --- |
+| `1`–`7` | Jump to a section | | `w` | Set current work |
+| `r` | Refresh everything | | `m` | Mark an item completed |
+| `c` | Create a checkpoint | | `n` | Add a remaining item |
+| `x` | Provider actions | | `i` | Record an issue |
+| `p` | Preview a handoff | | `a` / `enter` | Activate the selected task |
+| `g` | Configure Antigravity MCP | | `shift+R` | Recover the workspace |
+| `ctrl+p` | Command palette | | `?` / `q` | Help / quit |
+
+Everything is reachable from the keyboard. The dashboard is usable at 80×24 and uses the space at 120×40; below 90 columns the sidebar folds away and the number keys keep working.
+
+Persisted state refreshes on a lightweight ~2 second timer, so progress an agent reports through MCP appears in an open dashboard without you doing anything. Live Git runs on startup, on entry to the Repository screen, and on `r` — never on a timer.
+
+> [!IMPORTANT]
+> **Provider-native TUIs are not embedded.**
+>
+> CortexShift exits its dashboard before handing terminal control to Claude Code, Codex,
+> or Antigravity. Choosing run, resume, or switch closes the dashboard, restores the
+> terminal, and only then launches the native provider, which owns the terminal directly —
+> exactly as it does from the CLI. Nothing is relayed through a pseudo-terminal, scraped,
+> or multiplexed. When the agent finishes you are back at your shell; run `cortexshift tui`
+> again when you want the dashboard back.
+
+The dashboard **holds no workspace lease**, so leaving it open never blocks a coding agent. You can keep it running in one terminal while an agent works in another: reads, task progress updates, and cooperative checkpoints all keep working, and actions that genuinely need exclusivity (run, resume, switch, recover) are refused safely by the services that own that rule.
+
+It is a control center, not an editor. There is no Git mutation, no source editing, no shell panel, and no transcript viewing anywhere in it.
 
 - **MCP Shared State & Agent Self-Reporting (Phase 8)**:
   - **Local Stdio MCP Server**: Run `cortexshift mcp serve` via local child process stdio only. Pure stdout wire protocol with all diagnostics and notices routed strictly to stderr.
@@ -184,12 +245,16 @@ To upgrade existing local state to schema v5, rerun `cortexshift init`; migratio
 ✗ automatic switching
 ✗ automatic periodic background daemon checkpoints
 ✗ transcript transplantation
+✗ embedded provider terminal UIs
+✗ public release packaging
 ```
 
 - ✗ Automatic outgoing-agent summaries are deliberately absent — and always will be as a *requirement*. CortexShift must work when the outgoing agent cannot answer.
 - ✗ Automatic quota/rate-limit detection and automatic provider switching (explicitly out of scope; switching is manual).
 - ✗ Automatic periodic background daemon checkpoints (planned for future phases).
 - ✗ Transcript transplantation between providers (deliberately never — see [ADR-0006](docs/decisions/ADR-0006-canonical-agent-handoff.md)).
+- ✗ Embedded provider terminal UIs inside the dashboard (deliberately never — see [ADR-0010](docs/decisions/ADR-0010-terminal-control-center.md)).
+- ✗ Public release packaging: PyPI, Homebrew, installers, and a documentation site are Phase 10.
 
 
 ---
@@ -215,6 +280,12 @@ cortexshift switch codex
 # 3. Switch again. Antigravity receives the same task continuity
 #    and continues from the current repository state.
 cortexshift switch antigravity
+```
+
+Or drive the whole thing from one screen:
+
+```bash
+cortexshift tui
 ```
 
 The receiving agent is given:
@@ -371,6 +442,15 @@ uv run cortexshift handoff show handoff_<id>
 uv run cortexshift handoff show handoff_<id> --json
 ```
 
+```bash
+# Open the interactive control center for this project
+uv run cortexshift tui
+```
+
+`cortexshift tui` requires an initialized project and a real terminal (both stdin and
+stdout must be TTYs); it fails cleanly otherwise. Plain `cortexshift` still prints help —
+the dashboard never replaces the CLI.
+
 > [!NOTE]
 > **Antigravity handoffs perform one read-only model turn.** Because Antigravity's native
 > interactive startup does not accept a direct initial prompt, `cortexshift switch antigravity`
@@ -407,6 +487,10 @@ uv run mypy
 - [ADR-0004: Git Repository Context](docs/decisions/ADR-0004-git-repository-context.md)
 - [ADR-0005: Native Provider Launch & Session Lifecycle](docs/decisions/ADR-0005-native-provider-runtime.md)
 - [ADR-0006: Canonical Agent Handoff & Manual Provider Switching](docs/decisions/ADR-0006-canonical-agent-handoff.md)
+- [ADR-0007: Native Session Continuity](docs/decisions/ADR-0007-native-session-continuity.md)
+- [ADR-0008: Checkpoints, Crash Recovery & Handoff Enrichment](docs/decisions/ADR-0008-checkpoint-and-recovery.md)
+- [ADR-0009: MCP Shared State & Agent Self-Reporting](docs/decisions/ADR-0009-mcp-shared-state.md)
+- [ADR-0010: Interactive Terminal Control Center](docs/decisions/ADR-0010-terminal-control-center.md)
 - [Agent Contributor Contract](AGENTS.md)
 - [Contributing Guide](CONTRIBUTING.md)
 

@@ -83,6 +83,7 @@ from cortexshift.mcp.context import (
     resolve_mcp_context,
 )
 from cortexshift.mcp.server import run_mcp_server
+from cortexshift.tui.coordinator import TuiCoordinator
 
 console = Console()
 err_console = Console(stderr=True)
@@ -2399,6 +2400,42 @@ def mcp_setup_antigravity_command(
     console.print(
         "[dim]CortexShift will not automatically modify .gitignore or Git configuration.[/dim]\n"
     )
+
+
+# --- Interactive Terminal Control Center ---
+
+
+@app.command(name="tui")
+def tui_command() -> None:
+    """Open the interactive CortexShift dashboard for this project.
+
+    The dashboard is a control center over the same application services the CLI uses.
+    It never embeds a provider's terminal UI: choosing run, resume, or switch closes the
+    dashboard, restores the terminal, and only then launches the native provider.
+    """
+
+    def _announce(message: str) -> None:
+        console.print(f"\n[dim]{message}[/dim]\n")
+
+    coordinator = TuiCoordinator(announce=_announce)
+
+    try:
+        result = coordinator.start()
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    session = result.session
+    if session is None:
+        return
+
+    if session.status == SessionStatus.COMPLETED:
+        console.print("\nSession completed.")
+    elif session.status == SessionStatus.INTERRUPTED:
+        console.print("\nSession interrupted.")
+    else:
+        console.print("\nSession failed.")
+        raise typer.Exit(code=result.exit_code)
 
 
 if __name__ == "__main__":

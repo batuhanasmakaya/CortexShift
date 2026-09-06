@@ -4,10 +4,34 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# Input safety bounds
-MAX_CURRENT_WORK_CHARS = 2000
-MAX_ITEM_CHARS = 500
-MAX_ITEMS_PER_CALL = 50
+from cortexshift.domain.task import (
+    MAX_CURRENT_WORK_CHARS,
+    MAX_ITEM_CHARS,
+    MAX_ITEMS_PER_CALL,
+)
+
+__all__ = [
+    "MAX_CHANGED_PATHS_BUDGET",
+    "MAX_CURRENT_WORK_CHARS",
+    "MAX_DECISION_CHARS",
+    "MAX_ITEMS_PER_CALL",
+    "MAX_ITEM_CHARS",
+    "MAX_NOTE_CHARS",
+    "MAX_TEST_SUMMARY_CHARS",
+    "CheckpointResult",
+    "CheckpointSummary",
+    "CreateCheckpointResult",
+    "DecisionResult",
+    "ProjectContextResult",
+    "ProjectSummary",
+    "RepositoryStatusSummary",
+    "SessionSummary",
+    "TaskMutationResult",
+    "TaskSummary",
+]
+
+# Input safety bounds. Task text bounds are canonical domain limits; the remainder are
+# MCP transport bounds.
 MAX_DECISION_CHARS = 1000
 MAX_TEST_SUMMARY_CHARS = 1000
 MAX_NOTE_CHARS = 2000

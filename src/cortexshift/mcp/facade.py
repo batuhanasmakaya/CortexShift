@@ -278,21 +278,7 @@ class McpApplicationFacade:
             raise ValueError("No non-empty items provided.")
 
         task = self._get_bound_task()
-
-        new_completed = list(task.completed)
-        for it in cleaned:
-            if it not in new_completed:
-                new_completed.append(it)
-
-        new_remaining = [r for r in task.remaining if r not in cleaned]
-
-        updated = task.model_copy(
-            update={
-                "completed_items": new_completed,
-                "remaining_items": new_remaining,
-                "updated_at": utc_now(),
-            }
-        )
+        updated = task.complete_items(cleaned)
         self._store.save_task(updated)
 
         return TaskMutationResult(
