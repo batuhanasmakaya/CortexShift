@@ -12,8 +12,14 @@ CortexShift targets **Python 3.12+** and uses **[`uv`](https://docs.astral.sh/uv
 
 ### 1. Obtain the source
 
-Work from a local checkout or extracted source distribution. A canonical public
-repository URL has not yet been configured; no clone URL is assumed.
+Clone the canonical public repository:
+
+```bash
+git clone https://github.com/batuhanasmakaya/CortexShift.git
+cd CortexShift
+```
+
+An extracted source distribution works equally well for verification builds.
 
 ### 2. Install Dependencies
 
@@ -127,6 +133,9 @@ src/cortexshift/
 - Keep pull requests focused on a single phase or feature.
 - Include unit tests covering all new domain behavior, ports, and CLI commands.
 - Ensure all CI checks pass on GitHub Actions.
+- Open issues and pull requests at
+  <https://github.com/batuhanasmakaya/CortexShift>. Report suspected
+  vulnerabilities through [Security](SECURITY.md) instead of a public issue.
 
 ## Provider adapters and persistence
 

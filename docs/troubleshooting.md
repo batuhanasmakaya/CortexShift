@@ -17,6 +17,8 @@
 An unfinalized record alone does not prove a crash. Recovery does not undo source
 changes, and its checkpoint is a historical observation, not proof of tests.
 
-For a bug report include version, OS, Python version, provider/version, reproduction,
+Report bugs at <https://github.com/batuhanasmakaya/CortexShift/issues>; use the
+[security policy](../SECURITY.md) for suspected vulnerabilities instead of a
+public issue. Include version, OS, Python version, provider/version, reproduction,
 and a sanitized error. Review `doctor` output for local paths. Never attach
 credentials, transcripts, a private repository, or unsanitized `.cortexshift` state.

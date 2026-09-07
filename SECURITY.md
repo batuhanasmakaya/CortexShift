@@ -17,14 +17,19 @@ against accidental cross-task writes, not a malicious local process.
 
 ## Reporting vulnerabilities
 
-A canonical public repository and private vulnerability reporting channel have
-not yet been configured. Before launch, the maintainer must enable GitHub private
-vulnerability reporting/Security Advisories on the canonical repository and
-publish its verified reporting link here. Do not disclose exploit details or
-sensitive data in public issues while that channel is unavailable. No reporting
-email is invented for this candidate.
+The canonical public repository is
+<https://github.com/batuhanasmakaya/CortexShift>, and this policy is published at
+<https://github.com/batuhanasmakaya/CortexShift/security>.
 
-Ordinary bug reports may include CortexShift version, OS, Python/provider version,
+GitHub private vulnerability reporting is not enabled on that repository yet, so
+no private intake channel is available at this time. Until the maintainer enables
+private vulnerability reporting/Security Advisories and publishes the verified
+intake link here, do not disclose exploit details or sensitive data in public
+issues. No reporting email is invented for this candidate.
+
+Ordinary bug reports belong in
+<https://github.com/batuhanasmakaya/CortexShift/issues> and may include
+CortexShift version, OS, Python/provider version,
 `cortexshift doctor` output after reviewing local paths, and a sanitized error.
 Do not attach API keys, credentials, private transcripts, a whole private repository,
 or the `.cortexshift` database. Review all diagnostics before sharing.

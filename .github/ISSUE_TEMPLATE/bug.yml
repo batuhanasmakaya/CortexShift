@@ -3,7 +3,12 @@ description: Report a reproducible CortexShift issue
 body:
   - type: markdown
     attributes:
-      value: Do not paste provider credentials, API keys, private transcripts, sensitive repository code, or your CortexShift database.
+      value: >-
+        Do not paste provider credentials, API keys, private transcripts,
+        sensitive repository code, or your CortexShift database.
+        Report suspected vulnerabilities through the
+        [security policy](https://github.com/batuhanasmakaya/CortexShift/blob/main/SECURITY.md)
+        rather than a public issue.
   - type: textarea
     id: environment
     attributes:

@@ -4,17 +4,22 @@
 push, GitHub Release, PyPI upload, or Homebrew tap publication is authorized by
 running local checks. A maintainer must explicitly authorize external publication.
 
-## One-time external setup (pending)
+## One-time external setup
 
-- Establish the canonical public GitHub repository, with `main` as default branch.
-  No remote is configured in the candidate checkout. Populate truthful project
-  URLs in `pyproject.toml`, README links/badges, and the security reporting link
-  only after that identity is established. Verify Markdown links on PyPI too.
-- Enable Actions and require CI via a branch ruleset; consider review requirements,
-  Dependabot alerts, available secret scanning, and private vulnerability reporting.
-- Secure the PyPI account with MFA. Configure a pending publisher for `cortexshift`
-  (or a publisher on the existing owned project) using the actual GitHub owner,
-  repository, workflow filename `release.yml`, and environment `pypi`.
+- Done: the canonical public repository is
+  <https://github.com/batuhanasmakaya/CortexShift>, with `main` as the default
+  branch and `origin` configured in the checkout. Verified project URLs are
+  populated in `pyproject.toml` (`Homepage`, `Repository`, `Issues`, `Changelog`,
+  `Security`) and in the README/SECURITY/CONTRIBUTING links. Re-verify the
+  rendered Markdown links on PyPI after the first upload.
+- Pending: enable Actions branch protection requiring CI via a ruleset; consider
+  review requirements, Dependabot alerts, and available secret scanning. GitHub
+  private vulnerability reporting is currently disabled; `SECURITY.md` states that
+  honestly and must be updated with the intake link once it is enabled.
+- Pending: secure the PyPI account with MFA. Configure a pending publisher for
+  `cortexshift` (or a publisher on the existing owned project) with owner
+  `batuhanasmakaya`, repository `CortexShift`, workflow filename `release.yml`,
+  and environment `pypi`.
 - Create the GitHub `pypi` environment. Consider required reviewers and protected
   deployment tags before the first release. These settings are not created by YAML.
 - Later create a custom Homebrew tap; do not imply homebrew/core acceptance.
@@ -28,10 +33,10 @@ describes OIDC setup. No long-lived PyPI token or provider credential is require
    intentionally left uncommitted for review. Never amend historical releases.
 2. Run `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`,
    `uv run mypy`, and `uv run pytest`. Inspect warnings and coverage.
-3. Repeat exact normalized PyPI namespace and public repository name checks.
-   On 2026-09-06 PyPI's `cortexshift` JSON endpoint returned 404. GitHub search
-   found an apparently unrelated `mevcel/CortexShift` JavaScript repository.
-   Review that collision before choosing the public repository identity. This
+3. Repeat the exact normalized PyPI namespace check. On 2026-09-06 PyPI's
+   `cortexshift` JSON endpoint returned 404. GitHub search found an apparently
+   unrelated `mevcel/CortexShift` JavaScript repository; the public repository
+   identity has since been established as `batuhanasmakaya/CortexShift`. This
    is a namespace check, not trademark/legal clearance or a uniqueness claim.
 4. Update the canonical version in `pyproject.toml` and its changelog section.
    Runtime version comes from installed metadata. Validate the intended tag:

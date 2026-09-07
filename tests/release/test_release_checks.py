@@ -7,7 +7,12 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from scripts.release_check import validate_names, validate_tag
+from scripts.release_check import (
+    CANONICAL_REPOSITORY,
+    REQUIRED_URLS,
+    validate_names,
+    validate_tag,
+)
 
 from tests.cli_runner import run_cli
 
@@ -23,6 +28,20 @@ def test_single_version_source() -> None:
         result = run_cli([sys.executable, "-m", "cortexshift", *args])
         assert result.returncode == 0
         assert result.stdout.strip() == f"CortexShift {version}"
+
+
+def test_canonical_project_urls_are_declared() -> None:
+    """Verify PyPI metadata carries the canonical repository URLs."""
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    assert project["urls"] == REQUIRED_URLS
+    assert all(url.startswith(CANONICAL_REPOSITORY) for url in project["urls"].values())
+
+
+@pytest.mark.parametrize("document", ["README.md", "SECURITY.md", "CONTRIBUTING.md"])
+def test_public_documents_name_the_canonical_repository(document: str) -> None:
+    """Verify no published document still treats the repository as unknown."""
+    text = (ROOT / document).read_text(encoding="utf-8")
+    assert CANONICAL_REPOSITORY in text
 
 
 @pytest.mark.parametrize("tag", ["0.1.0", "v0.2.0", "v0.1.0rc1", "v0.1.0\n"])

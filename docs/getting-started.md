@@ -10,9 +10,12 @@ dependencies while exposing the command globally. Upgrade with
 `pipx upgrade cortexshift`; remove the application with `pipx uninstall cortexshift`.
 Removing the application does not remove project history.
 
-Before publication, from an obtained source checkout:
+Before publication, from a clone of the canonical repository
+(<https://github.com/batuhanasmakaya/CortexShift>):
 
 ```bash
+git clone https://github.com/batuhanasmakaya/CortexShift.git
+cd CortexShift
 uv sync --locked
 uv build
 pipx install dist/cortexshift-0.1.0-py3-none-any.whl

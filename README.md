@@ -7,7 +7,8 @@ Codex, and Antigravity in the same local repository. A Task belongs to CortexShi
 providers are workers over that Task. Switching does not require the outgoing
 agent to answer, summarize, or even remain installed.
 
-**0.1.0 is an initial public alpha release candidate. Publication is pending.**
+**0.1.0 is an initial public alpha release candidate. PyPI publication is pending.**
+The canonical repository is <https://github.com/batuhanasmakaya/CortexShift>.
 Python 3.12–3.14 is targeted. Automated cross-platform coverage is configured;
 real provider and platform validation has a separate maintainer checklist.
 
@@ -62,11 +63,17 @@ pipx upgrade cortexshift
 pipx uninstall cortexshift
 ```
 
-Before publication, from this checkout use `uv sync --locked`, then
-`uv run cortexshift --help`. To install a candidate globally without an editable
-checkout: `uv build`, then
+Before publication, clone the repository and use `uv sync --locked`, then
+`uv run cortexshift --help`:
+
+```bash
+git clone https://github.com/batuhanasmakaya/CortexShift.git
+cd CortexShift
+```
+
+To install a candidate globally without an editable checkout: `uv build`, then
 `pipx install dist/cortexshift-0.1.0-py3-none-any.whl`.
-A virtualenv/pip alternative is in [Getting Started](docs/getting-started.md).
+A virtualenv/pip alternative is in [Getting Started][getting-started].
 Homebrew is pending publication of a custom tap.
 
 ## Your first handoff
@@ -97,7 +104,7 @@ Claude and Codex receive MCP configuration automatically. Antigravity requires
 explicit workspace setup: `cortexshift mcp setup antigravity`.
 Inspect integration with `cortexshift mcp status`. Managed sessions expose
 10 context-bound tools; unmanaged/read-only sessions expose four read tools.
-See [Provider Support](docs/provider-support.md) for identity, resume, and
+See [Provider Support][provider-support] for identity, resume, and
 validation limits.
 
 ## Privacy and trust
@@ -110,7 +117,7 @@ configuration and terms; local orchestration does not change that behavior.
 
 Task text, paths, and project history are local development data. Generally ignore
 `.cortexshift/` in Git; CortexShift does not rewrite your `.gitignore`.
-See [Security](SECURITY.md) for boundaries and safe reporting.
+See [Security][security-policy] for boundaries and safe reporting.
 
 ## Limitations
 
@@ -123,11 +130,11 @@ Internal Python modules are not a stable library API.
 
 ## Documentation and development
 
-- [Getting Started](docs/getting-started.md)
-- [Provider Support](docs/provider-support.md)
-- [Architecture](docs/architecture.md) and [Handoff Protocol](docs/handoff-protocol.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Contributing](CONTRIBUTING.md), [Releasing](docs/releasing.md), and [Roadmap](docs/roadmap.md)
+- [Getting Started][getting-started] and [Troubleshooting][troubleshooting]
+- [Provider Support][provider-support]
+- [Architecture][architecture] and [Handoff Protocol][handoff-protocol]
+- [Contributing][contributing], [Releasing][releasing], and [Roadmap][roadmap]
+- [Changelog][changelog] and [Issues][issues]
 
 ```bash
 uv sync --locked
@@ -139,5 +146,18 @@ uv run pytest
 
 ## License
 
-[MIT](LICENSE). CortexShift is an independent open-source project and is not
+[MIT][license]. CortexShift is an independent open-source project and is not
 affiliated with or endorsed by Anthropic, OpenAI, or Google.
+
+[getting-started]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/getting-started.md
+[provider-support]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/provider-support.md
+[architecture]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/architecture.md
+[handoff-protocol]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/handoff-protocol.md
+[troubleshooting]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/troubleshooting.md
+[contributing]: https://github.com/batuhanasmakaya/CortexShift/blob/main/CONTRIBUTING.md
+[releasing]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/releasing.md
+[roadmap]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/roadmap.md
+[changelog]: https://github.com/batuhanasmakaya/CortexShift/blob/main/CHANGELOG.md
+[security-policy]: https://github.com/batuhanasmakaya/CortexShift/blob/main/SECURITY.md
+[license]: https://github.com/batuhanasmakaya/CortexShift/blob/main/LICENSE
+[issues]: https://github.com/batuhanasmakaya/CortexShift/issues

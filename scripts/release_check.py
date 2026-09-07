@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+CANONICAL_REPOSITORY = "https://github.com/batuhanasmakaya/CortexShift"
+REQUIRED_URLS = {
+    "Homepage": CANONICAL_REPOSITORY,
+    "Repository": CANONICAL_REPOSITORY,
+    "Issues": f"{CANONICAL_REPOSITORY}/issues",
+    "Changelog": f"{CANONICAL_REPOSITORY}/blob/main/CHANGELOG.md",
+    "Security": f"{CANONICAL_REPOSITORY}/security",
+}
 FORBIDDEN = {
     ".cortexshift",
     ".venv",
@@ -61,6 +69,9 @@ def validate_artifacts(dist: Path, project: dict[str, Any]) -> list[Path]:
         }.items():
             assert metadata[key] == expected, f"Incorrect metadata: {key}"
         assert "LICENSE" in metadata.get_all("License-File", []), "Missing license metadata"
+        assert set(metadata.get_all("Project-URL", [])) == {
+            f"{label}, {url}" for label, url in project["urls"].items()
+        }, "Project URL drift between pyproject and built metadata"
         assert archive.read(prefix + "licenses/LICENSE") == (ROOT / "LICENSE").read_bytes()
         assert "Switch agents. Keep the context." in metadata.get_payload()
         runtime = [r for r in metadata.get_all("Requires-Dist", []) if "extra ==" not in r]
@@ -106,6 +117,7 @@ def check(
     assert project["name"] == "cortexshift"
     assert project["requires-python"] == ">=3.12"
     assert project["license"] == "MIT"
+    assert project["urls"] == REQUIRED_URLS, "Canonical project URLs are missing or altered"
     assert re.search(rf"^## .*\b{re.escape(version)}\b", (root / "CHANGELOG.md").read_text(), re.M)
     if tag:
         validate_tag(tag, version)

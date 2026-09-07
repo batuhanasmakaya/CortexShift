@@ -18,8 +18,9 @@ Initial public alpha; no publication date has been assigned.
 - Cooperative milestone and session-end checkpoints, plus deterministic crash
   recovery with honest historical observations and reported test provenance.
 - Local stdio MCP shared state and a keyboard-driven Textual control center.
-- Release metadata, wheel/sdist content validation, installed CLI/MCP/TUI tests,
-  isolated pipx tests, cross-platform CI, OIDC release machinery, and public guides.
+- Release metadata with verified canonical project URLs, wheel/sdist content
+  validation, installed CLI/MCP/TUI tests, isolated pipx tests, cross-platform CI,
+  OIDC release machinery, and public guides.
 
 ### Safety and compatibility
 
