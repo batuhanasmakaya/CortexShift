@@ -29,7 +29,9 @@ Initial public alpha; no publication date has been assigned.
 - No provider credentials, prompts, rendered handoffs, responses, transcripts,
   full patches, telemetry, self-updater, or cloud account stored/introduced.
 - SQLite schema v6, Handoff Protocol v1, and Checkpoint Protocol v1 are preserved.
-- Provider CLI behavior remains external; real-provider validation is a separate gate.
+- Provider CLI behavior remains external, and real-provider validation stays a
+  maintainer gate: Claude Code and Codex are validated end to end, while
+  Antigravity rests on automated fake-provider coverage only.
 
 ### Fixed
 

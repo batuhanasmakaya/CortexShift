@@ -12,16 +12,28 @@ running local checks. A maintainer must explicitly authorize external publicatio
   populated in `pyproject.toml` (`Homepage`, `Repository`, `Issues`, `Changelog`,
   `Security`) and in the README/SECURITY/CONTRIBUTING links. Re-verify the
   rendered Markdown links on PyPI after the first upload.
-- Pending: enable Actions branch protection requiring CI via a ruleset; consider
-  review requirements, Dependabot alerts, and available secret scanning. GitHub
-  private vulnerability reporting is currently disabled; `SECURITY.md` states that
-  honestly and must be updated with the intake link once it is enabled.
-- Pending: secure the PyPI account with MFA. Configure a pending publisher for
-  `cortexshift` (or a publisher on the existing owned project) with owner
-  `batuhanasmakaya`, repository `CortexShift`, workflow filename `release.yml`,
-  and environment `pypi`.
-- Create the GitHub `pypi` environment. Consider required reviewers and protected
-  deployment tags before the first release. These settings are not created by YAML.
+- Done: `main` is protected by an active ruleset. Pull requests are required, and
+  10 required status checks are enforced: `quality` plus the Ubuntu, macOS, and
+  Windows jobs on CPython 3.12, 3.13, and 3.14. A ruleset is repository
+  configuration, not something the workflow files can assert.
+- Done: GitHub private vulnerability reporting is enabled, and `SECURITY.md`
+  directs reporters to the Security Advisory intake instead of public issues.
+  Secret scanning alerts are enabled. Dependabot alerts are **not** claimed
+  enabled: no current repository evidence proves that setting, so treat it as an
+  open manual repository check rather than completed setup.
+- Done: a PyPI Trusted Publishing pending publisher is configured for project
+  `cortexshift` with owner/repository `batuhanasmakaya/CortexShift`, workflow
+  filename `release.yml`, and environment `pypi`. No long-lived PyPI API token is
+  used anywhere in this project.
+- Done: the GitHub `pypi` environment exists and allows `v*` release tags.
+  Revisit required reviewers before the first release; these settings are not
+  created by YAML.
+- Manual account check: PyPI account MFA. Repository evidence cannot prove the
+  account's MFA state, so verify it in PyPI account settings rather than assuming
+  it; do not record it as complete here on the basis of this checkout.
+- Pending: the first PyPI publication has not happened. The pending publisher
+  becomes a normal publisher on the first successful upload, after which the
+  rendered Markdown links must be re-verified on the PyPI project page.
 - Later create a custom Homebrew tap; do not imply homebrew/core acceptance.
 
 The official [Trusted Publishing guide](https://docs.pypi.org/trusted-publishers/using-a-publisher/)
@@ -29,8 +41,9 @@ describes OIDC setup. No long-lived PyPI token or provider credential is require
 
 ## Release sequence
 
-1. Review and commit the release work, then begin from clean `main`. Phase 10 is
-   intentionally left uncommitted for review. Never amend historical releases.
+1. Review and commit the release work, then begin from clean `main`. Release
+   preparation lands on `main` through a reviewed pull request, because the
+   ruleset requires one. Never amend historical releases.
 2. Run `uv sync --locked`, `uv run ruff check .`, `uv run ruff format --check .`,
    `uv run mypy`, and `uv run pytest`. Inspect warnings and coverage.
 3. Repeat the exact normalized PyPI namespace check. On 2026-09-06 PyPI's
@@ -89,16 +102,52 @@ installed contract drift is a release blocker requiring an adapter fix.
 The following intentionally consume native provider usage and must be performed
 by a maintainer, not automatically by CI:
 
-- [ ] Claude real run, handoff/resume, and visible MCP tools.
-- [ ] Codex real run, handoff/resume, and visible MCP tools.
+- [x] Claude real run, handoff/resume, and visible MCP tools. Validated against
+      authenticated Claude Code 2.1.204: managed MCP session binding confirmed,
+      all 10 MCP tools visible and all 6 write tools usable in the managed
+      session, session-bound checkpoint provenance confirmed, native session ID
+      captured, native resume confirmed, and CortexShift session lineage confirmed.
+- [x] Codex real run, handoff/resume, and visible MCP tools. Validated against
+      authenticated Codex 0.153.4 (the environment's installed 0.144.3 was
+      updated because the selected model required a newer CLI): managed MCP
+      session binding confirmed, all managed write tools available, session-bound
+      checkpoint provenance confirmed, native session ID captured through
+      switch/bootstrap, native resume confirmed, and CortexShift session lineage
+      confirmed.
+- [x] Cross-provider real handoff: `cortexshift switch codex` from a real Claude
+      session delivered current task, objective, current work, previous
+      provider/session, and a structured decision correctly, and the receiving
+      Codex obtained a new managed CortexShift session.
+- [x] Decision durability across handoffs: a decision recorded in an earlier
+      checkpoint survived a later empty manual checkpoint and the automatic
+      session-end checkpoint, handoff aggregation still surfaced it, and later
+      checkpoints remained literal point-in-time observations with empty
+      decisions rather than copying history forward.
 - [ ] Antigravity real run, handoff/resume, and explicit workspace MCP setup.
+      Deferred: Antigravity is not installed in the validation environment, so no
+      real Antigravity E2E has been performed. Deterministic fake-provider
+      coverage remains the only validation basis for that adapter.
 - [ ] macOS interactive TUI/provider smoke.
 - [ ] Linux interactive TUI/provider smoke.
 - [ ] Windows interactive TUI/provider smoke.
 
+Provider versions above are the versions actually exercised, not a compatibility
+guarantee for other or future CLI releases; native CLI changes may require
+adapter updates and re-validation.
+
 Distinguish fake automated coverage, passive local detection, actual CI runs,
 and human validation. Use “CI-tested” only after CI ran; do not claim mature
 production support from CI alone.
+
+### Latest verified automated validation
+
+Recorded before merge of the managed-MCP/decision-durability fix branch: 863
+pytest tests passed, with dedicated managed-MCP regression coverage passing;
+`ruff check`, `ruff format`, and strict `mypy` passed; `scripts/release_check.py`
+passed; the rebuilt artifact smoke passed; and `scripts/security_audit.py`
+reported 0 findings. That branch then passed all required cross-platform GitHub
+CI checks and merged to `main` as PR #1. Re-run this gate on the exact release
+commit; an earlier run is evidence about that earlier tree, not about a later one.
 
 ## Compatibility and corrections
 
