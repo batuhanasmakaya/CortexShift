@@ -20,7 +20,8 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from textual.widgets import OptionList
+from textual.screen import Screen
+from textual.widgets import Button, OptionList, Static
 from textual.worker import Worker, WorkerCancelled, WorkerState
 
 from cortexshift.application.status_service import ProjectStatusService
@@ -29,7 +30,14 @@ from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.status import ProjectStatus
 from cortexshift.tui.actions import TuiExitAction
 from cortexshift.tui.app import STATE_WORKER_GROUP, CortexShiftApp
-from cortexshift.tui.modals import ConfirmModal, ProviderActionModal
+from cortexshift.tui.modals import (
+    CheckpointModal,
+    ConfirmModal,
+    InfoModal,
+    MarkCompletedModal,
+    ProviderActionModal,
+    SetCurrentWorkModal,
+)
 from tests.cli_runner import PROVIDER_EXECUTABLES, path_without_providers, run_cli
 from tests.tui.conftest import (
     NoLaunchProcessRunner,
@@ -40,6 +48,7 @@ from tests.tui.conftest import (
     drain_workers,
     seed_session,
     settle,
+    wait_for_screen,
     wait_for_state,
     wait_until,
 )
@@ -340,3 +349,54 @@ def _highlight_switch_to_codex(modal: ProviderActionModal) -> None:
         if option.action is TuiExitAction.SWITCH and option.provider == "codex"
     )
     modal.query_one("#provider-actions", OptionList).highlighted = index
+
+
+# --- modal composition ----------------------------------------------------
+
+
+MODAL_FOCUS_TARGETS = [
+    (ConfirmModal, "#confirm-cancel"),
+    (InfoModal, "#info-close"),
+    (ProviderActionModal, "#provider-actions"),
+    (CheckpointModal, "#checkpoint-decision"),
+    (SetCurrentWorkModal, "#entry-input"),
+    (MarkCompletedModal, "#entry-input"),
+]
+
+
+@pytest.mark.parametrize(
+    ("modal", "selector"), MODAL_FOCUS_TARGETS, ids=lambda v: getattr(v, "__name__", v)
+)
+def test_a_modal_declares_its_focus_instead_of_querying_for_it(
+    modal: type[Screen[object]], selector: str
+) -> None:
+    """Opening a dialog must not race its own composition.
+
+    `ConfirmModal.on_mount` used to call `query_one("#confirm-cancel")`, but a screen
+    receives `Mount` before `compose` has finished mounting its subtree. On a slow runner
+    the button did not exist yet and opening the confirmation raised `NoMatches` from
+    production code -- the dashboard, not the test. `AUTO_FOCUS` states the same intent
+    declaratively and Textual applies it once the screen is composed.
+    """
+    assert selector == modal.AUTO_FOCUS
+    assert not hasattr(modal, "on_mount"), (
+        f"{modal.__name__} focuses or populates in on_mount again, which races compose"
+    )
+
+
+@pytest.mark.asyncio
+async def test_every_confirmation_button_exists_when_the_modal_is_reached(project: Path) -> None:
+    """The dialog is usable the moment it is on screen, buttons and all."""
+    seed_session(project, _active_task_id(project), provider_id=PROVIDER_CLAUDE)
+
+    app = build_app(project)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        modal = await _open_palette(app, pilot)
+        _highlight_switch_to_codex(modal)
+        await pilot.press("enter")
+
+        confirmation = await wait_for_screen(app, pilot, ConfirmModal, selector="#confirm-cancel")
+        assert confirmation.query_one("#confirm-body", Static)
+        assert confirmation.query_one("#confirm-ok", Button)
+        assert confirmation.query_one("#confirm-cancel", Button).has_focus

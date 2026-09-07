@@ -208,7 +208,7 @@ async def test_recovery_preview_precedes_any_mutation(project: Path) -> None:
 
         await pilot.press("R")
 
-        confirm = await wait_for_screen(app, pilot, ConfirmModal)
+        confirm = await wait_for_screen(app, pilot, ConfirmModal, selector="#confirm-body")
 
         # The preview is on screen, and nothing has been reconciled yet.
         body = str(confirm.query_one("#confirm-body", Static).content)

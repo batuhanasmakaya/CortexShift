@@ -466,6 +466,7 @@ async def wait_for_screen[ScreenT: Screen[Any]](
     pilot: TuiPilot,
     screen_type: type[ScreenT],
     *,
+    selector: str | None = None,
     timeout: float = WORKER_TIMEOUT_SECONDS,
 ) -> ScreenT:
     """Wait for a screen to be pushed, then assert it and return it.
@@ -481,18 +482,31 @@ async def wait_for_screen[ScreenT: Screen[Any]](
     a slow runner lost with `NoMatches`. The wait therefore ends only once the screen is
     mounted and its content exists.
 
+    Depth matters too. `Pilot.pause` waits for the widgets that exist when it is called,
+    so one pause settles the screen and its outermost container while the container's own
+    children are still arriving -- which is how a button nested two levels down was still
+    missing. A caller that reaches into the modal should name what it needs through
+    `selector`; the wait then ends when that node is really there, and the test's own next
+    line cannot race compose.
+
     The assertion is not weakened: the wait ends only when a screen of exactly this type
     is on top, and a failure still reports which screen was actually there.
     """
 
     def ready() -> bool:
         screen = app.screen
-        return isinstance(screen, screen_type) and screen.is_mounted and bool(screen.children)
+        if not (isinstance(screen, screen_type) and screen.is_mounted and screen.children):
+            return False
+        return selector is None or bool(screen.query(selector))
 
     await wait_until(
         pilot,
         ready,
-        description=f"the {screen_type.__name__} is mounted (saw {type(app.screen).__name__})",
+        description=(
+            f"the {screen_type.__name__} is mounted"
+            + (f" with {selector}" if selector else "")
+            + f" (saw {type(app.screen).__name__})"
+        ),
         timeout=timeout,
     )
     return assert_screen(app, screen_type)

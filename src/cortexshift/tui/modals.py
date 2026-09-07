@@ -66,7 +66,14 @@ class ProviderActionOption:
 
 
 class _ModalBase(ModalScreen[object]):
-    """Shared chrome and dismissal behaviour for CortexShift modals."""
+    """Shared chrome and dismissal behaviour for CortexShift modals.
+
+    Modals declare their initial focus with `AUTO_FOCUS` rather than querying for a widget
+    in `on_mount`. A screen receives `Mount` before its `compose` has finished mounting the
+    subtree, so `query_one` there is a race: on a slow machine the widget does not exist
+    yet and opening the dialog raises `NoMatches` instead of showing it. Textual applies
+    `AUTO_FOCUS` once the screen is composed, which is the same intent without the race.
+    """
 
     BINDINGS = [
         Binding("escape", "cancel", "Cancel", show=True),
@@ -82,6 +89,8 @@ class TextEntryModal(_ModalBase):
 
     Empty input is rejected unless the dialog explicitly allows clearing a value.
     """
+
+    AUTO_FOCUS = "#entry-input"
 
     def __init__(
         self,
@@ -122,10 +131,6 @@ class TextEntryModal(_ModalBase):
             with Horizontal(classes="modal-buttons"):
                 yield Button("Cancel", id="entry-cancel")
                 yield Button(self._confirm_label, variant="primary", id="entry-confirm")
-
-    def on_mount(self) -> None:
-        """Focus the input so typing works immediately."""
-        self.query_one("#entry-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Confirm on Enter."""
@@ -214,6 +219,8 @@ class MarkCompletedModal(_ModalBase):
     exactly matching remaining entry is removed. The Task itself is never completed.
     """
 
+    AUTO_FOCUS = "#entry-input"
+
     def __init__(self, remaining: tuple[str, ...]) -> None:
         super().__init__()
         self._remaining = remaining
@@ -232,8 +239,12 @@ class MarkCompletedModal(_ModalBase):
             )
             if self._remaining:
                 yield Static(Text("Remaining items"), classes="field-label")
-                option_list: OptionList = OptionList(id="completed-options")
-                yield option_list
+                # Built with its options rather than filled in `on_mount`, so the list is
+                # complete the moment it exists.
+                yield OptionList(
+                    *[Option(item, id=str(index)) for index, item in enumerate(self._remaining)],
+                    id="completed-options",
+                )
             yield Static(Text("Item to mark completed"), classes="field-label")
             yield Input(
                 value=self._remaining[0] if self._remaining else "",
@@ -245,15 +256,6 @@ class MarkCompletedModal(_ModalBase):
             with Horizontal(classes="modal-buttons"):
                 yield Button("Cancel", id="entry-cancel")
                 yield Button("Mark completed", variant="primary", id="entry-confirm")
-
-    def on_mount(self) -> None:
-        """Populate the remaining-item picker and focus the input."""
-        if self._remaining:
-            options = self.query_one("#completed-options", OptionList)
-            options.add_options(
-                [Option(item, id=str(index)) for index, item in enumerate(self._remaining)]
-            )
-        self.query_one("#entry-input", Input).focus()
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         """Mirror the highlighted remaining item into the editable input."""
@@ -292,6 +294,8 @@ class MarkCompletedModal(_ModalBase):
 
 class CheckpointModal(_ModalBase):
     """Capture a cooperative MANUAL checkpoint."""
+
+    AUTO_FOCUS = "#checkpoint-decision"
 
     def compose(self) -> ComposeResult:
         """Build the checkpoint dialog."""
@@ -335,10 +339,6 @@ class CheckpointModal(_ModalBase):
                 yield Button("Cancel", id="checkpoint-cancel")
                 yield Button("Create checkpoint", variant="primary", id="checkpoint-confirm")
 
-    def on_mount(self) -> None:
-        """Focus the first field."""
-        self.query_one("#checkpoint-decision", Input).focus()
-
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Confirm on Enter from any field."""
         event.stop()
@@ -368,6 +368,8 @@ class CheckpointModal(_ModalBase):
 class ConfirmModal(_ModalBase):
     """A generic confirmation dialog rendering a prepared summary."""
 
+    AUTO_FOCUS = "#confirm-cancel"
+
     def __init__(
         self,
         title: str,
@@ -396,10 +398,6 @@ class ConfirmModal(_ModalBase):
                     id="confirm-ok",
                 )
 
-    def on_mount(self) -> None:
-        """Focus cancel first so confirmation is always deliberate."""
-        self.query_one("#confirm-cancel", Button).focus()
-
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Return the operator's decision."""
         event.stop()
@@ -408,6 +406,8 @@ class ConfirmModal(_ModalBase):
 
 class InfoModal(_ModalBase):
     """A read-only panel for bounded previews and error detail."""
+
+    AUTO_FOCUS = "#info-close"
 
     BINDINGS = [
         Binding("escape", "cancel", "Close", show=True),
@@ -428,10 +428,6 @@ class InfoModal(_ModalBase):
             with Horizontal(classes="modal-buttons"):
                 yield Button("Close", variant="primary", id="info-close")
 
-    def on_mount(self) -> None:
-        """Focus the close button."""
-        self.query_one("#info-close", Button).focus()
-
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Close the panel."""
         event.stop()
@@ -444,6 +440,8 @@ class ProviderActionModal(_ModalBase):
     Only actions that are currently valid can be selected. Invalid ones remain visible
     but disabled with the reason stated, so the operator learns why.
     """
+
+    AUTO_FOCUS = "#provider-actions"
 
     def __init__(self, options: tuple[ProviderActionOption, ...]) -> None:
         super().__init__()
@@ -461,20 +459,22 @@ class ProviderActionModal(_ModalBase):
                 ),
                 classes="modal-help",
             )
-            yield OptionList(id="provider-actions")
+            # Built with its options rather than filled in `on_mount`, so the palette
+            # is complete the moment it exists.
+            yield OptionList(*self._option_rows(), id="provider-actions")
             with Horizontal(classes="modal-buttons"):
                 yield Button("Cancel", id="provider-cancel")
 
-    def on_mount(self) -> None:
-        """Populate and focus the action list."""
-        options = self.query_one("#provider-actions", OptionList)
+    def _option_rows(self) -> list[Option]:
+        """Render each provider action, stating why a disabled one is unavailable."""
+        rows: list[Option] = []
         for index, option in enumerate(self._options):
             prompt = Text()
             prompt.append(option.label, style="bold" if option.enabled else "dim")
             detail = option.detail if option.enabled else (option.disabled_reason or "unavailable")
             prompt.append(f"\n    {detail}", style="dim")
-            options.add_option(Option(prompt, id=str(index), disabled=not option.enabled))
-        options.focus()
+            rows.append(Option(prompt, id=str(index), disabled=not option.enabled))
+        return rows
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         """Return the chosen provider action."""

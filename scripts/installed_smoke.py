@@ -40,6 +40,27 @@ SENTINELS = [
 ]
 
 
+def is_same_directory(left: Path | str, right: Path | str) -> bool:
+    """Whether two paths name the same directory on disk.
+
+    One directory can have several spellings, and Windows has the most of them: an 8.3
+    short component such as `RUNNER~1` for `runneradmin`, a different case, a junction.
+    CortexShift hands a provider the *resolved* project root, while this driver knows its
+    workspace by whatever spelling it was launched with -- on a GitHub Windows runner the
+    temporary directory arrives short and the resolved root comes back long, so comparing
+    `Path` objects compares spelling and fails on two names for one place.
+
+    The contract is location, so ask the filesystem. `os.path.samefile` compares device
+    and inode identity and is supported on Windows. The fallback only matters if a path
+    stopped existing between the launch and the check, which would itself be a failure
+    worth seeing rather than a crash inside the comparison.
+    """
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right))
+
+
 def cli(*args: str, env: dict[str, str] | None = None, success: bool = True) -> str:
     result = subprocess.run(
         [str(CLI), *args], cwd=ROOT, env=env, capture_output=True, text=True, timeout=30
@@ -69,7 +90,7 @@ async def mcp_check(env: dict[str, str], writable: bool) -> None:
 
 class FakeInteractive(InteractiveProcessRunner):
     def run_interactive(self, argv, cwd, env=None):
-        assert argv and Path(cwd) == ROOT
+        assert argv and is_same_directory(cwd, ROOT)
         assert env and env["CORTEXSHIFT_MCP_READ_ONLY"] == "0"
         assert SENTINELS[2] == os.environ["RELEASE_FAKE_CREDENTIAL"]
         asyncio.run(mcp_check(env, True))
@@ -78,7 +99,7 @@ class FakeInteractive(InteractiveProcessRunner):
 
 class FakeBootstrap(HeadlessProviderRunner):
     def run_headless(self, argv, cwd, timeout=30.0, env=None):
-        assert Path(cwd) == ROOT and timeout > 0
+        assert is_same_directory(cwd, ROOT) and timeout > 0
         assert "--json" in argv
         assert env and env["CORTEXSHIFT_MCP_READ_ONLY"] == "1"
         return HeadlessResult(

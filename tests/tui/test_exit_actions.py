@@ -32,7 +32,7 @@ def _active_task_id(root: Path) -> str:
 async def open_provider_palette(app: CortexShiftApp, pilot: TuiPilot) -> ProviderActionModal:
     """Open the provider action palette and return it."""
     await pilot.press("x")
-    return await wait_for_screen(app, pilot, ProviderActionModal)
+    return await wait_for_screen(app, pilot, ProviderActionModal, selector="#provider-actions")
 
 
 def highlight(modal: ProviderActionModal, action: TuiExitAction, provider: str) -> None:

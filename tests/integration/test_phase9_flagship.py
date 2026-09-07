@@ -231,7 +231,7 @@ async def test_phase9_flagship_control_center_workflow(tmp_path: Path) -> None:
         await pilot.pause()
         await pilot.press("enter")
 
-        confirm = await wait_for_screen(app, pilot, ConfirmModal)
+        confirm = await wait_for_screen(app, pilot, ConfirmModal, selector="#confirm-body")
         preview = str(confirm.query_one("#confirm-body", Static).content)
         assert "Codex" in preview
         assert "resume_existing" in preview
