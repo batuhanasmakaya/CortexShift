@@ -10,6 +10,8 @@ gone: nothing here requires the outgoing provider to be installed, running, or a
 answer a question.
 """
 
+from collections.abc import Iterable
+
 from cortexshift.domain.checkpoint import CheckpointRecord
 from cortexshift.domain.git import RepositoryInspection, RepositoryInspectionStatus
 from cortexshift.domain.handoff import (
@@ -26,8 +28,9 @@ from cortexshift.domain.provider import ProviderId
 from cortexshift.domain.session import Session
 from cortexshift.domain.task import Task
 
-# CortexShift has no durable, verified record of these yet. Phase 5 encodes the absence
-# honestly rather than inferring facts it cannot support.
+# Emitted only when the task's entire checkpoint history holds no structured decision.
+# CortexShift encodes a genuine absence honestly rather than inferring facts it cannot
+# support — and, equally, never claims absence over decisions it actually holds.
 UNKNOWN_DECISIONS_STATEMENT = "No structured decisions are recorded in CortexShift state."
 UNKNOWN_TEST_STATUS_STATEMENT = (
     "No verified test result is recorded in CortexShift state. "
@@ -56,6 +59,44 @@ _GIT_NOTES: dict[RepositoryInspectionStatus, str] = {
     RepositoryInspectionStatus.NOT_GIT_REPOSITORY: _GIT_NOTE_NOT_REPOSITORY,
     RepositoryInspectionStatus.PROBE_ERROR: _GIT_NOTE_PROBE_ERROR,
 }
+
+
+def aggregate_task_decisions(
+    checkpoints: Iterable[CheckpointRecord],
+    task_id: str,
+) -> list[str]:
+    """Aggregate the structured decisions recorded across one task's checkpoint history.
+
+    A checkpoint is an immutable point-in-time observation and is never rewritten, so a
+    decision recorded by `record_decision` lives only in the checkpoint that minted it.
+    Task-level durability is therefore reconstructed here, at handoff time, by reading the
+    task's checkpoint history instead of only its newest checkpoint.
+
+    Semantics:
+    - **Chronological first-seen order.** Callers supply checkpoints oldest first; the
+      resulting order follows the order in which each decision first entered state.
+    - **Exact-equality de-duplication.** A decision string repeated across checkpoints is
+      emitted once, at its first occurrence. Text is never normalised, trimmed for
+      comparison, or fuzzy-matched — two decisions differing by a single character stay
+      distinct.
+    - **Task isolation.** Records whose `task_id` does not match are dropped, so a store
+      query that ever widened its scope still could not leak another task's decisions.
+
+    This function is pure: it performs no I/O and mutates nothing it is given.
+    """
+    aggregated: list[str] = []
+    seen: set[str] = set()
+    for record in checkpoints:
+        if record.task_id != task_id:
+            continue
+        for decision in record.payload.decisions:
+            if not decision.strip():
+                continue
+            if decision in seen:
+                continue
+            seen.add(decision)
+            aggregated.append(decision)
+    return aggregated
 
 
 def derive_files_touched(inspection: RepositoryInspection) -> list[str]:
@@ -161,11 +202,23 @@ class HandoffBuilder:
         snapshot_id: str | None = None,
         operator_note: str | None = None,
         latest_checkpoint: CheckpointRecord | None = None,
+        task_decisions: list[str] | None = None,
     ) -> HandoffPayload:
-        """Build the canonical handoff payload for a task moving to another provider."""
+        """Build the canonical handoff payload for a task moving to another provider.
+
+        `task_decisions` carries the decisions aggregated across the task's whole
+        checkpoint history (see `aggregate_task_decisions`) and is authoritative when
+        supplied — including when it is empty, which asserts that the task genuinely has
+        no recorded decision. `latest_checkpoint` remains the provenance reference for the
+        snapshot and reported test status; it is used as the decision source only when no
+        aggregate was supplied at all.
+        """
         important_decisions: list[str] = []
         decisions_known: bool = False
-        if latest_checkpoint is not None and latest_checkpoint.payload.decisions:
+        if task_decisions is not None:
+            important_decisions = list(task_decisions)
+            decisions_known = bool(important_decisions)
+        elif latest_checkpoint is not None and latest_checkpoint.payload.decisions:
             important_decisions = list(latest_checkpoint.payload.decisions)
             decisions_known = True
 

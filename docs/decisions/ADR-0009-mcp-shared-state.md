@@ -41,7 +41,7 @@ All of this must occur without violating CortexShift's architectural invariants:
     - `mark_completed`: Atomically moves specified items from `remaining_items` to `completed_items`. Does NOT mark the overall task completed.
     - `add_remaining`: Appends newly discovered work items to `Task.remaining_items`.
     - `record_issue`: Records known blockers or issues into `Task.known_issues`.
-    - `record_decision`: Persists an architectural decision backed by an automatic checkpoint (`trigger="decision"`).
+    - `record_decision`: Persists an architectural decision backed by an automatic immutable checkpoint carrying `trigger="decision"` in the record's and payload's existing `metadata` mapping. The marker is provenance only. Because checkpoints are never rewritten, the decision is kept durable for handoffs by `HandoffBuilder` aggregating decisions across the task's whole checkpoint history — reading every checkpoint's `decisions` regardless of trigger, and never parsing `operator_note`.
     - `create_checkpoint`: Creates a cooperative milestone checkpoint with explicit `reported` test provenance.
 - **Exposed JSON Resources**:
   - `cortexshift://project`: Canonical project context (`application/json`).

@@ -6,6 +6,7 @@ import pytest
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLease, FileWorkspaceLeaseManager
+from cortexshift.application.handoff_builder import aggregate_task_decisions
 from cortexshift.domain.errors import WorkspaceLockedError
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE
@@ -95,4 +96,12 @@ def test_mcp_mutations_succeed_while_workspace_lease_held(tmp_path: Path) -> Non
     latest_cp = verify_store.get_latest_checkpoint(task.id)
     assert latest_cp is not None
     assert "Second decision" in latest_cp.payload.decisions
+    # The newest checkpoint stays a literal point-in-time record and does not absorb the
+    # separately recorded decision; both survive via task-scoped aggregation.
+    assert "Lock bypass invariant verified" not in latest_cp.payload.decisions
+    history = verify_store.list_task_checkpoint_history(task.id)
+    assert aggregate_task_decisions(history, task.id) == [
+        "Lock bypass invariant verified",
+        "Second decision",
+    ]
     verify_store.close()

@@ -478,6 +478,7 @@ Operator / Agent invokes: cortexshift recover
 Next Agent Switch: cortexshift switch <target>
   │
   ├─► Ingests latest checkpoint (RECOVERY, MANUAL, or SESSION_END)
+  ├─► Aggregates decisions across the task's whole checkpoint history
   ├─► Enriches handoff with decisions & reported test status (provenance disclaimer)
   └─► Delivers enriched handoff package to incoming provider
 ```
@@ -487,7 +488,7 @@ Checkpoints are stored as immutable `CheckpointRecord` records wrapping a struct
 - **`task`**: Snapshot of canonical task metadata, objective, status, and completion state.
 - **`git`**: Observed live commit SHA, branch, detached HEAD, dirty flag, modified files, diff summaries.
 - **`source_session`**: Details of the session that generated the checkpoint.
-- **`decisions`**: Bounded engineering decisions (`MAX_DECISION_CHARS = 1000`).
+- **`decisions`**: Bounded engineering decisions (`MAX_DECISION_CHARS = 1000`). Literal to this checkpoint: a checkpoint never absorbs an earlier one's decisions, and handoffs recover task-level durability by aggregating across the task's checkpoint history instead.
 - **`test_status`**: Reported test execution outcome with explicit `reported_unverified` provenance.
 - **`operator_note`**: Contextual human or agent note (`MAX_OPERATOR_NOTE_CHARS = 2000`).
 

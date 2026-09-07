@@ -36,3 +36,10 @@ class CheckpointStore(Protocol):
     ) -> CheckpointRecord | None:
         """Retrieve the newest checkpoint record for a given task."""
         ...
+
+    def list_task_checkpoint_history(
+        self,
+        task_id: str,
+    ) -> list[CheckpointRecord]:
+        """List every checkpoint for one task, oldest first, with deterministic ordering."""
+        ...

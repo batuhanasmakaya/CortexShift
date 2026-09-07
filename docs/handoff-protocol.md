@@ -109,7 +109,7 @@ The point-in-time engineering context. Provider-neutral, immutable, never trunca
 | **COMPLETED** | `completed` | list[str] | Recorded as completed in canonical state — advisory, must be verified. |
 | **CURRENT WORK** | `current_work` | str \| None | In-flight work when the previous session halted. |
 | **REMAINING** | `remaining` | list[str] | Unfinished backlog. |
-| **IMPORTANT DECISIONS** | `important_decisions`, `decisions_known` | list[str], bool | Populated from newest checkpoint if available; otherwise empty with `decisions_known = False` (see §6). |
+| **IMPORTANT DECISIONS** | `important_decisions`, `decisions_known` | list[str], bool | Aggregated across every checkpoint persisted for the task; empty with `decisions_known = False` only when that whole history holds none (see §6). |
 | **FILES TOUCHED** | `files_touched` | list[str] | Deduplicated union of live Git change classes (see §8). |
 | **TEST STATUS** | `test_status` | `HandoffTestStatus` | `known` + `summary`; enriched from newest checkpoint with reported provenance disclaimer (see §6). |
 | **KNOWN ISSUES** | `known_issues` | list[str] | Recorded bugs, blockers, failing edge cases. |
@@ -182,7 +182,11 @@ A provider process exiting with code 0 does **not** prove that project tests pas
 ### Checkpoint-Enriched Decisions & Test Status (Phase 7)
 
 When an immutable checkpoint (`MANUAL`, `SESSION_END`, or `RECOVERY`) exists for the task, `HandoffBuilder` enriches the handoff payload:
-- **`important_decisions`**: Ingested from the checkpoint's recorded decisions, providing historical context without parsing conversation transcripts.
+- **`important_decisions`**: Aggregated across **all** checkpoints persisted for the task, providing historical context without parsing conversation transcripts. Decisions are *not* read from the newest checkpoint alone. A checkpoint is an immutable point-in-time observation and never absorbs an earlier checkpoint's decisions, so `record_decision` mints its own checkpoint and task-level durability is reconstructed at handoff time instead. Without this, any later checkpoint recorded with no decisions of its own — including the `SESSION_END` checkpoint captured automatically when a provider process exits — would bury every decision recorded during that session.
+  - **Ordering**: chronological first-seen order, from `created_at ASC, rowid ASC` over the task's checkpoints. The `rowid` tie-breaker keeps the sequence deterministic when two checkpoints share a timestamp.
+  - **De-duplication**: exact string equality only. A decision recorded redundantly in several checkpoints appears once, at its first occurrence; text is never trimmed, case-folded, or fuzzy-matched for comparison.
+  - **Task scope**: the aggregation query takes a mandatory `task_id` and is additionally filtered in application code, so a handoff for one task can never surface another task's decisions.
+  - **Provenance**: `record_decision` marks its checkpoint with `trigger = "decision"` in the existing `metadata` mapping (ADR-0009). That marker is provenance only — aggregation reads every checkpoint's `decisions`, whatever produced them, and never parses `operator_note`.
 - **`test_status`**: If the checkpoint recorded a test summary, it is included with an explicit **`[Reported / Unverified Provenance]`** notice:
   ```text
   TEST STATUS
@@ -190,7 +194,7 @@ When an immutable checkpoint (`MANUAL`, `SESSION_END`, or `RECOVERY`) exists for
   42 passed in 1.2s
   The receiving agent must independently verify test status before relying on previous claims.
   ```
-- **Provenance Header**: The rendered handoff package includes a `LATEST CHECKPOINT (Provenance Reference)` section linking the checkpoint ID, kind, and creation timestamp.
+- **Provenance Header**: The rendered handoff package includes a `LATEST CHECKPOINT (Provenance Reference)` section linking the checkpoint ID, kind, and creation timestamp. `source_checkpoint_id` continues to reference the newest checkpoint — the source of the Git and test-status enrichment — while `important_decisions` may draw on several checkpoints across the task's history.
 
 **Completed / Do Not Redo semantics.** Recorded completed items are advisory. The package states that they are *recorded as completed in CortexShift canonical state* and that the receiving agent must verify them against the repository before depending on them. `DO NOT REDO` tells the agent not to rebuild that work from scratch — and explicitly not to skip verification. If verification shows an item is missing or wrong, the agent repairs it rather than restarting the task.
 
