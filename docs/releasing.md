@@ -142,12 +142,12 @@ production support from CI alone.
 ### Latest verified automated validation
 
 Recorded before merge of the managed-MCP/decision-durability fix branch: 863
-pytest tests passed, including 72 managed-MCP regression tests; `ruff check`,
-`ruff format`, and strict `mypy` passed; `scripts/release_check.py` passed; the
-rebuilt artifact smoke passed; and `scripts/security_audit.py` reported 0
-findings. That branch then passed all required cross-platform GitHub CI checks
-and merged to `main` as PR #1. Re-run this gate on the exact release commit;
-an earlier run is evidence about that earlier tree, not about a later one.
+pytest tests passed, with dedicated managed-MCP regression coverage passing;
+`ruff check`, `ruff format`, and strict `mypy` passed; `scripts/release_check.py`
+passed; the rebuilt artifact smoke passed; and `scripts/security_audit.py`
+reported 0 findings. That branch then passed all required cross-platform GitHub
+CI checks and merged to `main` as PR #1. Re-run this gate on the exact release
+commit; an earlier run is evidence about that earlier tree, not about a later one.
 
 ## Compatibility and corrections
 
