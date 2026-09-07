@@ -1,12 +1,12 @@
 """Integration tests for process restarts, subdirectory discovery, and project isolation."""
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 from cortexshift.adapters.sqlite.migrations import CURRENT_SCHEMA_VERSION
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
+from tests.cli_runner import run_cli, run_cli_ok
 
 
 def test_process_restart_persistence(tmp_path: Path) -> None:
@@ -15,16 +15,13 @@ def test_process_restart_persistence(tmp_path: Path) -> None:
     project_dir.mkdir()
 
     # Process 1: Initialize project
-    init_res = subprocess.run(
+    init_res = run_cli(
         [sys.executable, "-m", "cortexshift", "init", str(project_dir), "--name", "RestartTest"],
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert init_res.returncode == 0
 
     # Process 2: Start a task
-    start_res = subprocess.run(
+    start_res = run_cli(
         [
             sys.executable,
             "-m",
@@ -37,14 +34,11 @@ def test_process_restart_persistence(tmp_path: Path) -> None:
             "Verify durability across processes",
         ],
         cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert start_res.returncode == 0
 
     # Process 3: Update task progress
-    upd_res = subprocess.run(
+    upd_res = run_cli(
         [
             sys.executable,
             "-m",
@@ -61,19 +55,13 @@ def test_process_restart_persistence(tmp_path: Path) -> None:
             "Issue 1",
         ],
         cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert upd_res.returncode == 0
 
     # Process 4: Fresh process reads status via --json
-    status_res = subprocess.run(
+    status_res = run_cli(
         [sys.executable, "-m", "cortexshift", "status", "--json"],
         cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert status_res.returncode == 0
     status_data = json.loads(status_res.stdout)
@@ -89,12 +77,9 @@ def test_process_restart_persistence(tmp_path: Path) -> None:
     assert status_data["active_task"]["progress"]["issues"] == 1
 
     # Process 5: Fresh process reads task show via --json
-    show_res = subprocess.run(
+    show_res = run_cli(
         [sys.executable, "-m", "cortexshift", "task", "show", "--json"],
         cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert show_res.returncode == 0
     show_data = json.loads(show_res.stdout)
@@ -110,21 +95,15 @@ def test_subdirectory_discovery_regression(tmp_path: Path) -> None:
     project_dir.mkdir()
 
     # Initialize at root
-    init_res = subprocess.run(
+    init_res = run_cli(
         [sys.executable, "-m", "cortexshift", "init", str(project_dir), "--name", "DeepProject"],
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert init_res.returncode == 0
 
     # Create a task at root
-    subprocess.run(
+    run_cli_ok(
         [sys.executable, "-m", "cortexshift", "task", "start", "-t", "Subdir Task", "-o", "Obj"],
         cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=True,
     )
 
     # Make deep nested directories
@@ -132,12 +111,9 @@ def test_subdirectory_discovery_regression(tmp_path: Path) -> None:
     deep_child.mkdir(parents=True)
 
     # Query status from deep child
-    status_res = subprocess.run(
+    status_res = run_cli(
         [sys.executable, "-m", "cortexshift", "status", "--json"],
         cwd=deep_child,
-        capture_output=True,
-        text=True,
-        check=False,
     )
     assert status_res.returncode == 0
     data = json.loads(status_res.stdout)
@@ -153,17 +129,15 @@ def test_project_state_isolation(tmp_path: Path) -> None:
     proj_b.mkdir()
 
     # Initialize both
-    subprocess.run(
+    run_cli_ok(
         [sys.executable, "-m", "cortexshift", "init", str(proj_a), "--name", "ProjA"],
-        check=True,
     )
-    subprocess.run(
+    run_cli_ok(
         [sys.executable, "-m", "cortexshift", "init", str(proj_b), "--name", "ProjB"],
-        check=True,
     )
 
     # Start task in A
-    subprocess.run(
+    run_cli_ok(
         [
             sys.executable,
             "-m",
@@ -176,11 +150,10 @@ def test_project_state_isolation(tmp_path: Path) -> None:
             "Obj A",
         ],
         cwd=proj_a,
-        check=True,
     )
 
     # Start task in B
-    subprocess.run(
+    run_cli_ok(
         [
             sys.executable,
             "-m",
@@ -193,28 +166,21 @@ def test_project_state_isolation(tmp_path: Path) -> None:
             "Obj B",
         ],
         cwd=proj_b,
-        check=True,
     )
 
     # Check list in A
-    list_a_res = subprocess.run(
+    list_a_res = run_cli_ok(
         [sys.executable, "-m", "cortexshift", "task", "list", "--json"],
         cwd=proj_a,
-        capture_output=True,
-        text=True,
-        check=True,
     )
     tasks_a = json.loads(list_a_res.stdout)
     assert len(tasks_a) == 1
     assert tasks_a[0]["title"] == "Task Only In A"
 
     # Check list in B
-    list_b_res = subprocess.run(
+    list_b_res = run_cli_ok(
         [sys.executable, "-m", "cortexshift", "task", "list", "--json"],
         cwd=proj_b,
-        capture_output=True,
-        text=True,
-        check=True,
     )
     tasks_b = json.loads(list_b_res.stdout)
     assert len(tasks_b) == 1
@@ -284,15 +250,12 @@ def test_canonical_context_restart_persistence_integration(tmp_path: Path) -> No
     project_dir.mkdir()
 
     # Step 1: Initialize
-    subprocess.run(
+    run_cli_ok(
         [sys.executable, "-m", "cortexshift", "init", str(project_dir), "--name", "CanonicalProj"],
-        capture_output=True,
-        text=True,
-        check=True,
     )
 
     # Step 2-4: Create task with objective, requirements, constraints via CLI
-    subprocess.run(
+    run_cli_ok(
         [
             sys.executable,
             "-m",
@@ -313,18 +276,12 @@ def test_canonical_context_restart_persistence_integration(tmp_path: Path) -> No
             "Constraint B",
         ],
         cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=True,
     )
 
     # Step 5-8: Fresh process queries task show --json
-    show_res = subprocess.run(
+    show_res = run_cli_ok(
         [sys.executable, "-m", "cortexshift", "task", "show", "--json"],
         cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=True,
     )
     task_data = json.loads(show_res.stdout)
     assert task_data["title"] == "Canonical Context Test"
@@ -335,7 +292,7 @@ def test_canonical_context_restart_persistence_integration(tmp_path: Path) -> No
     assert task_data["status"] == "in_progress"
 
     # Step 9: Update progress via separate process
-    subprocess.run(
+    run_cli_ok(
         [
             sys.executable,
             "-m",
@@ -352,18 +309,12 @@ def test_canonical_context_restart_persistence_integration(tmp_path: Path) -> No
             "Known issue 1",
         ],
         cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=True,
     )
 
     # Re-query in another fresh process
-    show2_res = subprocess.run(
+    show2_res = run_cli_ok(
         [sys.executable, "-m", "cortexshift", "task", "show", "--json"],
         cwd=project_dir,
-        capture_output=True,
-        text=True,
-        check=True,
     )
     task_data2 = json.loads(show2_res.stdout)
     assert task_data2["objective"] == "Preserve this exact objective"

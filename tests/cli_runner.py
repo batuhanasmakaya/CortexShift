@@ -27,10 +27,12 @@ which a narrow terminal genuinely truncates.
 """
 
 import importlib
+import locale
 import os
 import re
 import shutil
 import subprocess
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
@@ -114,22 +116,83 @@ def unwrapped(text: str) -> str:
     return " ".join(text.split())
 
 
-def run_cli(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    """Run the CLI as a real process, with ANSI escapes stripped from its output.
+def child_stream_encoding(env: Mapping[str, str] | None = None) -> str:
+    """The encoding a child process will write its output in.
 
-    The subprocess inherits the ambient environment, so on GitHub Actions its help
-    output is styled exactly as it is for a user with a terminal.
-
-    A failing command is reported through ``returncode`` rather than an exception, so
-    that its (normalized) output is available to the assertion that reads it.
+    A Python child honours `PYTHONIOENCODING` when it is set and otherwise takes the
+    platform default -- exactly what any other program reading that output would assume.
     """
-    result = subprocess.run(args, capture_output=True, text=True, check=False, **kwargs)
+    # An explicitly empty mapping means "this child inherits nothing", which is not the
+    # same as passing no mapping at all -- `env or os.environ` would conflate the two.
+    source = os.environ if env is None else env
+    configured = source.get("PYTHONIOENCODING")
+    if configured:
+        return configured.split(":", 1)[0] or locale.getpreferredencoding(False)
+    return locale.getpreferredencoding(False)
+
+
+def run_cli(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run the CLI as a real process and return its captured output as text.
+
+    Both streams are always captured and always `str`; an empty string means the command
+    wrote nothing, never that the harness lost it. That distinction is the point of doing
+    the decoding here rather than through ``text=True``.
+
+    ``text=True`` hands decoding to `subprocess`, which on Windows does it on a reader
+    thread whose `UnicodeDecodeError` is swallowed: the thread dies, the stream comes
+    back as `None`, and the first thing to touch it fails somewhere far away with
+    "expected string or bytes-like object, got 'NoneType'". Reading bytes and decoding
+    them here keeps a mis-encoded byte a visible detail of the output instead of a lost
+    stream and a misleading traceback.
+
+    The decode uses the encoding the child was told to write in, so mojibake still shows
+    up as broken content and breaks the assertion that reads it. `errors="replace"` keeps
+    a stray byte from hiding the rest of the output; a test that needs to prove the CLI
+    emits *strictly* valid bytes should read them itself rather than through this helper.
+
+    A failing command is reported through ``returncode`` rather than an exception, so its
+    (normalized) output is available to the assertion that reads it.
+    """
+    if "stderr" in kwargs or "stdout" in kwargs or "capture_output" in kwargs:
+        raise TypeError(
+            "run_cli captures both streams itself; a caller that needs a different "
+            "stream policy (merging stderr into stdout, say) should call subprocess "
+            "directly rather than weaken this helper's contract."
+        )
+
+    result = subprocess.run(args, capture_output=True, check=False, **kwargs)
+    encoding = child_stream_encoding(kwargs.get("env"))
+
+    def decoded(stream: bytes) -> str:
+        return strip_ansi(stream.decode(encoding, errors="replace"))
+
+    # `capture_output=True` without `text` always yields bytes for both streams; assert
+    # it rather than trusting it, so a future change cannot quietly reintroduce `None`.
+    assert result.stdout is not None and result.stderr is not None, (
+        f"subprocess did not capture both streams: {result!r}"
+    )
     return subprocess.CompletedProcess(
         args=result.args,
         returncode=result.returncode,
-        stdout=strip_ansi(result.stdout),
-        stderr=strip_ansi(result.stderr),
+        stdout=decoded(result.stdout),
+        stderr=decoded(result.stderr),
     )
+
+
+def run_cli_ok(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    """Run the CLI and require it to succeed, showing its own diagnostics if it does not.
+
+    The `check=True` equivalent for this helper. `subprocess`'s version raises a
+    `CalledProcessError` whose message says only that the exit code was non-zero, leaving
+    the part that explains why -- the command's stderr -- to be dug out of the exception.
+    Asserting here puts it straight in the failure.
+    """
+    result = run_cli(args, **kwargs)
+    assert result.returncode == 0, (
+        f"{' '.join(str(argument) for argument in args)} exited {result.returncode}\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    return result
 
 
 class AnsiFreeCliRunner(CliRunner):

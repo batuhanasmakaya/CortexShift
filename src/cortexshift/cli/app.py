@@ -98,9 +98,15 @@ def _ensure_output_can_encode_reports() -> None:
     command died with a traceback and exit code 1 -- `cortexshift doctor > report.txt`
     was simply broken there, while the same command on a UTF-8 terminal was fine.
 
-    Only streams that genuinely cannot carry the report are switched, so a console that
-    already encodes it keeps its own encoding. `backslashreplace` means a stream that
-    still cannot represent something degrades that character instead of the command.
+    The stream keeps its own encoding. Switching it to UTF-8 would stop the crash but
+    emit bytes the environment did not ask for: whoever reads the output -- a file, a
+    pipe, another program calling us with the platform decoder -- would then hit a
+    *decode* error instead, which is the same bug wearing the other shoe. Only the error
+    policy changes, so every byte written stays valid in the declared encoding and a
+    character that genuinely cannot be represented degrades instead of the command.
+
+    Rich already drops to ASCII box drawing when it sees a narrow encoding, so what a
+    legacy console gets is a readable report, not a wall of escapes.
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -109,7 +115,7 @@ def _ensure_output_can_encode_reports() -> None:
         try:
             _REPORT_GLYPHS.encode(getattr(stream, "encoding", None) or "ascii")
         except (LookupError, UnicodeEncodeError):
-            reconfigure(encoding="utf-8", errors="backslashreplace")
+            reconfigure(errors="backslashreplace")
 
 
 _ensure_output_can_encode_reports()
