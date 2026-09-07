@@ -18,9 +18,10 @@ running local checks. A maintainer must explicitly authorize external publicatio
   configuration, not something the workflow files can assert.
 - Done: GitHub private vulnerability reporting is enabled, and `SECURITY.md`
   directs reporters to the Security Advisory intake instead of public issues.
-  Secret scanning alerts are enabled. Dependabot alerts are **not** claimed
-  enabled: no current repository evidence proves that setting, so treat it as an
-  open manual repository check rather than completed setup.
+  Secret scanning alerts are enabled. The dependency graph, Dependabot alerts,
+  and Dependabot security updates are enabled, confirmed manually in repository
+  settings. These are repository configuration, so this checkout cannot assert
+  them; re-verify in settings if the repository is moved or recreated.
 - Done: a PyPI Trusted Publishing pending publisher is configured for project
   `cortexshift` with owner/repository `batuhanasmakaya/CortexShift`, workflow
   filename `release.yml`, and environment `pypi`. No long-lived PyPI API token is
@@ -28,9 +29,9 @@ running local checks. A maintainer must explicitly authorize external publicatio
 - Done: the GitHub `pypi` environment exists and allows `v*` release tags.
   Revisit required reviewers before the first release; these settings are not
   created by YAML.
-- Manual account check: PyPI account MFA. Repository evidence cannot prove the
-  account's MFA state, so verify it in PyPI account settings rather than assuming
-  it; do not record it as complete here on the basis of this checkout.
+- Done: PyPI account MFA is enabled, confirmed manually in PyPI account settings.
+  Repository evidence cannot prove an account's MFA state, so this rests on that
+  manual account check and not on anything in this checkout.
 - Pending: the first PyPI publication has not happened. The pending publisher
   becomes a normal publisher on the first successful upload, after which the
   rendered Markdown links must be re-verified on the PyPI project page.
