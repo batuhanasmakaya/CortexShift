@@ -170,6 +170,29 @@ def test_machine_readable_output_is_never_styled_in_the_first_place(variable: st
     assert json.loads(result.stdout)["cortexshift_version"]
 
 
+# Imports the test package, its root conftest, and the CLI in that order -- everything
+# that could rewrite the environment on the way in -- then reports what survived and what
+# Rich made of it. `cortexshift.cli` re-exports the Typer object as `app`, so the module
+# that owns the console has to be reached through the import system.
+_CONSOLE_SIZE_PROBE = (
+    "import os, importlib, tests, tests.conftest;"
+    " cli = importlib.import_module('cortexshift.cli.app');"
+    " print(os.environ['COLUMNS'], os.environ['LINES'], cli.console.width,"
+    " cli.console.height)"
+)
+
+
+def _probe_console_size(columns: str, lines: str) -> list[str]:
+    """Return `[COLUMNS, LINES, rich_width, rich_height]` as a fresh process sees them."""
+    result = run_cli(
+        [sys.executable, "-c", _CONSOLE_SIZE_PROBE],
+        cwd=ROOT,
+        env={**os.environ, "COLUMNS": columns, "LINES": lines},
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.split()
+
+
 @pytest.mark.parametrize(("columns", "lines"), [("60", "17"), ("200", "51")])
 def test_importing_the_suite_leaves_the_callers_console_size_alone(
     columns: str, lines: str
@@ -177,26 +200,32 @@ def test_importing_the_suite_leaves_the_callers_console_size_alone(
     """Nothing in test start-up may rewrite the terminal size the caller asked for.
 
     `COLUMNS=60 pytest` has to actually run at 60 columns, or the width-hostile runs
-    verify nothing. A subprocess is the only honest check: it imports the test package,
-    its root conftest, and the CLI in that order, then reports both the environment and
-    the width Rich actually resolved from it.
+    verify nothing. That is the whole requirement here, and it is about the environment
+    alone: what Rich then *does* with those numbers is Rich's business, and differs by
+    platform -- see the test below.
     """
-    # `cortexshift.cli` re-exports the Typer object as `app`, so the module that owns the
-    # console has to be reached through the import system, not the package attribute.
-    probe = (
-        "import os, importlib, tests, tests.conftest;"
-        " cli = importlib.import_module('cortexshift.cli.app');"
-        " print(os.environ['COLUMNS'], os.environ['LINES'], cli.console.width,"
-        " cli.console.height)"
-    )
-    result = run_cli(
-        [sys.executable, "-c", probe],
-        cwd=ROOT,
-        env={**os.environ, "COLUMNS": columns, "LINES": lines},
-    )
+    reported_columns, reported_lines, _width, _height = _probe_console_size(columns, lines)
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == [columns, lines, columns, lines]
+    assert reported_columns == columns
+    assert reported_lines == lines
+
+
+def test_rich_lays_out_inside_the_width_the_caller_asked_for() -> None:
+    """Rich honours `COLUMNS`, but "honours" is not "equals".
+
+    A Windows console reserves a column or two of the width it reports, so `COLUMNS=200`
+    legitimately yields a 198-column canvas there while Unix yields exactly 200. Pinning
+    equality would assert a Rich/OS implementation detail rather than anything about
+    CortexShift, so this asserts the two properties that are true everywhere: the layout
+    fits within the width the caller asked for, and asking for more actually gets more.
+    """
+    _, _, narrow, narrow_height = _probe_console_size("60", "17")
+    _, _, wide, wide_height = _probe_console_size("200", "51")
+
+    assert 0 < int(narrow) <= 60
+    assert 0 < int(wide) <= 200
+    assert int(narrow) < int(wide), "Rich ignored COLUMNS entirely"
+    assert (int(narrow_height), int(wide_height)) == (17, 51)
 
 
 @pytest.mark.parametrize("columns", ["60", "100", "200"])

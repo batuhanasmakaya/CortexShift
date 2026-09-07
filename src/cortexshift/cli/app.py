@@ -85,6 +85,35 @@ from cortexshift.mcp.context import (
 from cortexshift.mcp.server import run_mcp_server
 from cortexshift.tui.coordinator import TuiCoordinator
 
+# The status glyphs the reports below render. Probed rather than assumed, so the check
+# stays true if the vocabulary grows.
+_REPORT_GLYPHS = "✓✗—…│"
+
+
+def _ensure_output_can_encode_reports() -> None:
+    """Keep an un-encodable glyph from taking a whole command down.
+
+    Windows defaults redirected output to the ANSI code page, which has no `✓`. Writing
+    the doctor table into a pipe or a file therefore raised `UnicodeEncodeError` and the
+    command died with a traceback and exit code 1 -- `cortexshift doctor > report.txt`
+    was simply broken there, while the same command on a UTF-8 terminal was fine.
+
+    Only streams that genuinely cannot carry the report are switched, so a console that
+    already encodes it keeps its own encoding. `backslashreplace` means a stream that
+    still cannot represent something degrades that character instead of the command.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # a capture object, or a stream detached from a console
+            continue
+        try:
+            _REPORT_GLYPHS.encode(getattr(stream, "encoding", None) or "ascii")
+        except (LookupError, UnicodeEncodeError):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_ensure_output_can_encode_reports()
+
 console = Console()
 err_console = Console(stderr=True)
 

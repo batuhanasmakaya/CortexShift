@@ -113,7 +113,9 @@ def test_switch_unknown_provider_rejected(switchable_project: Path) -> None:
     """Verify an unknown target names the supported providers."""
     result = runner.invoke(app, ["switch", "bogus", "--dry-run"])
     assert result.exit_code == 1
-    output = result.stderr + result.stdout
+    # Rich wraps the message to the terminal, and a narrow one breaks the provider list
+    # between two names. The full list and its order still have to be there.
+    output = unwrapped(result.stderr + result.stdout)
     assert "Unknown provider 'bogus'" in output
     assert "antigravity, claude, codex" in output
     assert "Traceback" not in output

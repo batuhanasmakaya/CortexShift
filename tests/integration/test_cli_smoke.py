@@ -1,5 +1,6 @@
 """Integration tests verifying end-to-end CLI execution via subprocess."""
 
+import json
 import os
 import sys
 
@@ -54,8 +55,6 @@ def test_python_module_doctor(no_provider_env: dict[str, str]) -> None:
 
 def test_python_module_doctor_json(no_provider_env: dict[str, str]) -> None:
     """Verify `python -m cortexshift doctor --json` outputs parseable JSON."""
-    import json
-
     result = run_cli([sys.executable, "-m", "cortexshift", "doctor", "--json"], env=no_provider_env)
     assert result.returncode == 0
     data = json.loads(result.stdout)
@@ -67,8 +66,6 @@ def test_python_module_doctor_json(no_provider_env: dict[str, str]) -> None:
 
 def test_python_module_doctor_provider_filter(no_provider_env: dict[str, str]) -> None:
     """Verify `python -m cortexshift doctor --provider claude` filters to Claude."""
-    import json
-
     result = run_cli(
         [sys.executable, "-m", "cortexshift", "doctor", "--provider", "claude", "--json"],
         env=no_provider_env,
@@ -89,3 +86,41 @@ def test_python_module_doctor_invalid_provider(no_provider_env: dict[str, str]) 
     )
     assert result.returncode == 2
     assert "Unknown provider" in result.stderr or "Error" in result.stderr
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "ascii"])
+def test_reports_survive_a_console_that_cannot_encode_them(
+    no_provider_env: dict[str, str], encoding: str
+) -> None:
+    """A narrow output encoding must degrade a glyph, not kill the command.
+
+    Windows defaults redirected output to the ANSI code page, which has no `✓`, so
+    `cortexshift doctor > report.txt` died there with `UnicodeEncodeError` and exit 1
+    while the same command on a UTF-8 terminal was fine. `PYTHONIOENCODING` reproduces
+    that console on any OS, so this guards the fix everywhere rather than only where the
+    bug happened to show up.
+    """
+    result = run_cli(
+        [sys.executable, "-m", "cortexshift", "doctor"],
+        env={**no_provider_env, "PYTHONIOENCODING": encoding},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "UnicodeEncodeError" not in result.stderr
+    # The report is still the report: only an un-encodable glyph may be degraded.
+    assert "CortexShift Doctor" in result.stdout
+    assert "Providers" in result.stdout
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "ascii"])
+def test_machine_readable_output_survives_a_narrow_console(
+    no_provider_env: dict[str, str], encoding: str
+) -> None:
+    """`--json` has to stay parseable whatever the console can encode."""
+    result = run_cli(
+        [sys.executable, "-m", "cortexshift", "doctor", "--json"],
+        env={**no_provider_env, "PYTHONIOENCODING": encoding},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert len(json.loads(result.stdout)["providers"]) == 3

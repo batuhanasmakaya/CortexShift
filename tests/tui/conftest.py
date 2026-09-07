@@ -470,17 +470,28 @@ async def wait_for_screen[ScreenT: Screen[Any]](
 ) -> ScreenT:
     """Wait for a screen to be pushed, then assert it and return it.
 
-    A modal built from a service result arrives in two hops: a worker thread computes
-    the result, then the completion callback pushes the screen. Waiting for the screen
-    to be mounted -- rather than for a number of settle rounds and hoping both hops fit
-    inside them -- is what makes the assertion independent of how fast the machine is.
+    A modal built from a service result arrives in three hops: a worker thread computes
+    the result, the completion callback pushes the screen, and only then does Textual
+    compose and mount the screen's own widgets. Waiting for the screen to be mounted --
+    rather than for a number of settle rounds and hoping every hop fits inside them --
+    is what makes the assertion independent of how fast the machine is.
+
+    Being on top is not the same as being ready: `app.screen` becomes the modal at push
+    time, so a test that queried the modal's body immediately raced its `compose`, and on
+    a slow runner lost with `NoMatches`. The wait therefore ends only once the screen is
+    mounted and its content exists.
 
     The assertion is not weakened: the wait ends only when a screen of exactly this type
     is on top, and a failure still reports which screen was actually there.
     """
+
+    def ready() -> bool:
+        screen = app.screen
+        return isinstance(screen, screen_type) and screen.is_mounted and bool(screen.children)
+
     await wait_until(
         pilot,
-        lambda: isinstance(app.screen, screen_type),
+        ready,
         description=f"the {screen_type.__name__} is mounted (saw {type(app.screen).__name__})",
         timeout=timeout,
     )

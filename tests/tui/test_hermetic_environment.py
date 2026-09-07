@@ -28,7 +28,7 @@ from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.status import ProjectStatus
 from cortexshift.tui.actions import TuiExitAction
-from cortexshift.tui.app import CortexShiftApp
+from cortexshift.tui.app import STATE_WORKER_GROUP, CortexShiftApp
 from cortexshift.tui.modals import ConfirmModal, ProviderActionModal
 from tests.cli_runner import PROVIDER_EXECUTABLES, path_without_providers, run_cli
 from tests.tui.conftest import (
@@ -209,19 +209,35 @@ class SupersededOnceStatusService(ProjectStatusService):
 
 
 async def _first_state_worker(app: CortexShiftApp, pilot: TuiPilot) -> Worker[None]:
-    """The state refresh started at mount, captured before a tick can supersede it.
+    """The state refresh started at mount, captured before anything can supersede it.
 
     `WorkerManager` drops workers once they finish, so a test that looks for a cancelled
-    worker afterwards finds nothing -- and between two ticks there may be no state worker
-    at all. Holding the object keeps its outcome observable either way.
+    worker afterwards finds nothing -- and between two refreshes there may be no state
+    worker at all. Holding the object keeps its outcome observable either way.
     """
     await wait_until(
         pilot,
-        lambda: any(w.group == "cortexshift-state" for w in app.workers),
+        lambda: any(w.group == STATE_WORKER_GROUP for w in app.workers),
         description="the dashboard starts a state refresh",
     )
-    worker = next(w for w in app.workers if w.group == "cortexshift-state")
+    worker = next(w for w in app.workers if w.group == STATE_WORKER_GROUP)
     return cast(Worker[None], worker)
+
+
+async def _supersede(app: CortexShiftApp, pilot: TuiPilot, worker: Worker[None]) -> None:
+    """Have the operator ask for a refresh while `worker` is still reading state.
+
+    An explicit refresh is now the only thing that supersedes an in-flight reload -- the
+    timer skips instead, so that a slow machine cannot starve the dashboard. Driving it
+    from the action makes the supersession a fact of the test rather than a race it hopes
+    to win.
+    """
+    app.refresh_state()
+    await wait_until(
+        pilot,
+        lambda: worker.state is WorkerState.CANCELLED,
+        description="the in-flight refresh is superseded by an explicit one",
+    )
 
 
 @pytest.mark.asyncio
@@ -236,11 +252,7 @@ async def test_a_superseded_refresh_does_not_break_the_waits(project: Path) -> N
 
     async with app.run_test() as pilot:
         superseded = await _first_state_worker(app, pilot)
-        await wait_until(
-            pilot,
-            lambda: superseded.state is WorkerState.CANCELLED,
-            description="the first refresh is superseded by a later tick",
-        )
+        await _supersede(app, pilot, superseded)
 
         # Would raise WorkerCancelled if these waits awaited worker *results*.
         await settle(app, pilot)
@@ -267,11 +279,7 @@ async def test_awaiting_a_superseded_worker_is_what_used_to_fail(project: Path) 
 
     async with app.run_test() as pilot:
         superseded = await _first_state_worker(app, pilot)
-        await wait_until(
-            pilot,
-            lambda: superseded.state is WorkerState.CANCELLED,
-            description="the first refresh is superseded by a later tick",
-        )
+        await _supersede(app, pilot, superseded)
 
         # Asking a superseded worker for its result raises; that is the CI failure.
         with pytest.raises(WorkerCancelled):

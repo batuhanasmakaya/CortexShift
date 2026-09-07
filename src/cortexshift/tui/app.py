@@ -29,6 +29,7 @@ from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical
 from textual.widgets import ContentSwitcher, DataTable, Footer, Header, OptionList, Static
 from textual.widgets.option_list import Option
+from textual.worker import WorkerState
 
 from cortexshift.domain.checkpoint import CheckpointRecord
 from cortexshift.domain.errors import CortexShiftError
@@ -73,6 +74,9 @@ from cortexshift.tui.screens.sessions import SessionsSection
 from cortexshift.tui.screens.task import TaskSection
 
 STATE_REFRESH_SECONDS = 2.0
+# The worker group the lightweight state reload runs in. Named so the timer can ask
+# whether a reload is already in flight rather than starting one on top of it.
+STATE_WORKER_GROUP = "cortexshift-state"
 COMPACT_WIDTH = 90
 MINIMUM_WIDTH = 60
 MINIMUM_HEIGHT = 12
@@ -326,15 +330,32 @@ class CortexShiftApp(App[TuiExitRequest | None]):
         Reloads persisted state only. Another agent may be updating the canonical Task
         through MCP while this dashboard is open, and those updates must surface here.
         Git is never inspected on this path.
+
+        A tick that arrives while the previous reload is still running is skipped rather
+        than replacing it. The reload is exclusive, so starting another would cancel the
+        one in flight and the generation guard would drop its result: on a machine where
+        reading state takes longer than the interval, every tick would cancel the reload
+        that was about to finish and the dashboard would silently stop updating. Skipping
+        keeps the timer from starving the very refresh it exists to perform. An operator
+        asking for a refresh still supersedes -- see `action_refresh`.
         """
+        if self._state_refresh_running():
+            return
         self.refresh_state()
+
+    def _state_refresh_running(self) -> bool:
+        """Whether a state reload is in flight right now."""
+        return any(
+            worker.group == STATE_WORKER_GROUP and worker.state is WorkerState.RUNNING
+            for worker in self.workers
+        )
 
     def refresh_state(self) -> None:
         """Reload persisted read models in an exclusive worker."""
         self._state_generation += 1
         self._load_state(self._state_generation)
 
-    @work(exclusive=True, group="cortexshift-state", thread=True, exit_on_error=False)
+    @work(exclusive=True, group=STATE_WORKER_GROUP, thread=True, exit_on_error=False)
     def _load_state(self, generation: int) -> None:
         try:
             snapshot = self.facade.load_state()

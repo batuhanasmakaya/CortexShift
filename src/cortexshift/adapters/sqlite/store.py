@@ -1,4 +1,22 @@
-"""SQLite implementation of the StateStore persistence port."""
+"""SQLite implementation of the StateStore persistence port.
+
+**Ordering contract.** Every listing that means "newest first" orders by its timestamp
+descending and breaks ties on `rowid` descending: *a newer timestamp wins, and when two
+records carry the same timestamp the later-persisted one wins.* Ascending listings state
+the same rule in the other direction.
+
+The tie-break is not cosmetic. `list_sessions` decides which session a handoff is built
+from, which native conversation `resume` reattaches to, and which session a recovery
+checkpoint is bound to; `list_checkpoints` and `list_handoffs` feed the "latest" lookups
+those paths read. Timestamps come from `datetime.now(UTC)`, whose resolution is coarse
+enough on some platforms -- roughly 16 ms on Windows -- that two records written in one
+burst genuinely share an instant. Without a tie-break SQLite is free to return either
+first, so CortexShift could hand off from the wrong session or bind a checkpoint to one.
+
+`rowid` is the right tie-break here: every table in this schema is an ordinary rowid
+table, saves are upserts that keep a row's original `rowid`, so it records the order in
+which records were first persisted -- the chronology the timestamps were reaching for.
+"""
 
 import json
 import sqlite3
@@ -271,7 +289,7 @@ class SQLiteStateStore(
                        status, completed_items, current_work, remaining_items,
                        known_issues, created_at, updated_at, metadata
                 FROM tasks WHERE project_id = ?
-                ORDER BY created_at ASC;
+                ORDER BY created_at ASC, rowid ASC;
                 """,
                 (project_id,),
             )
@@ -412,7 +430,7 @@ class SQLiteStateStore(
                        working_tree_diff_summary, staged_diff_summary,
                        captured_at, metadata
                 FROM git_snapshots WHERE project_id = ?
-                ORDER BY captured_at DESC
+                ORDER BY captured_at DESC, rowid DESC
                 LIMIT ?;
                 """,
                 (project_id, max(1, limit)),
@@ -539,7 +557,7 @@ class SQLiteStateStore(
                 FROM sessions s
                 JOIN tasks t ON s.task_id = t.id
                 {where_clause}
-                ORDER BY s.started_at DESC
+                ORDER BY s.started_at DESC, s.rowid DESC
                 LIMIT ?;
             """
             params.append(-1 if limit is None else max(1, limit))
@@ -713,7 +731,7 @@ class SQLiteStateStore(
                        source_checkpoint_id
                 FROM handoffs
                 {where_clause}
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, rowid DESC
                 LIMIT ?;
             """
             params.append(max(1, limit))
@@ -840,7 +858,7 @@ class SQLiteStateStore(
                        git_snapshot_id, kind, payload, created_at, metadata
                 FROM checkpoints
                 {where_clause}
-                ORDER BY created_at DESC
+                ORDER BY created_at DESC, rowid DESC
                 LIMIT ?;
             """
             params.append(-1 if limit is None else max(1, limit))
