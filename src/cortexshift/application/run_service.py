@@ -38,7 +38,7 @@ from cortexshift.domain.provider import (
 from cortexshift.domain.session import Session
 from cortexshift.domain.task import Task
 from cortexshift.ports.process_runner import InteractiveProcessRunner
-from cortexshift.ports.provider import ProviderRuntimeAdapter
+from cortexshift.ports.provider import ManagedMcpBinder, ProviderRuntimeAdapter
 from cortexshift.ports.workspace_lease import WorkspaceLeaseManager
 
 
@@ -258,7 +258,12 @@ class RunService:
                 ) and not is_antigravity_mcp_configured(Path(project.repo_path)):
                     sys.stderr.write(f"\n{ANTIGRAVITY_MCP_MISSING_NOTICE}\n\n")
 
-                return launcher.run(session, launch_spec, on_launch=_forward)
+                return launcher.run(
+                    session,
+                    launch_spec,
+                    on_launch=_forward,
+                    mcp_binder=adapter if isinstance(adapter, ManagedMcpBinder) else None,
+                )
             finally:
                 lease.release()
         finally:

@@ -13,9 +13,11 @@ from typing import Any
 
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.launch import LaunchSpecification
+from cortexshift.domain.mcp_binding import McpSessionBinding
 from cortexshift.domain.provider import ProviderId
 from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 from cortexshift.ports.process_runner import InteractiveProcessRunner
+from cortexshift.ports.provider import ManagedMcpBinder
 from cortexshift.ports.session_store import SessionStore
 
 
@@ -82,26 +84,35 @@ class ProviderSessionLauncher:
         session: Session,
         launch_spec: LaunchSpecification,
         on_launch: Callable[[LaunchSpecification, Session], None] | None = None,
+        mcp_binder: ManagedMcpBinder | None = None,
     ) -> Session:
         """Run the native provider process and finalize the Session lifecycle.
+
+        This is the only place a managed MCP binding is minted, and it is minted from the
+        persisted Session rather than from anything a provider or model supplied. Providers
+        that configure the CortexShift MCP server per launch declare the binding inside
+        that configuration, because a provider decides for itself how much of CortexShift's
+        environment the MCP server it spawns will actually see.
 
         Generic non-zero exits map strictly to `process_crashed`; CortexShift never infers
         quota exhaustion or rate limiting from an exit code. Spawn failures map to
         `spawn_failed` and re-raise so the caller can classify the operation as failed.
         """
         try:
+            binding = McpSessionBinding.from_session(
+                session=session,
+                project_root=launch_spec.cwd,
+            )
+            if mcp_binder is not None:
+                launch_spec = mcp_binder.bind_managed_mcp(launch_spec, binding)
+
             if on_launch:
                 on_launch(launch_spec, session)
 
-            binding_env: dict[str, str] = {
-                "CORTEXSHIFT_PROJECT_ROOT": str(launch_spec.cwd),
-                "CORTEXSHIFT_TASK_ID": session.task_id,
-                "CORTEXSHIFT_SESSION_ID": session.id,
-                "CORTEXSHIFT_PROVIDER_ID": str(session.provider_id),
-                "CORTEXSHIFT_MCP_READ_ONLY": "0",
-            }
-            if launch_spec.env:
-                binding_env.update(launch_spec.env)
+            # A launch specification may contribute environment of its own, but the trusted
+            # binding always wins: execution context is never negotiable by an adapter.
+            binding_env: dict[str, str] = dict(launch_spec.env)
+            binding_env.update(binding.to_env())
 
             exit_code = self._runner.run_interactive(
                 argv=launch_spec.argv,

@@ -70,6 +70,7 @@ from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
 from cortexshift.ports.handoff_delivery import ProviderHandoffAdapter
 from cortexshift.ports.process_runner import InteractiveProcessRunner
+from cortexshift.ports.provider import ManagedMcpBinder
 from cortexshift.ports.repository import RepositoryInspector
 from cortexshift.ports.workspace_lease import WorkspaceLeaseManager
 
@@ -612,7 +613,12 @@ class SwitchService:
 
         try:
             target_session = launcher.run(
-                target_session, preparation.launch_spec, on_launch=on_launch
+                target_session,
+                preparation.launch_spec,
+                on_launch=on_launch,
+                mcp_binder=(
+                    context.adapter if isinstance(context.adapter, ManagedMcpBinder) else None
+                ),
             )
         except Exception:
             # The interactive process never started, so context was not actually delivered.

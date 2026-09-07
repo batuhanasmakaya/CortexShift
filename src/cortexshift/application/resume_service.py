@@ -14,6 +14,7 @@ from cortexshift.domain.errors import NativeResumeError, TerminalRequiredError, 
 from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY
 from cortexshift.domain.session import Session
 from cortexshift.ports.native_session import ProviderNativeSessionAdapter
+from cortexshift.ports.provider import ManagedMcpBinder
 
 
 class ResumeDryRunResult(DryRunResult):
@@ -112,7 +113,11 @@ class ResumeService(RunService):
                 ) and not is_antigravity_mcp_configured(Path(project.repo_path)):
                     sys.stderr.write(f"\n{ANTIGRAVITY_MCP_MISSING_NOTICE}\n\n")
 
-                return launcher.run(invocation, spec)
+                return launcher.run(
+                    invocation,
+                    spec,
+                    mcp_binder=adapter if isinstance(adapter, ManagedMcpBinder) else None,
+                )
             finally:
                 lease.release()
         finally:

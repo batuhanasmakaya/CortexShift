@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -88,12 +89,43 @@ async def mcp_check(env: dict[str, str], writable: bool) -> None:
             assert not result.is_error
 
 
+def declared_mcp_env(argv):
+    """The environment the launched provider would hand to the MCP server it spawns.
+
+    A provider CLI, not CortexShift, spawns the MCP server, and it decides how much of
+    CortexShift's environment that server sees: Codex forwards a fixed allowlist plus the
+    server's own declared `env`. So the managed binding has to be checked where the
+    provider will actually read it, in the launch configuration, not in the environment
+    CortexShift happens to export.
+    """
+    if "--mcp-config" in argv:
+        server = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]["cortexshift"]
+    else:
+        overrides = [argv[index + 1] for index, arg in enumerate(argv) if arg == "-c"]
+        server = tomllib.loads("\n".join(overrides))["mcp_servers"]["cortexshift"]
+    assert server["args"] == ["-m", "cortexshift", "mcp", "serve"]
+    return server["env"]
+
+
+def sanitized_provider_env(declared):
+    """Rebuild the environment without anything CortexShift-specific inherited implicitly."""
+    inherited = {
+        name: value for name, value in os.environ.items() if not name.startswith("CORTEXSHIFT_")
+    }
+    return {**inherited, **declared}
+
+
 class FakeInteractive(InteractiveProcessRunner):
     def run_interactive(self, argv, cwd, env=None):
         assert argv and is_same_directory(cwd, ROOT)
         assert env and env["CORTEXSHIFT_MCP_READ_ONLY"] == "0"
         assert SENTINELS[2] == os.environ["RELEASE_FAKE_CREDENTIAL"]
-        asyncio.run(mcp_check(env, True))
+        declared = declared_mcp_env(argv)
+        assert declared["CORTEXSHIFT_SESSION_ID"] == env["CORTEXSHIFT_SESSION_ID"]
+        assert declared["CORTEXSHIFT_TASK_ID"] == env["CORTEXSHIFT_TASK_ID"]
+        assert declared["CORTEXSHIFT_PROVIDER_ID"] == env["CORTEXSHIFT_PROVIDER_ID"]
+        assert declared["CORTEXSHIFT_MCP_READ_ONLY"] == "0"
+        asyncio.run(mcp_check(sanitized_provider_env(declared), True))
         return 0
 
 

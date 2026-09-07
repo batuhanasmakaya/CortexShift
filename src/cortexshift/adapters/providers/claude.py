@@ -6,11 +6,13 @@ import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from cortexshift.domain.doctor import AuthenticationStatus, ProviderDiagnostic
 from cortexshift.domain.errors import NativeResumeError
 from cortexshift.domain.launch import LaunchSpecification
+from cortexshift.domain.mcp_binding import McpSessionBinding
 from cortexshift.domain.native_session import NativeSessionCapabilities, valid_native_id
 from cortexshift.domain.provider import PROVIDER_CLAUDE, ProviderCapabilities, ProviderId
 from cortexshift.ports.command_runner import CommandRunner
@@ -166,18 +168,27 @@ class ClaudeProviderProbe(ProviderProbe):
         )
 
 
-def build_claude_mcp_config(python_executable: str | None = None) -> str:
-    """Build the inline JSON string for Claude Code --mcp-config."""
+MCP_CONFIG_FLAG = "--mcp-config"
+
+
+def build_claude_mcp_config(
+    python_executable: str | None = None,
+    binding: McpSessionBinding | None = None,
+) -> str:
+    """Build the inline JSON string for Claude Code --mcp-config.
+
+    When a managed binding is supplied it is declared as the server's own environment, so
+    the MCP server is bound to the CortexShift session regardless of how much of Claude
+    Code's own environment reaches the server process.
+    """
     exe = python_executable or sys.executable
-    config = {
-        "mcpServers": {
-            "cortexshift": {
-                "command": exe,
-                "args": ["-m", "cortexshift", "mcp", "serve"],
-            }
-        }
+    server: dict[str, Any] = {
+        "command": exe,
+        "args": ["-m", "cortexshift", "mcp", "serve"],
     }
-    return json.dumps(config)
+    if binding is not None:
+        server["env"] = binding.to_env()
+    return json.dumps({"mcpServers": {"cortexshift": server}})
 
 
 class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
@@ -230,13 +241,35 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
             cwd=project_root,
             argv=[
                 executable_path,
-                "--mcp-config",
+                MCP_CONFIG_FLAG,
                 mcp_config,
                 "--resume",
                 native_session_id,
             ],
             native_session_id=native_session_id,
         )
+
+    def bind_managed_mcp(
+        self,
+        launch_spec: LaunchSpecification,
+        binding: McpSessionBinding,
+    ) -> LaunchSpecification:
+        """Restate the managed binding inside the inline --mcp-config payload."""
+        if launch_spec.provider_id != self.provider_id:
+            return launch_spec
+
+        argv = list(launch_spec.argv)
+        # A supplied prompt is arbitrary text in the same argv, so it is never scanned:
+        # a prompt that happens to read like a flag must not be mistaken for one.
+        options = argv[:-1] if launch_spec.prompt_supplied else argv
+        if MCP_CONFIG_FLAG not in options:
+            return launch_spec
+        index = options.index(MCP_CONFIG_FLAG) + 1
+        if index >= len(options):
+            return launch_spec
+
+        argv[index] = build_claude_mcp_config(self._python_executable, binding=binding)
+        return launch_spec.model_copy(update={"argv": argv})
 
     def build_launch_spec(
         self,
@@ -249,7 +282,7 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
         mcp_config = build_claude_mcp_config(self._python_executable)
         argv = [
             executable_path,
-            "--mcp-config",
+            MCP_CONFIG_FLAG,
             mcp_config,
             "--session-id",
             native_id,
@@ -302,6 +335,14 @@ class ClaudeHandoffAdapter(ProviderHandoffAdapter):
     @property
     def bootstrap_model_turn_required(self) -> bool:
         return False
+
+    def bind_managed_mcp(
+        self,
+        launch_spec: LaunchSpecification,
+        binding: McpSessionBinding,
+    ) -> LaunchSpecification:
+        """Delegate managed MCP binding to the runtime adapter that built the argv."""
+        return self._runtime.bind_managed_mcp(launch_spec, binding)
 
     def prepare_delivery(
         self,

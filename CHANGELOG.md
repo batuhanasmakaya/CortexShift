@@ -33,6 +33,10 @@ Initial public alpha; no publication date has been assigned.
 
 ### Fixed
 
+- Bind the managed CortexShift session inside the per-launch MCP configuration.
+  A provider CLI spawns the MCP server, and Codex starts MCP servers with a
+  sanitized environment, so managed Codex sessions previously saw `session: null`
+  and only the four read tools. Unmanaged MCP stays read-only.
 - Escape Windows/quoted Python paths in Codex MCP configuration.
 - Safely probe existing empty Windows workspace lock files without double-close.
 - Close subprocess pipes in test helpers and run fake Python providers portably.
