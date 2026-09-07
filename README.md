@@ -9,8 +9,10 @@ agent to answer, summarize, or even remain installed.
 
 **0.1.0 is an initial public alpha release candidate. PyPI publication is pending.**
 The canonical repository is <https://github.com/batuhanasmakaya/CortexShift>.
-Python 3.12–3.14 is targeted. Automated cross-platform coverage is configured;
-real provider and platform validation has a separate maintainer checklist.
+Python 3.12–3.14 is targeted, with required Linux/macOS/Windows CI on protected
+`main`. Real end-to-end validation is complete for Claude Code and Codex;
+Antigravity has automated coverage only, and interactive platform smokes remain
+on a separate maintainer checklist.
 
 ## How it works
 

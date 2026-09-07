@@ -18,7 +18,7 @@ Phase 6  ──▶  Phase 7  ──▶  Phase 8  ──▶  Phase 9  ──▶  
 Native        Checkpoints   MCP Shared    TUI           Public        Experimental
 Resume        & Recovery    State         Control       Release
                                           Center
-(Complete)    (Complete)    (Complete)    (Complete)    (Planned)
+(Complete)    (Complete)    (Complete)    (Complete)    (Candidate)
 ```
 
 ---
@@ -140,7 +140,7 @@ Add exact provider-native history continuity while preserving canonical Task and
 - No private provider-store discovery, guessed provider-last behavior, prompt/response persistence, or hidden model turns for plain runs.
 - Plain Codex and Antigravity run paths can retain null native IDs; historical untracked or unfinished invocations cannot be exact-resumed.
 - Verified: **486 passing tests**, **90% coverage**, Ruff, Ruff format, mypy and all requested CLI help/version/doctor checks. The flagship A → B → C → A → B → C test proves one Task, six invocations, three native identities, five fresh handoffs and five fresh Git snapshots; persistence survives fresh store recreation.
-- Real provider E2E is deferred: Claude was installed but unauthenticated, Codex installed/authenticated, and Antigravity missing. Automated verification uses deterministic fake providers.
+- At the time Phase 6 completed, real provider E2E was still deferred: Claude was installed but unauthenticated, Codex installed/authenticated, and Antigravity missing, so automated verification used deterministic fake providers. Real Claude Code and Codex E2E validation has since been completed for the 0.1.0 candidate; see [Provider Support](provider-support.md) for the current status.
 - [ADR-0007](decisions/ADR-0007-native-session-continuity.md) documents capabilities, transport costs and trade-offs.
 
 ---
@@ -206,11 +206,32 @@ CortexShift's first persistent human-facing interface: a keyboard-driven Textual
 
 ---
 
-## Phase 10 — Public Release
+## Phase 10 — Public Release *(Candidate)*
 
 Release candidate complete; external publication pending maintainer authorization. Python wheel/sdist, pipx onboarding, cross-platform CI, Trusted
 Publishing machinery, public documentation, and Homebrew staging are release
 engineering scope. No documentation site or standalone binary is promised.
+
+**Current release-readiness status:**
+
+- **Quality gates**: 863 passing unit and integration tests, including dedicated
+  managed-MCP binding regression coverage, with Ruff check, Ruff format, strict mypy,
+  `release_check.py`, a rebuilt artifact smoke, and a security audit reporting
+  0 findings. Required cross-platform GitHub CI (10 checks: `quality` plus
+  Ubuntu/macOS/Windows × CPython 3.12/3.13/3.14) is enforced on protected `main`.
+- **Real-provider validation**: Claude Code 2.1.204 and Codex 0.153.4 are
+  validated end to end against authenticated CLIs — managed MCP session binding,
+  managed write tools, session-bound checkpoint provenance, native session ID
+  capture, native resume, and CortexShift session lineage — plus a real
+  Claude → Codex handoff with correct context and decision delivery, and decision
+  durability across later empty and session-end checkpoints. Antigravity remains
+  automated fake-provider coverage only; it is not installed in the validation
+  environment and has had no real E2E run.
+- **Publication**: PyPI Trusted Publishing (pending publisher) and the GitHub
+  `pypi` environment are configured with no long-lived token. The first PyPI
+  publication has not happened, `v0.1.0` is not published, and the release
+  workflow has not yet been exercised by a real public release. Homebrew tap
+  publication remains later work.
 
 ---
 

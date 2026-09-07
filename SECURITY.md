@@ -21,11 +21,15 @@ The canonical public repository is
 <https://github.com/batuhanasmakaya/CortexShift>, and this policy is published at
 <https://github.com/batuhanasmakaya/CortexShift/security>.
 
-GitHub private vulnerability reporting is not enabled on that repository yet, so
-no private intake channel is available at this time. Until the maintainer enables
-private vulnerability reporting/Security Advisories and publishes the verified
-intake link here, do not disclose exploit details or sensitive data in public
-issues. No reporting email is invented for this candidate.
+Report suspected vulnerabilities privately through GitHub private vulnerability
+reporting, which is enabled on that repository. Open a draft Security Advisory
+from the Security tab ("Report a vulnerability"), or use
+<https://github.com/batuhanasmakaya/CortexShift/security/advisories/new>. The
+report stays private to the maintainer until an advisory is published. This is
+the only supported intake channel; no reporting email address is published.
+Do not disclose exploit details, proof-of-concept exploits, or sensitive data in
+public issues, discussions, or pull requests. Expect best-effort, single-maintainer
+response times on an alpha project, and coordinate disclosure through the advisory.
 
 Ordinary bug reports belong in
 <https://github.com/batuhanasmakaya/CortexShift/issues> and may include
@@ -40,4 +44,6 @@ The initial alpha uses SQLite schema v6, Handoff Protocol v1, and Checkpoint
 Protocol v1. Published migrations and protocol meanings are immutable contracts;
 future changes require forward-safe migrations/versioning. No older public
 release is currently claimed as supported. Dependency and workflow updates are
-reviewed; ordinary CI requires no secrets, and release publishing uses OIDC.
+reviewed; ordinary CI requires no secrets, and release publishing uses OIDC with
+no long-lived PyPI token. GitHub secret scanning alerts are enabled on the
+repository.
