@@ -35,7 +35,7 @@ from cortexshift.adapters.providers.codex import CodexHandoffAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.checkpoint_service import CheckpointService
-from cortexshift.application.handoff_builder import HandoffBuilder
+from cortexshift.application.handoff_builder import HandoffBuilder, aggregate_task_decisions
 from cortexshift.application.handoff_renderer import HandoffRenderer, RenderedHandoffContext
 from cortexshift.application.locator import ProjectLocator
 from cortexshift.application.native_session import native_capabilities, select_native_session
@@ -70,6 +70,7 @@ from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
 from cortexshift.ports.handoff_delivery import ProviderHandoffAdapter
 from cortexshift.ports.process_runner import InteractiveProcessRunner
+from cortexshift.ports.provider import ManagedMcpBinder
 from cortexshift.ports.repository import RepositoryInspector
 from cortexshift.ports.workspace_lease import WorkspaceLeaseManager
 
@@ -315,6 +316,18 @@ class SwitchService:
             project_id=context.project.id,
         )
 
+    def _aggregate_task_decisions(self, context: _SwitchContext) -> list[str]:
+        """Collect the decisions recorded across the bound task's checkpoint history.
+
+        Checkpoints stay immutable point-in-time observations, so a decision recorded by
+        `record_decision` is not copied forward into later checkpoints. Reading the whole
+        history here is what keeps such a decision in the handoff after an ordinary or
+        session-end checkpoint has since become the newest one. The query is scoped to
+        `context.task.id`, so decisions never cross task boundaries.
+        """
+        history = context.store.list_task_checkpoint_history(context.task.id)
+        return aggregate_task_decisions(history, context.task.id)
+
     # --- Non-mutating operations ---
 
     def preview(
@@ -339,6 +352,7 @@ class SwitchService:
         try:
             inspection = self._inspect(context)
             latest_checkpoint = context.store.get_latest_checkpoint(context.task.id)
+            task_decisions = self._aggregate_task_decisions(context)
             payload = self._builder.build(
                 project=context.project,
                 task=context.task,
@@ -348,6 +362,7 @@ class SwitchService:
                 snapshot_id=None,
                 operator_note=note,
                 latest_checkpoint=latest_checkpoint,
+                task_decisions=task_decisions,
             )
             rendered = self._renderer.render(payload, handoff_id=None)
 
@@ -386,6 +401,7 @@ class SwitchService:
             self._select_target(context, new_session, resume_session_id)
             inspection = self._inspect(context)
             latest_checkpoint = context.store.get_latest_checkpoint(context.task.id)
+            task_decisions = self._aggregate_task_decisions(context)
             payload = self._builder.build(
                 project=context.project,
                 task=context.task,
@@ -395,6 +411,7 @@ class SwitchService:
                 snapshot_id=None,
                 operator_note=note,
                 latest_checkpoint=latest_checkpoint,
+                task_decisions=task_decisions,
             )
             rendered = self._renderer.render(payload, handoff_id=None)
             snapshot = inspection.snapshot
@@ -475,6 +492,7 @@ class SwitchService:
                 snapshot_id = self._persist_snapshot(inspection, store)
 
                 latest_checkpoint = store.get_latest_checkpoint(context.task.id)
+                task_decisions = self._aggregate_task_decisions(context)
                 payload = self._builder.build(
                     project=context.project,
                     task=context.task,
@@ -484,6 +502,7 @@ class SwitchService:
                     snapshot_id=snapshot_id,
                     operator_note=note,
                     latest_checkpoint=latest_checkpoint,
+                    task_decisions=task_decisions,
                 )
 
                 handoff = HandoffRecord(
@@ -612,7 +631,12 @@ class SwitchService:
 
         try:
             target_session = launcher.run(
-                target_session, preparation.launch_spec, on_launch=on_launch
+                target_session,
+                preparation.launch_spec,
+                on_launch=on_launch,
+                mcp_binder=(
+                    context.adapter if isinstance(context.adapter, ManagedMcpBinder) else None
+                ),
             )
         except Exception:
             # The interactive process never started, so context was not actually delivered.

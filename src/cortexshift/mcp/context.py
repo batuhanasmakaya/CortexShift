@@ -8,13 +8,24 @@ from pydantic import BaseModel, ConfigDict
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.locator import ProjectLocator
 from cortexshift.domain.errors import McpContextError
+from cortexshift.domain.mcp_binding import (
+    ENV_MCP_READ_ONLY,
+    ENV_PROJECT_ROOT,
+    ENV_PROVIDER_ID,
+    ENV_SESSION_ID,
+    ENV_TASK_ID,
+)
 from cortexshift.domain.provider import ProviderId
 
-ENV_PROJECT_ROOT = "CORTEXSHIFT_PROJECT_ROOT"
-ENV_TASK_ID = "CORTEXSHIFT_TASK_ID"
-ENV_SESSION_ID = "CORTEXSHIFT_SESSION_ID"
-ENV_PROVIDER_ID = "CORTEXSHIFT_PROVIDER_ID"
-ENV_MCP_READ_ONLY = "CORTEXSHIFT_MCP_READ_ONLY"
+__all__ = [
+    "ENV_MCP_READ_ONLY",
+    "ENV_PROJECT_ROOT",
+    "ENV_PROVIDER_ID",
+    "ENV_SESSION_ID",
+    "ENV_TASK_ID",
+    "McpExecutionContext",
+    "resolve_mcp_context",
+]
 
 
 class McpExecutionContext(BaseModel):

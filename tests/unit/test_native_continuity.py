@@ -38,6 +38,7 @@ from cortexshift.domain.errors import (
     WorkspaceLockedError,
 )
 from cortexshift.domain.identifiers import utc_now
+from cortexshift.domain.mcp_binding import McpSessionBinding
 from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX, ProviderId
 from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
@@ -49,6 +50,11 @@ from tests.unit.test_switch_service import FakeHeadlessRunner, FakeInspector, Fa
 
 def store_at(root: Path) -> SQLiteStateStore:
     return SQLiteStateStore(root / ".cortexshift/state.sqlite3", auto_migrate=False)
+
+
+def managed_binding(root: Path, session: Session) -> McpSessionBinding:
+    """The binding a managed launch of this session stamps into its MCP configuration."""
+    return McpSessionBinding.from_session(session=session, project_root=root)
 
 
 def known(root: Path, task_id: str, provider: str = "claude", native: str = "native-A") -> Session:
@@ -109,7 +115,7 @@ def test_claude_uuid_persisted_before_launch_and_prompt_not_persisted(tmp_path: 
     assert runner.invocations[0]["argv"] == [
         "/fake/claude",
         "--mcp-config",
-        build_claude_mcp_config(),
+        build_claude_mcp_config(binding=managed_binding(tmp_path, session)),
         "--session-id",
         session.native_session_id,
         "SECRET-USER-PROMPT",
@@ -130,7 +136,8 @@ def test_plain_run_keeps_unknown_id_without_model_turn(
     )
     session = service.run(provider, start_dir=tmp_path)
     assert session.native_session_id is None
-    expected_len = 1 + len(build_codex_mcp_args()) if provider == "codex" else 1
+    binding = managed_binding(tmp_path, session)
+    expected_len = 1 + len(build_codex_mcp_args(binding=binding)) if provider == "codex" else 1
     assert len(process.invocations[0]["argv"]) == expected_len
     assert not codex_bootstrap.invocations
     with pytest.raises(NativeResumeError, match="will not guess"):
@@ -468,7 +475,7 @@ def test_codex_plain_prompt_does_not_bootstrap(
     assert result.native_session_id is None
     assert process.invocations[0]["argv"] == [
         "/fake/codex",
-        *build_codex_mcp_args(),
+        *build_codex_mcp_args(binding=managed_binding(tmp_path, result)),
         "USER-PROMPT",
     ]
     assert not codex_bootstrap.invocations

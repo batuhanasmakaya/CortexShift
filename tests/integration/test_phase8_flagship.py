@@ -171,20 +171,21 @@ def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.Monkey
     # Agent records known issue
     facade1.record_issue(["Minor stdio buffer flush nuance"])
 
-    # Agent records architectural decision
+    # Agent records architectural decision. It lands in its own immutable checkpoint and is
+    # deliberately NOT repeated in the milestone checkpoint below: the handoff assertions
+    # further down only hold because decisions are aggregated across checkpoint history.
     dec_res = facade1.record_decision("Adopted stdio transport for local MCP communication")
     assert dec_res.checkpoint_id.startswith("cp_")
 
     # Agent captures milestone checkpoint
     cp_res = facade1.create_checkpoint(
-        decisions=[
-            "Adopted stdio transport for local MCP communication",
-            "Enforce pure stdout wire protocol",
-        ],
+        decisions=["Enforce pure stdout wire protocol"],
         test_summary="540 passed in 18s",
         note="Claude implementation complete, ready for handoff",
     )
     assert cp_res.checkpoint_id.startswith("cp_")
+    assert cp_res.decisions == ["Enforce pure stdout wire protocol"]
+    assert cp_res.checkpoint_id != dec_res.checkpoint_id
     store.close()
 
     # -------------------------------------------------------------------------
@@ -200,8 +201,13 @@ def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "Wire protocol verification" in payload.remaining
     assert "Self-reported progress" not in payload.remaining
     assert "Minor stdio buffer flush nuance" in payload.known_issues
-    assert "Adopted stdio transport for local MCP communication" in payload.important_decisions
-    assert "Enforce pure stdout wire protocol" in payload.important_decisions
+    # Aggregated across the task's checkpoint history, in chronological first-seen order:
+    # the recorded decision first, then the milestone checkpoint's own decision.
+    assert payload.important_decisions == [
+        "Adopted stdio transport for local MCP communication",
+        "Enforce pure stdout wire protocol",
+    ]
+    assert payload.decisions_known is True
     assert "540 passed in 18s" in payload.test_status.summary
     assert payload.test_status.known is True
 

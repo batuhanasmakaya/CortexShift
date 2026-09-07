@@ -11,6 +11,7 @@ from cortexshift.adapters.headless_runner import SubprocessHeadlessProviderRunne
 from cortexshift.domain.doctor import AuthenticationStatus, ProviderDiagnostic
 from cortexshift.domain.errors import HandoffDeliveryError, NativeResumeError
 from cortexshift.domain.launch import LaunchSpecification
+from cortexshift.domain.mcp_binding import McpSessionBinding
 from cortexshift.domain.native_session import NativeSessionCapabilities, valid_native_id
 from cortexshift.domain.provider import PROVIDER_CODEX, ProviderCapabilities, ProviderId
 from cortexshift.ports.command_runner import CommandRunner
@@ -170,17 +171,35 @@ class CodexProviderProbe(ProviderProbe):
         )
 
 
-def build_codex_mcp_args(python_executable: str | None = None) -> list[str]:
-    """Build the argument list of -c overrides for Codex MCP configuration."""
+MCP_SERVER_KEY = "mcp_servers.cortexshift"
+
+
+def build_codex_mcp_args(
+    python_executable: str | None = None,
+    binding: McpSessionBinding | None = None,
+) -> list[str]:
+    """Build the argument list of -c overrides for Codex MCP configuration.
+
+    Codex starts MCP servers with a sanitized environment plus the server's own declared
+    `env` table, so a managed binding must be stated here to reach the server at all.
+    Values are emitted as JSON, which Codex parses as TOML basic strings; this keeps
+    Windows paths, quotes, and non-ASCII characters intact.
+    """
     exe = python_executable or sys.executable
-    return [
+    args = [
         "-c",
-        f"mcp_servers.cortexshift.command={json.dumps(exe, ensure_ascii=False)}",
+        f"{MCP_SERVER_KEY}.command={json.dumps(exe, ensure_ascii=False)}",
         "-c",
-        'mcp_servers.cortexshift.args=["-m", "cortexshift", "mcp", "serve"]',
+        f'{MCP_SERVER_KEY}.args=["-m", "cortexshift", "mcp", "serve"]',
         "-c",
-        "mcp_servers.cortexshift.required=true",
+        f"{MCP_SERVER_KEY}.required=true",
     ]
+    if binding is not None:
+        for name, value in binding.to_env().items():
+            args.extend(
+                ["-c", f"{MCP_SERVER_KEY}.env.{name}={json.dumps(value, ensure_ascii=False)}"]
+            )
+    return args
 
 
 class CodexRuntimeAdapter(ProviderRuntimeAdapter):
@@ -260,6 +279,44 @@ class CodexRuntimeAdapter(ProviderRuntimeAdapter):
             prompt_supplied=prompt_supplied,
         )
 
+    def bind_managed_mcp(
+        self,
+        launch_spec: LaunchSpecification,
+        binding: McpSessionBinding,
+    ) -> LaunchSpecification:
+        """Restate the managed binding in the -c overrides that configure the MCP server."""
+        if launch_spec.provider_id != self.provider_id:
+            return launch_spec
+
+        argv = list(launch_spec.argv)
+        # A supplied prompt is arbitrary text in the same argv, so it is never scanned:
+        # a prompt that happens to read like an override must not be mistaken for one.
+        scan_end = len(argv) - 1 if launch_spec.prompt_supplied else len(argv)
+
+        remaining: list[str] = []
+        insert_at: int | None = None
+        index = 0
+        while index < len(argv):
+            is_override = (
+                argv[index] == "-c"
+                and index + 1 < scan_end
+                and argv[index + 1].startswith(f"{MCP_SERVER_KEY}.")
+            )
+            if is_override:
+                if insert_at is None:
+                    insert_at = len(remaining)
+                index += 2
+                continue
+            remaining.append(argv[index])
+            index += 1
+
+        if insert_at is None:
+            return launch_spec
+
+        bound = build_codex_mcp_args(self._python_executable, binding=binding)
+        remaining[insert_at:insert_at] = bound
+        return launch_spec.model_copy(update={"argv": remaining})
+
 
 CODEX_BOOTSTRAP_PREFIX = """This is a CortexShift handoff bootstrap.
 Analyze and ingest the supplied context. Remain read-only.
@@ -301,6 +358,14 @@ class CodexHandoffAdapter(ProviderHandoffAdapter):
     @property
     def bootstrap_model_turn_required(self) -> bool:
         return True
+
+    def bind_managed_mcp(
+        self,
+        launch_spec: LaunchSpecification,
+        binding: McpSessionBinding,
+    ) -> LaunchSpecification:
+        """Delegate managed MCP binding to the runtime adapter that built the argv."""
+        return self._runtime.bind_managed_mcp(launch_spec, binding)
 
     def prepare_delivery(
         self,

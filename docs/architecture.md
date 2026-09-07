@@ -478,6 +478,7 @@ Operator / Agent invokes: cortexshift recover
 Next Agent Switch: cortexshift switch <target>
   │
   ├─► Ingests latest checkpoint (RECOVERY, MANUAL, or SESSION_END)
+  ├─► Aggregates decisions across the task's whole checkpoint history
   ├─► Enriches handoff with decisions & reported test status (provenance disclaimer)
   └─► Delivers enriched handoff package to incoming provider
 ```
@@ -487,7 +488,7 @@ Checkpoints are stored as immutable `CheckpointRecord` records wrapping a struct
 - **`task`**: Snapshot of canonical task metadata, objective, status, and completion state.
 - **`git`**: Observed live commit SHA, branch, detached HEAD, dirty flag, modified files, diff summaries.
 - **`source_session`**: Details of the session that generated the checkpoint.
-- **`decisions`**: Bounded engineering decisions (`MAX_DECISION_CHARS = 1000`).
+- **`decisions`**: Bounded engineering decisions (`MAX_DECISION_CHARS = 1000`). Literal to this checkpoint: a checkpoint never absorbs an earlier one's decisions, and handoffs recover task-level durability by aggregating across the task's checkpoint history instead.
 - **`test_status`**: Reported test execution outcome with explicit `reported_unverified` provenance.
 - **`operator_note`**: Contextual human or agent note (`MAX_OPERATOR_NOTE_CHARS = 2000`).
 
@@ -544,15 +545,16 @@ Phase 8 provides an active coding agent with a first-class structured communicat
 1. **Local Stdio Transport Exclusively**: CortexShift MCP operates strictly via local subprocess stdio. No network listeners, HTTP/SSE endpoints, or sockets are created, maintaining zero telemetry and local-first privacy.
 2. **Pure Stdout Wire Protocol**: Standard output (`stdout`) is reserved strictly and exclusively for valid MCP JSON-RPC protocol frames. All diagnostics, informational logs, and CLI output are routed to `stderr` or silenced.
 3. **Strict Context Binding**: Server binds to `McpExecutionContext` resolved from environment variables (`CORTEXSHIFT_PROJECT_ROOT`, `CORTEXSHIFT_TASK_ID`, `CORTEXSHIFT_SESSION_ID`, `CORTEXSHIFT_PROVIDER_ID`, `CORTEXSHIFT_MCP_READ_ONLY`). Mutations affect only the task assigned at launch, isolating state against active-task changes in SQLite.
-4. **Dual Capability Exposure**: Managed writable sessions receive all 10 tools (4 read, 6 write). Unmanaged or read-only sessions receive only 4 read tools; write tools are not registered on the server.
-5. **Workspace Lease Bypass**: MCP operations deliberately bypass the OS advisory workspace lease (`agent.lock`), as the lease is already held by the parent agent process. SQLite WAL mode provides multi-process safe atomic concurrency.
-6. **Thread Safety**: FastMCP dispatches sync tool and resource callbacks across worker threads (`anyio.to_thread.run_sync`). `SQLiteStateStore` handles multi-threaded operations safely with `check_same_thread=False`.
+4. **Explicit Binding Delivery**: The provider CLI, not CortexShift, spawns the MCP server, and each provider decides how much of its own environment that server inherits. CortexShift therefore declares the binding inside the per-launch MCP configuration it generates rather than relying on inheritance. The binding is minted once, in `ProviderSessionLauncher`, from the persisted `Session`; provider and model input never contribute to it.
+5. **Dual Capability Exposure**: Managed writable sessions receive all 10 tools (4 read, 6 write). Unmanaged or read-only sessions receive only 4 read tools; write tools are not registered on the server.
+6. **Workspace Lease Bypass**: MCP operations deliberately bypass the OS advisory workspace lease (`agent.lock`), as the lease is already held by the parent agent process. SQLite WAL mode provides multi-process safe atomic concurrency.
+7. **Thread Safety**: FastMCP dispatches sync tool and resource callbacks across worker threads (`anyio.to_thread.run_sync`). `SQLiteStateStore` handles multi-threaded operations safely with `check_same_thread=False`.
 
 ### Provider Integration Transports
 
-- **Claude Code**: Integrated via `--mcp-config <inline JSON>` on session launch.
-- **OpenAI Codex**: Integrated via `-c mcp_servers.cortexshift...` inline CLI configuration arguments.
-- **Google Antigravity**: Configured in workspace via `.agents/mcp_config.json`, supported by `cortexshift mcp setup antigravity`.
+- **Claude Code**: Integrated via `--mcp-config <inline JSON>` on session launch. A managed launch adds the binding as the server's `env` object.
+- **OpenAI Codex**: Integrated via `-c mcp_servers.cortexshift...` inline CLI configuration arguments. A managed launch adds `-c mcp_servers.cortexshift.env.<VAR>=...` overrides, because Codex starts MCP servers with a sanitized environment plus the server's declared `env` table.
+- **Google Antigravity**: Configured in workspace via `.agents/mcp_config.json`, supported by `cortexshift mcp setup antigravity`. A workspace file is written once and is not per-launch, so it carries no session binding; Antigravity MCP therefore keeps whatever execution mode its own environment resolves to.
 
 See [ADR-0009](decisions/ADR-0009-mcp-shared-state.md) for detailed decisions.
 

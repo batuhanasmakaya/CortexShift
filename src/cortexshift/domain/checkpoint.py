@@ -24,6 +24,13 @@ MAX_OPERATOR_NOTE_CHARS = 2_000
 MAX_DECISION_CHARS = 1_000
 MAX_TEST_SUMMARY_CHARS = 1_000
 
+# Structured provenance marker recorded in the extensible `metadata` mapping that both
+# CheckpointRecord and CheckpointPayload already carry. ADR-0009 specifies that
+# `record_decision` persists its checkpoint with `trigger="decision"`; the marker lives in
+# existing free-form metadata, so Checkpoint Protocol v1 and SQLite schema v6 are unchanged.
+CHECKPOINT_TRIGGER_KEY = "trigger"
+CHECKPOINT_TRIGGER_DECISION = "decision"
+
 
 class CheckpointKind(StrEnum):
     """Classification of how a checkpoint was captured.

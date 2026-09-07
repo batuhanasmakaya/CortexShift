@@ -7,6 +7,8 @@ from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.checkpoint_builder import CheckpointBuilder
 from cortexshift.application.repository_service import RepositoryService
 from cortexshift.domain.checkpoint import (
+    CHECKPOINT_TRIGGER_DECISION,
+    CHECKPOINT_TRIGGER_KEY,
     CheckpointKind,
     CheckpointRecord,
     CheckpointTestProvenance,
@@ -383,7 +385,13 @@ class McpApplicationFacade:
         """Record an architectural decision via a cooperative checkpoint.
 
         Architectural decisions are persisted in CheckpointRecord.payload.decisions,
-        maintaining Task model purity while ensuring decisions survive provider handoffs.
+        maintaining Task model purity. The checkpoint is immutable and is never rewritten
+        by later checkpoints; decisions survive provider handoffs because HandoffBuilder
+        aggregates them across the task's whole checkpoint history at handoff time.
+
+        The record carries a structured `trigger="decision"` marker in its existing
+        metadata mapping, per ADR-0009. That marker is provenance only: aggregation reads
+        every checkpoint's decisions regardless of trigger, and never parses operator_note.
         """
         self._ensure_can_mutate()
         cleaned = decision.strip()
@@ -395,6 +403,7 @@ class McpApplicationFacade:
         cp = self._create_checkpoint_internal(
             decisions=[cleaned],
             note="Recorded architectural decision via MCP",
+            metadata={CHECKPOINT_TRIGGER_KEY: CHECKPOINT_TRIGGER_DECISION},
         )
 
         return DecisionResult(
@@ -464,6 +473,7 @@ class McpApplicationFacade:
         test_summary: str | None = None,
         test_provenance: CheckpointTestProvenance = CheckpointTestProvenance.UNKNOWN,
         note: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> CheckpointRecord:
         """Internal helper to construct and persist a checkpoint record without locking."""
         project = self._store.get_project(self._context.project_id)
@@ -496,6 +506,7 @@ class McpApplicationFacade:
             test_summary=test_summary,
             test_provenance=test_provenance,
             operator_note=note,
+            metadata=metadata,
         )
 
         self._store.save_checkpoint(record)

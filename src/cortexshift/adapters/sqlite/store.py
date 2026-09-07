@@ -872,6 +872,32 @@ class SQLiteStateStore(
         results = self.list_checkpoints(task_id=task_id, limit=1)
         return results[0] if results else None
 
+    def list_task_checkpoint_history(self, task_id: str) -> list[CheckpointRecord]:
+        """List every checkpoint for one task in deterministic chronological order.
+
+        Ordered oldest first by `created_at ASC, rowid ASC`. The rowid tie-breaker keeps
+        the sequence stable when two checkpoints share an identical timestamp, which
+        coarse clock granularity makes reachable on Windows. `task_id` is mandatory and
+        applied in SQL, so this query can never span tasks.
+        """
+        try:
+            cursor = self._conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, protocol_version, project_id, task_id, session_id,
+                       git_snapshot_id, kind, payload, created_at, metadata
+                FROM checkpoints
+                WHERE task_id = ?
+                ORDER BY created_at ASC, rowid ASC;
+                """,
+                (task_id,),
+            )
+            return [self._row_to_checkpoint(row) for row in cursor.fetchall()]
+        except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
+            raise StateCorruptionError(
+                f"Failed to list checkpoint history for task '{task_id}': {err}"
+            ) from err
+
     def _row_to_checkpoint(self, row: sqlite3.Row) -> CheckpointRecord:
         """Convert a database row into a CheckpointRecord domain entity."""
         return CheckpointRecord(

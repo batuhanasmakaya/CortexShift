@@ -5,6 +5,7 @@ from typing import Protocol, runtime_checkable
 
 from cortexshift.domain.handoff import HandoffRecord
 from cortexshift.domain.launch import LaunchSpecification
+from cortexshift.domain.mcp_binding import McpSessionBinding
 from cortexshift.domain.provider import ProviderCapabilities, ProviderId
 from cortexshift.domain.task import Task
 
@@ -122,5 +123,30 @@ class ProviderRuntimeAdapter(Protocol):
 
         Raises:
             UnsupportedPromptError: If prompt is provided but not supported for interactive launch.
+        """
+        ...
+
+
+@runtime_checkable
+class ManagedMcpBinder(Protocol):
+    """Optional port for providers that configure the CortexShift MCP server per launch.
+
+    A provider CLI spawns the MCP server itself, so CortexShift cannot rely on its own
+    process environment reaching that grandchild: Codex, for one, sanitizes it. Providers
+    implementing this port restate the trusted binding inside the MCP configuration they
+    were launched with. Providers configured out of band, such as Antigravity's workspace
+    file, implement nothing and keep their existing behaviour.
+    """
+
+    def bind_managed_mcp(
+        self,
+        launch_spec: LaunchSpecification,
+        binding: McpSessionBinding,
+    ) -> LaunchSpecification:
+        """Return the launch specification with the managed binding declared to MCP.
+
+        Implementations must be total: a specification carrying no CortexShift MCP
+        configuration, or one belonging to another provider, is returned unchanged rather
+        than rejected.
         """
         ...

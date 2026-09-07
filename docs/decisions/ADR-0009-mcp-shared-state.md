@@ -26,6 +26,7 @@ All of this must occur without violating CortexShift's architectural invariants:
   - `CORTEXSHIFT_PROVIDER_ID`: Identity of the running agent provider.
   - `CORTEXSHIFT_MCP_READ_ONLY`: Flag (`1` or `0`) enforcing read-only behavior.
   The context strictly binds tool mutations to the assigned `Task` and `Session`, isolating operations against external changes to the active task in SQLite.
+- **Binding Delivery Is Explicit, Never Inherited**: A provider CLI spawns the MCP server, so the server is CortexShift's *grandchild* and each provider decides how much of the intermediate environment it forwards. Codex forwards a fixed allowlist plus the server's own declared `env` table, which silently strips `CORTEXSHIFT_*` and left real managed Codex sessions read-only with `session: null`. CortexShift therefore writes the binding into the per-launch MCP configuration it generates for each provider, and continues to export it into the provider process for providers and tooling that do inherit. The binding is minted in exactly one place, `ProviderSessionLauncher.run`, from the already-persisted `Session`; it always overrides any environment an adapter contributed, and nothing supplied by a provider or a model can produce or alter it. Antigravity's workspace configuration is written once rather than per launch, so it carries no binding and its execution mode is unchanged.
 - **Dual-Mode Capability Exposure (Managed vs Read-Only)**:
   - **Managed Mode** (`managed=True`, `read_only=False`): Exposes all 10 tools (4 read tools and 6 write tools). Granted only when running within an authenticated, active provider session bound to an existing task.
   - **Read-Only Mode** (`read_only=True` or unmanaged): Exposes only 4 read tools. Write tools are not registered on the server; attempting to invoke write operations raises `McpReadOnlyError`. Headless provider bootstrap sessions pass `CORTEXSHIFT_MCP_READ_ONLY=1`.
@@ -40,7 +41,7 @@ All of this must occur without violating CortexShift's architectural invariants:
     - `mark_completed`: Atomically moves specified items from `remaining_items` to `completed_items`. Does NOT mark the overall task completed.
     - `add_remaining`: Appends newly discovered work items to `Task.remaining_items`.
     - `record_issue`: Records known blockers or issues into `Task.known_issues`.
-    - `record_decision`: Persists an architectural decision backed by an automatic checkpoint (`trigger="decision"`).
+    - `record_decision`: Persists an architectural decision backed by an automatic immutable checkpoint carrying `trigger="decision"` in the record's and payload's existing `metadata` mapping. The marker is provenance only. Because checkpoints are never rewritten, the decision is kept durable for handoffs by `HandoffBuilder` aggregating decisions across the task's whole checkpoint history — reading every checkpoint's `decisions` regardless of trigger, and never parsing `operator_note`.
     - `create_checkpoint`: Creates a cooperative milestone checkpoint with explicit `reported` test provenance.
 - **Exposed JSON Resources**:
   - `cortexshift://project`: Canonical project context (`application/json`).
