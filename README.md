@@ -7,7 +7,7 @@ Codex, and Antigravity in the same local repository. A Task belongs to CortexShi
 providers are workers over that Task. Switching does not require the outgoing
 agent to answer, summarize, or even remain installed.
 
-**0.1.0 is an initial public alpha release candidate. PyPI publication is pending.**
+**0.1.0 is an initial public alpha release candidate.**
 The canonical repository is <https://github.com/batuhanasmakaya/CortexShift>.
 Python 3.12–3.14 is targeted, with required Linux/macOS/Windows CI on protected
 `main`. Real end-to-end validation is complete for Claude Code and Codex;
