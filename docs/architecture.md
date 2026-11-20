@@ -224,7 +224,7 @@ SQLiteStateStore (Adapters)
 - **Standard Library SQLite without ORM**: Built using Python's standard `sqlite3` module. No SQLAlchemy, SQLModel, or external ORM dependencies.
 - **Connection Safety & Concurrency**: Connections enable `PRAGMA foreign_keys = ON;`, `PRAGMA busy_timeout = 5000;`, and `PRAGMA journal_mode = WAL;`. Temporary `-wal` and `-shm` files reside in `.cortexshift/` and are gitignored.
 - **Explicit Schema Versioning & Migrations**: Schema migrations are tracked in `schema_metadata`. Version 1 defines `projects`, `tasks`, and `project_runtime`. If CortexShift opens a database with a higher version than supported, it fails safely (`UnsupportedSchemaVersionError`) and refuses to modify the state.
-- **Transactional State Transitions**: Multi-step state changes (creating tasks, activating tasks, completing tasks) execute within strict transaction boundaries with automatic rollback on error.
+- **Task write transactions** reserve SQLite's writer before reading Task or active-pointer state. CLI, MCP, and TUI progress and lifecycle writes use the same application service. Creation with activation and completion with conditional pointer clearing each commit together. See [ADR-0013](decisions/ADR-0013-atomic-task-writes.md).
 - **Separation of Project vs. Task vs. Runtime State**:
   - `projects`: Durable identity, name, canonical absolute repository path, and created timestamp.
   - `tasks`: Durable canonical task state — including title, objective, requirements, constraints, status, progress (`completed`, `remaining`), in-flight current work, known issues, and timestamps — serving as essential structured input for future agent handoffs.
@@ -548,8 +548,8 @@ Phase 8 provides an active coding agent with a first-class structured communicat
 3. **Strict Context Binding**: Server binds to `McpExecutionContext` resolved from environment variables (`CORTEXSHIFT_PROJECT_ROOT`, `CORTEXSHIFT_TASK_ID`, `CORTEXSHIFT_SESSION_ID`, `CORTEXSHIFT_PROVIDER_ID`, `CORTEXSHIFT_MCP_READ_ONLY`). Mutations affect only the task assigned at launch, isolating state against active-task changes in SQLite.
 4. **Explicit Binding Delivery**: The provider CLI, not CortexShift, spawns the MCP server, and each provider decides how much of its own environment that server inherits. CortexShift therefore declares the binding inside the per-launch MCP configuration it generates rather than relying on inheritance. The binding is minted once, in `ProviderSessionLauncher`, from the persisted `Session`; provider and model input never contribute to it.
 5. **Dual Capability Exposure**: Managed writable sessions receive all 10 tools (4 read, 6 write). Unmanaged or read-only sessions receive only 4 read tools; write tools are not registered on the server.
-6. **Workspace Lease Bypass**: MCP operations deliberately bypass the OS advisory workspace lease (`agent.lock`), as the lease is already held by the parent agent process. SQLite WAL mode provides multi-process safe atomic concurrency.
-7. **Thread Safety**: FastMCP dispatches sync tool and resource callbacks across worker threads (`anyio.to_thread.run_sync`). `SQLiteStateStore` handles multi-threaded operations safely with `check_same_thread=False`.
+6. **Workspace Lease Bypass**. MCP operations bypass the OS advisory workspace lease (`agent.lock`) held by the parent agent process. SQLite write transactions serialize Task mutations across connections.
+7. **Thread Safety**. MCP worker threads can share one store. `SQLiteStateStore` serializes access to that connection, so each writer owns its transaction through commit or rollback.
 
 ### Provider Integration Transports
 
@@ -647,6 +647,8 @@ Native provider TUI (owns the terminal)
 ### Shared canonical rules
 
 "Mark completed" — append to `completed` (deduplicated), drop any exactly matching `remaining` entry, and never complete the Task itself — lives once, as `Task.complete_items()` in the domain. Both the MCP write path and the dashboard call it, so an agent and an operator cannot drift apart. `TaskWorkspaceService` gives path-addressed callers Task operations without opening a store themselves, keeping persistence out of the TUI entirely.
+
+Task progress and checkpoint dialogs carry the displayed Task ID from opening through confirmation. An active Task change while a dialog is open cannot redirect its submission.
 
 See [ADR-0010](decisions/ADR-0010-terminal-control-center.md) for the framework choice, alternatives considered, and detailed trade-offs.
 

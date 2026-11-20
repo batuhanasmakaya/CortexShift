@@ -60,6 +60,7 @@ from cortexshift.tui.models import (
     TuiRepositoryModel,
     TuiStateSnapshot,
     TuiSwitchPreview,
+    TuiTaskModel,
     WorkspaceActivity,
     format_relative,
 )
@@ -502,22 +503,21 @@ class CortexShiftApp(App[TuiExitRequest | None]):
     # Task actions
     # ------------------------------------------------------------------
 
-    def _require_active_task(self) -> bool:
+    def _require_active_task(self) -> TuiTaskModel | None:
         if self._snapshot is None or self._snapshot.active_task is None:
             self.notify(
                 "No active CortexShift task. Activate one on the Task screen first.",
                 title="No active task",
                 severity="warning",
             )
-            return False
-        return True
+            return None
+        return self._snapshot.active_task
 
     def action_set_work(self) -> None:
         """Open the set-current-work dialog for the active task."""
-        if not self._require_active_task():
+        task = self._require_active_task()
+        if task is None:
             return
-        assert self._snapshot is not None and self._snapshot.active_task is not None
-        initial = self._snapshot.active_task.current_work or ""
 
         def completed(value: object) -> None:
             # A cancel returns nothing; only a confirmed entry reaches the service, so
@@ -528,20 +528,19 @@ class CortexShiftApp(App[TuiExitRequest | None]):
             message = "Current work updated." if entry else "Current work cleared."
             self.dispatch(
                 ServiceCall(
-                    run=lambda: self.facade.set_current_work(entry),
+                    run=lambda: self.facade.set_current_work(entry, task_id=task.id),
                     complete=self._on_task_mutated(message),
                     failure_title="Could not set current work",
                 )
             )
 
-        self.push_screen(SetCurrentWorkModal(initial), completed)
+        self.push_screen(SetCurrentWorkModal(task.current_work or ""), completed)
 
     def action_mark_completed(self) -> None:
         """Open the mark-completed dialog for the active task."""
-        if not self._require_active_task():
+        task = self._require_active_task()
+        if task is None:
             return
-        assert self._snapshot is not None and self._snapshot.active_task is not None
-        remaining = self._snapshot.active_task.remaining
 
         def completed(value: object) -> None:
             if value is None:
@@ -549,17 +548,18 @@ class CortexShiftApp(App[TuiExitRequest | None]):
             item = cast(str, value)
             self.dispatch(
                 ServiceCall(
-                    run=lambda: self.facade.mark_completed([item]),
+                    run=lambda: self.facade.mark_completed([item], task_id=task.id),
                     complete=self._on_task_mutated(f"Marked completed: {item}"),
                     failure_title="Could not mark item completed",
                 )
             )
 
-        self.push_screen(MarkCompletedModal(remaining), completed)
+        self.push_screen(MarkCompletedModal(task.remaining), completed)
 
     def action_add_remaining(self) -> None:
         """Open the add-remaining-item dialog for the active task."""
-        if not self._require_active_task():
+        task = self._require_active_task()
+        if task is None:
             return
 
         def completed(value: object) -> None:
@@ -568,7 +568,7 @@ class CortexShiftApp(App[TuiExitRequest | None]):
             item = cast(str, value)
             self.dispatch(
                 ServiceCall(
-                    run=lambda: self.facade.add_remaining([item]),
+                    run=lambda: self.facade.add_remaining([item], task_id=task.id),
                     complete=self._on_task_mutated(f"Added remaining item: {item}"),
                     failure_title="Could not add remaining item",
                 )
@@ -578,7 +578,8 @@ class CortexShiftApp(App[TuiExitRequest | None]):
 
     def action_record_issue(self) -> None:
         """Open the record-issue dialog for the active task."""
-        if not self._require_active_task():
+        task = self._require_active_task()
+        if task is None:
             return
 
         def completed(value: object) -> None:
@@ -587,7 +588,7 @@ class CortexShiftApp(App[TuiExitRequest | None]):
             item = cast(str, value)
             self.dispatch(
                 ServiceCall(
-                    run=lambda: self.facade.record_issues([item]),
+                    run=lambda: self.facade.record_issues([item], task_id=task.id),
                     complete=self._on_task_mutated(f"Recorded issue: {item}"),
                     failure_title="Could not record issue",
                 )
@@ -642,7 +643,8 @@ class CortexShiftApp(App[TuiExitRequest | None]):
 
     def action_checkpoint(self) -> None:
         """Open the checkpoint dialog and create a MANUAL checkpoint on confirmation."""
-        if not self._require_active_task():
+        task = self._require_active_task()
+        if task is None:
             return
 
         def completed(value: object) -> None:
@@ -655,6 +657,7 @@ class CortexShiftApp(App[TuiExitRequest | None]):
                         decisions=[entry.decision] if entry.decision else None,
                         test_summary=entry.test_summary,
                         note=entry.note,
+                        task_id=task.id,
                     ),
                     complete=self._on_checkpoint_created,
                     failure_title="Could not create checkpoint",

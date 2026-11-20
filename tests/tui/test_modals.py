@@ -123,6 +123,75 @@ async def test_record_issue_modal_appends_an_issue(project: Path) -> None:
         assert "Textual 8 is required" in active_task(project).known_issues  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize(
+    ("key", "input_id", "entry", "field", "expected"),
+    [
+        (
+            "w",
+            "#entry-input",
+            "Still on the original task",
+            "current_work",
+            "Still on the original task",
+        ),
+        (
+            "m",
+            "#entry-input",
+            "Wire the parser",
+            "completed",
+            ["Scaffolded the capture module", "Wire the parser"],
+        ),
+        (
+            "n",
+            "#entry-input",
+            "New work",
+            "remaining",
+            ["Wire the parser", "Add regression tests", "New work"],
+        ),
+        (
+            "i",
+            "#entry-input",
+            "New issue",
+            "known_issues",
+            ["Retina scaling is inconsistent", "New issue"],
+        ),
+        (
+            "c",
+            "#checkpoint-decision",
+            "Keep existing behavior",
+            "decision",
+            ["Keep existing behavior"],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_modal_confirmation_keeps_its_original_task(
+    project: Path, key: str, input_id: str, entry: str, field: str, expected: object
+) -> None:
+    service = TaskWorkspaceService()
+    original = service.get_active_task(project)
+    assert original is not None
+    app = build_app(project)
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        await pilot.press(key)
+        await pilot.pause()
+        app.screen.query_one(input_id, Input).value = entry
+
+        other = service.start_task("New active task", "Leave it alone", start_dir=project)
+        await pilot.press("enter")
+        await settle(app, pilot)
+
+    with service.open(project) as workspace:
+        assert workspace.tasks.get_active_task(workspace.project.id) == other
+        updated = workspace.tasks.get_task(original.id)
+    if field == "decision":
+        (checkpoint,) = CheckpointService().list_checkpoints(task_id=original.id, start_dir=project)
+        assert checkpoint.payload.decisions == expected
+        assert CheckpointService().list_checkpoints(task_id=other.id, start_dir=project) == []
+    else:
+        assert getattr(updated, field) == expected
+
+
 @pytest.mark.asyncio
 async def test_empty_input_is_rejected_and_nothing_is_mutated(project: Path) -> None:
     before = active_task(project)

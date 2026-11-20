@@ -21,9 +21,11 @@ which records were first persisted -- the chronology the timestamps were reachin
 import json
 import os
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePath, PureWindowsPath
+from threading import RLock
 from typing import Any, Literal
 from urllib.parse import quote, quote_from_bytes
 
@@ -101,6 +103,8 @@ class SQLiteStateStore(
     ) -> None:
         """Open state, validating an existing workspace before configuring or migrating it."""
         self.db_path = Path(db_path).resolve()
+        self._connection_lock = RLock()
+        self._task_write_open = False
         if _mode == "rwc":
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -186,7 +190,10 @@ class SQLiteStateStore(
     def migrate(self) -> int:
         """Run pending schema migrations on the database."""
         try:
-            return run_migrations(self._conn)
+            with self._connection_lock:
+                if self._conn.in_transaction:
+                    raise DatabaseStateError("Cannot migrate during a write transaction.")
+                return run_migrations(self._conn)
         except (DatabaseStateError, UnsupportedSchemaVersionError):
             raise
         except sqlite3.Error as err:
@@ -194,12 +201,14 @@ class SQLiteStateStore(
 
     def get_schema_version(self) -> int:
         """Inspect and return the current schema version of the database."""
-        return get_current_schema_version(self._conn)
+        with self._connection_lock:
+            return get_current_schema_version(self._conn)
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""
-        if hasattr(self, "_conn"):
-            self._conn.close()
+        with self._connection_lock:
+            if hasattr(self, "_conn"):
+                self._conn.close()
 
     def __enter__(self) -> "SQLiteStateStore":
         return self
@@ -207,12 +216,54 @@ class SQLiteStateStore(
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
 
+    @contextmanager
+    def _write(self, *, join_task_write: bool = False) -> Iterator[None]:
+        # MCP worker threads share this connection. Only the owning thread can
+        # join its Task transaction, and unrelated writers must wait for it.
+        with self._connection_lock:
+            if join_task_write and self._task_write_open:
+                yield
+                return
+            if self._conn.in_transaction:
+                raise DatabaseStateError("Nested SQLite write transactions are unsupported.")
+            with self._conn:
+                yield
+
+    @contextmanager
+    def task_write_transaction(self) -> Iterator[None]:
+        """Acquire SQLite's write reservation before reading canonical Task state."""
+        try:
+            with self._write():
+                self._conn.execute("BEGIN IMMEDIATE;")
+                self._task_write_open = True
+                try:
+                    yield
+                finally:
+                    self._task_write_open = False
+        except sqlite3.Error as err:
+            code = getattr(err, "sqlite_errorcode", 0) & 0xFF
+            if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise DatabaseStateError(
+                    "Task update could not acquire or finish its write transaction. Try again."
+                ) from err
+            raise DatabaseStateError(f"Task write transaction failed: {err}") from err
+
+    def _fetch_row(self, sql: str, params: tuple[object, ...] = ()) -> sqlite3.Row | None:
+        with self._connection_lock, closing(self._conn.execute(sql, params)) as cursor:
+            row: sqlite3.Row | None = cursor.fetchone()
+            return row
+
+    def _fetch_rows(self, sql: str, params: tuple[object, ...] | list[Any]) -> list[sqlite3.Row]:
+        with self._connection_lock, closing(self._conn.execute(sql, params)) as cursor:
+            rows: list[sqlite3.Row] = cursor.fetchall()
+            return rows
+
     # --- Project Operations ---
 
     def save_project(self, project: Project) -> None:
         """Persist or update a canonical Project record."""
         try:
-            with self._conn:
+            with self._write():
                 self._conn.execute(
                     """
                     INSERT INTO projects (id, name, repo_path, created_at, metadata)
@@ -245,12 +296,10 @@ class SQLiteStateStore(
     def get_project(self, project_id: str) -> Project | None:
         """Retrieve a Project by its stable identifier."""
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            row = self._fetch_row(
                 "SELECT id, name, repo_path, created_at, metadata FROM projects WHERE id = ?;",
                 (project_id,),
             )
-            row = cursor.fetchone()
             if row is None:
                 return None
             return self._row_to_project(row)
@@ -260,22 +309,22 @@ class SQLiteStateStore(
     def get_default_project(self, *, allow_empty_database: bool = False) -> Project | None:
         """Retrieve the canonical project associated with this project-local store."""
         try:
-            cursor = self._conn.cursor()
-            if (
-                allow_empty_database
-                and not cursor.execute(
-                    "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'projects'"
-                ).fetchone()
-                and self.get_schema_version() == 0
-            ):
-                return None
-            cursor.execute(
-                "SELECT id, name, repo_path, created_at, metadata FROM projects LIMIT 1;"
-            )
-            row = cursor.fetchone()
-            if row is None:
-                return None
-            return self._row_to_project(row)
+            with self._connection_lock:
+                if (
+                    allow_empty_database
+                    and self._fetch_row(
+                        "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'projects'"
+                    )
+                    is None
+                    and self.get_schema_version() == 0
+                ):
+                    return None
+                row = self._fetch_row(
+                    "SELECT id, name, repo_path, created_at, metadata FROM projects LIMIT 1;"
+                )
+                if row is None:
+                    return None
+                return self._row_to_project(row)
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             raise StateCorruptionError(f"Failed to load default project: {err}") from err
 
@@ -294,7 +343,7 @@ class SQLiteStateStore(
     def save_task(self, task: Task) -> None:
         """Persist or update a canonical Task record."""
         try:
-            with self._conn:
+            with self._write(join_task_write=True):
                 self._conn.execute(
                     """
                     INSERT INTO tasks (
@@ -339,8 +388,7 @@ class SQLiteStateStore(
     def get_task(self, task_id: str) -> Task | None:
         """Retrieve a Task by its stable identifier."""
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            row = self._fetch_row(
                 """
                 SELECT id, project_id, title, objective, requirements, constraints,
                        status, completed_items, current_work, remaining_items,
@@ -349,7 +397,6 @@ class SQLiteStateStore(
                 """,
                 (task_id,),
             )
-            row = cursor.fetchone()
             if row is None:
                 return None
             return self._row_to_task(row)
@@ -359,8 +406,7 @@ class SQLiteStateStore(
     def list_tasks(self, project_id: str) -> list[Task]:
         """List all tasks associated with a given project ordered by creation time."""
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            rows = self._fetch_rows(
                 """
                 SELECT id, project_id, title, objective, requirements, constraints,
                        status, completed_items, current_work, remaining_items,
@@ -370,7 +416,7 @@ class SQLiteStateStore(
                 """,
                 (project_id,),
             )
-            return [self._row_to_task(row) for row in cursor.fetchall()]
+            return [self._row_to_task(row) for row in rows]
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             msg = f"Failed to list tasks for project '{project_id}': {err}"
             raise StateCorruptionError(msg) from err
@@ -399,12 +445,10 @@ class SQLiteStateStore(
     def get_active_task_id(self, project_id: str) -> str | None:
         """Retrieve the identifier of the active task for the project, if any."""
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            row = self._fetch_row(
                 "SELECT active_task_id FROM project_runtime WHERE project_id = ?;",
                 (project_id,),
             )
-            row = cursor.fetchone()
             if row is None or row["active_task_id"] is None:
                 return None
             return str(row["active_task_id"])
@@ -415,7 +459,7 @@ class SQLiteStateStore(
     def set_active_task_id(self, project_id: str, task_id: str | None) -> None:
         """Set or clear the active task identifier for the project."""
         try:
-            with self._conn:
+            with self._write(join_task_write=True):
                 self._conn.execute(
                     """
                     INSERT INTO project_runtime (project_id, active_task_id)
@@ -434,7 +478,7 @@ class SQLiteStateStore(
     def save_snapshot(self, snapshot: GitSnapshot) -> None:
         """Persist a canonical GitSnapshot record."""
         try:
-            with self._conn:
+            with self._write():
                 self._conn.execute(
                     """
                     INSERT INTO git_snapshots (
@@ -475,8 +519,7 @@ class SQLiteStateStore(
     def get_snapshot(self, snapshot_id: str) -> GitSnapshot | None:
         """Retrieve a GitSnapshot by its identifier."""
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            row = self._fetch_row(
                 """
                 SELECT id, project_id, project_root, git_root, git_version,
                        branch, head_sha, detached_head, dirty,
@@ -487,7 +530,6 @@ class SQLiteStateStore(
                 """,
                 (snapshot_id,),
             )
-            row = cursor.fetchone()
             if row is None:
                 return None
             return self._row_to_snapshot(row)
@@ -498,8 +540,7 @@ class SQLiteStateStore(
     def list_snapshots(self, project_id: str, limit: int = 10) -> list[GitSnapshot]:
         """List snapshots for a given project, ordered newest first."""
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            rows = self._fetch_rows(
                 """
                 SELECT id, project_id, project_root, git_root, git_version,
                        branch, head_sha, detached_head, dirty,
@@ -512,7 +553,7 @@ class SQLiteStateStore(
                 """,
                 (project_id, max(1, limit)),
             )
-            return [self._row_to_snapshot(row) for row in cursor.fetchall()]
+            return [self._row_to_snapshot(row) for row in rows]
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             msg = f"Failed to list snapshots for project '{project_id}': {err}"
             raise StateCorruptionError(msg) from err
@@ -544,7 +585,7 @@ class SQLiteStateStore(
     def save_session(self, session: Session) -> None:
         """Persist or update an agent execution Session."""
         try:
-            with self._conn:
+            with self._write():
                 self._conn.execute(
                     """
                     INSERT INTO sessions (
@@ -588,8 +629,7 @@ class SQLiteStateStore(
     def get_session(self, session_id: str) -> Session | None:
         """Retrieve a Session by its unique identifier."""
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            row = self._fetch_row(
                 """
                 SELECT id, task_id, provider_id, native_session_id, status,
                        started_at, ended_at, exit_reason, exit_code, metadata,
@@ -598,7 +638,6 @@ class SQLiteStateStore(
                 """,
                 (session_id,),
             )
-            row = cursor.fetchone()
             if row is None:
                 return None
             return self._row_to_session(row)
@@ -614,7 +653,6 @@ class SQLiteStateStore(
     ) -> list[Session]:
         """List sessions, ordered newest first."""
         try:
-            cursor = self._conn.cursor()
             conditions: list[str] = []
             params: list[Any] = []
 
@@ -638,8 +676,8 @@ class SQLiteStateStore(
                 LIMIT ?;
             """
             params.append(-1 if limit is None else max(1, limit))
-            cursor.execute(query, params)
-            return [self._row_to_session(row) for row in cursor.fetchall()]
+            rows = self._fetch_rows(query, params)
+            return [self._row_to_session(row) for row in rows]
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             msg = f"Failed to list sessions: {err}"
             raise StateCorruptionError(msg) from err
@@ -674,7 +712,7 @@ class SQLiteStateStore(
         prompts and provider responses are never persisted.
         """
         try:
-            with self._conn:
+            with self._write():
                 self._conn.execute(
                     """
                     INSERT INTO handoffs (
@@ -734,7 +772,7 @@ class SQLiteStateStore(
     ) -> None:
         """Update delivery metadata of an existing handoff record."""
         try:
-            with self._conn:
+            with self._write():
                 self._conn.execute(
                     """
                     UPDATE handoffs SET
@@ -759,8 +797,7 @@ class SQLiteStateStore(
     def get_handoff(self, handoff_id: str) -> HandoffRecord | None:
         """Retrieve a HandoffRecord by its stable identifier."""
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            row = self._fetch_row(
                 """
                 SELECT id, protocol_version, project_id, task_id,
                        source_session_id, source_provider_id, target_provider_id,
@@ -771,7 +808,6 @@ class SQLiteStateStore(
                 """,
                 (handoff_id,),
             )
-            row = cursor.fetchone()
             if row is None:
                 return None
             return self._row_to_handoff(row)
@@ -787,7 +823,6 @@ class SQLiteStateStore(
     ) -> list[HandoffRecord]:
         """List handoff records, ordered newest first."""
         try:
-            cursor = self._conn.cursor()
             conditions: list[str] = []
             params: list[Any] = []
 
@@ -812,8 +847,8 @@ class SQLiteStateStore(
                 LIMIT ?;
             """
             params.append(max(1, limit))
-            cursor.execute(query, params)
-            return [self._row_to_handoff(row) for row in cursor.fetchall()]
+            rows = self._fetch_rows(query, params)
+            return [self._row_to_handoff(row) for row in rows]
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             raise StateCorruptionError(f"Failed to list handoffs: {err}") from err
 
@@ -851,7 +886,7 @@ class SQLiteStateStore(
         provider responses, transcripts, and full diffs are never persisted.
         """
         try:
-            with self._conn:
+            with self._write():
                 self._conn.execute(
                     """
                     INSERT INTO checkpoints (
@@ -892,8 +927,7 @@ class SQLiteStateStore(
     def get_checkpoint(self, checkpoint_id: str) -> CheckpointRecord | None:
         """Retrieve a CheckpointRecord by its stable identifier."""
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            row = self._fetch_row(
                 """
                 SELECT id, protocol_version, project_id, task_id, session_id,
                        git_snapshot_id, kind, payload, created_at, metadata
@@ -901,7 +935,6 @@ class SQLiteStateStore(
                 """,
                 (checkpoint_id,),
             )
-            row = cursor.fetchone()
             if row is None:
                 return None
             return self._row_to_checkpoint(row)
@@ -917,7 +950,6 @@ class SQLiteStateStore(
     ) -> list[CheckpointRecord]:
         """List checkpoint records, ordered newest first."""
         try:
-            cursor = self._conn.cursor()
             conditions: list[str] = []
             params: list[Any] = []
 
@@ -939,8 +971,8 @@ class SQLiteStateStore(
                 LIMIT ?;
             """
             params.append(-1 if limit is None else max(1, limit))
-            cursor.execute(query, params)
-            return [self._row_to_checkpoint(row) for row in cursor.fetchall()]
+            rows = self._fetch_rows(query, params)
+            return [self._row_to_checkpoint(row) for row in rows]
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             raise StateCorruptionError(f"Failed to list checkpoints: {err}") from err
 
@@ -958,8 +990,7 @@ class SQLiteStateStore(
         applied in SQL, so this query can never span tasks.
         """
         try:
-            cursor = self._conn.cursor()
-            cursor.execute(
+            rows = self._fetch_rows(
                 """
                 SELECT id, protocol_version, project_id, task_id, session_id,
                        git_snapshot_id, kind, payload, created_at, metadata
@@ -969,7 +1000,7 @@ class SQLiteStateStore(
                 """,
                 (task_id,),
             )
-            return [self._row_to_checkpoint(row) for row in cursor.fetchall()]
+            return [self._row_to_checkpoint(row) for row in rows]
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             raise StateCorruptionError(
                 f"Failed to list checkpoint history for task '{task_id}': {err}"

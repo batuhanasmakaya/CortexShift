@@ -308,6 +308,22 @@ def test_task_command_errors(initialized_dir: Path) -> None:
     assert "terminal status" in (res3.stderr + res3.stdout)
 
 
+def test_task_update_rejects_completed_explicit_target(initialized_dir: Path) -> None:
+    assert runner.invoke(app, ["task", "start", "-t", "Done Task", "-o", "First"]).exit_code == 0
+    done = json.loads(runner.invoke(app, ["task", "show", "--json"]).stdout)
+    assert runner.invoke(app, ["task", "complete", done["id"]]).exit_code == 0
+    assert runner.invoke(app, ["task", "start", "-t", "Active Task", "-o", "Second"]).exit_code == 0
+
+    res = runner.invoke(app, ["task", "update", done["id"], "--add-issue", "Late report"])
+    assert res.exit_code == 1
+    assert "terminal status" in res.stderr
+    tasks = json.loads(runner.invoke(app, ["task", "list", "--json"]).stdout)
+    completed, active = tasks
+    assert completed["status"] == "completed"
+    assert active["is_active"] is True
+    assert completed["known_issues"] == active["known_issues"] == []
+
+
 def test_task_in_uninitialized_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify task commands fail gracefully with instructions outside initialized projects."""
     uninit = tmp_path / "empty_dir"
