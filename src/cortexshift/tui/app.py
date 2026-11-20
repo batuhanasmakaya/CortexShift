@@ -30,6 +30,7 @@ from textual.widgets import ContentSwitcher, DataTable, Footer, Header, OptionLi
 from textual.widgets.option_list import Option
 from textual.worker import WorkerState, get_current_worker
 
+from cortexshift.application.recovery_service import RecoveryReport
 from cortexshift.application.workspace import WorkspaceStart
 from cortexshift.domain.checkpoint import CheckpointRecord
 from cortexshift.domain.errors import CortexShiftError
@@ -714,7 +715,9 @@ class CortexShiftApp(App[TuiExitRequest | None]):
         preview = cast(TuiRecoveryPreview, result)
         if preview.stale_count == 0:
             self.notify(
-                "No unfinalized sessions were found. Nothing to recover.",
+                f"No sessions are eligible for recovery. Examined {preview.examined_count}. "
+                f"Already reconciled: {preview.already_reconciled_count}. "
+                f"Live ownership: {preview.live_count}. Uncertain: {preview.uncertain_count}.",
                 title="Recovery",
                 timeout=5,
             )
@@ -742,11 +745,12 @@ class CortexShiftApp(App[TuiExitRequest | None]):
         )
 
     def _on_recovered(self, result: object) -> None:
-        report = getattr(result, "reconciled_session_ids", [])
-        checkpoint_id = getattr(result, "checkpoint_id", None)
-        detail = f" Recovery checkpoint {checkpoint_id}." if checkpoint_id else ""
+        report = cast(RecoveryReport, result)
         self.notify(
-            f"Reconciled {len(report)} session(s).{detail}",
+            f"Reconciled {len(report.reconciled_session_ids)} session(s) across "
+            f"{len(report.tasks)} Task(s). Live ownership: {len(report.live_session_ids)}. "
+            f"Uncertain: {len(report.uncertain_session_ids)}. "
+            f"Changed during recovery: {len(report.changed_session_ids)}.",
             title="Recovery complete",
             timeout=8,
         )

@@ -199,6 +199,7 @@ async def test_recovery_preview_precedes_any_mutation(project: Path) -> None:
         status=SessionStatus.RUNNING,
         exit_reason=None,
         exit_code=None,
+        provider_guarded=True,
     )
 
     from cortexshift.application.session_service import SessionService
@@ -240,6 +241,7 @@ async def test_declining_recovery_reconciles_nothing(project: Path) -> None:
         status=SessionStatus.RUNNING,
         exit_reason=None,
         exit_code=None,
+        provider_guarded=True,
     )
 
     from cortexshift.application.session_service import SessionService

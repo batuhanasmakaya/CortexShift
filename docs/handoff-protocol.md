@@ -111,7 +111,7 @@ The point-in-time engineering context. Provider-neutral, immutable, never trunca
 | **REMAINING** | `remaining` | list[str] | Unfinished backlog. |
 | **IMPORTANT DECISIONS** | `important_decisions`, `decisions_known` | list[str], bool | Aggregated across every checkpoint persisted for the task; empty with `decisions_known = False` only when that whole history holds none (see §6). |
 | **FILES TOUCHED** | `files_touched` | list[str] | Deduplicated union of live Git change classes (see §8). |
-| **TEST STATUS** | `test_status` | `HandoffTestStatus` | `known` + `summary`; enriched from newest checkpoint with reported provenance disclaimer (see §6). |
+| **TEST STATUS** | `test_status` | `HandoffTestStatus` | `known` + `summary`; historical evidence from the newest meaningful test checkpoint, with recorded provenance (see §6). |
 | **KNOWN ISSUES** | `known_issues` | list[str] | Recorded bugs, blockers, failing edge cases. |
 | **GIT STATE** | `git_state` | `HandoffGitState` | Status, availability marker, branch/HEAD/dirty, change counts, diff summaries, snapshot reference (see §7). |
 | **DO NOT REDO** | `do_not_redo` | list[str] | Derived from recorded completed work; conservative phrasing (see §6). |
@@ -193,16 +193,10 @@ When an immutable checkpoint (`MANUAL`, `SESSION_END`, or `RECOVERY`) exists for
 - **`important_decisions`**: Aggregated across **all** checkpoints persisted for the task, providing historical context without parsing conversation transcripts. Decisions are *not* read from the newest checkpoint alone. A checkpoint is an immutable point-in-time observation and never absorbs an earlier checkpoint's decisions, so `record_decision` mints its own checkpoint and task-level durability is reconstructed at handoff time instead. Without this, any later checkpoint recorded with no decisions of its own — including the `SESSION_END` checkpoint captured automatically when a provider process exits — would bury every decision recorded during that session.
   - **Ordering**: chronological first-seen order, from `created_at ASC, rowid ASC` over the task's checkpoints. The `rowid` tie-breaker keeps the sequence deterministic when two checkpoints share a timestamp.
   - **De-duplication**: exact string equality only. A decision recorded redundantly in several checkpoints appears once, at its first occurrence; text is never trimmed, case-folded, or fuzzy-matched for comparison.
-  - **Task scope**: the aggregation query takes a mandatory `task_id` and is additionally filtered in application code, so a handoff for one task can never surface another task's decisions.
+  - **Task scope**: the aggregation query is bound to both the project and the task.
   - **Provenance**: `record_decision` marks its checkpoint with `trigger = "decision"` in the existing `metadata` mapping (ADR-0009). That marker is provenance only — aggregation reads every checkpoint's `decisions`, whatever produced them, and never parses `operator_note`.
-- **`test_status`**: If the checkpoint recorded a test summary, it is included with an explicit **`[Reported / Unverified Provenance]`** notice:
-  ```text
-  TEST STATUS
-  Reported by prior agent / checkpoint (unverified by CortexShift):
-  42 passed in 1.2s
-  The receiving agent must independently verify test status before relying on previous claims.
-  ```
-- **Provenance Header**: The rendered handoff package includes a `LATEST CHECKPOINT (Provenance Reference)` section linking the checkpoint ID, kind, and creation timestamp. `source_checkpoint_id` continues to reference the newest checkpoint — the source of the Git and test-status enrichment — while `important_decisions` may draw on several checkpoints across the task's history.
+- **`test_status`**: The newest checkpoint with meaningful test evidence in this Task supplies the historical test status, even when the latest checkpoint has an empty test field. Selection uses `created_at DESC, rowid DESC` across the Task's Sessions. The summary includes the evidence checkpoint ID, originating Session ID when available, capture time, recorded provenance, and quoted command/result text. Reported results remain unverified. The HEAD comparison uses the Git observation at checkpoint capture, and current verification stays unknown even when HEAD matches. An omitted report is disclosed under TEST STATUS when the UTF-8 budget is tight.
+- **Provenance Header**: The `LATEST CHECKPOINT (Provenance Reference)` section and `source_checkpoint_id` reference the newest checkpoint. The evidence checkpoint can be older. The GIT STATE section is derived from inspection at handoff time.
 
 **Completed / Do Not Redo semantics.** Recorded completed items are advisory. The package states that they are *recorded as completed in CortexShift canonical state* and that the receiving agent must verify them against the repository before depending on them. `DO NOT REDO` tells the agent not to rebuild that work from scratch — and explicitly not to skip verification. If verification shows an item is missing or wrong, the agent repairs it rather than restarting the task.
 
@@ -382,11 +376,13 @@ Rendered prompts are transport representations, re-derived deterministically fro
 
 ---
 
-## 16. Handling Unexpected Termination *(current behavior and future work)*
+## 16. Handling Unexpected Termination
 
-Because handoff generation depends only on durable state and live Git, an abrupt termination of the previous agent does not prevent a handoff. The previous session's recorded status and exit reason travel with the package, so the receiving agent knows whether the prior session completed normally, crashed, or was interrupted.
-
-Phase 7 will add automatic checkpointing so that in-flight context is captured while an agent works, enriching the payload beyond what the Task record alone holds.
+Handoff generation uses durable state and live Git after an abrupt termination.
+The source Session fields describe its last recorded status. Run
+`cortexshift recover --dry-run` to review eligible invocations across the project.
+Recovery preserves uncertain records and commits each affected Task's recovery
+checkpoint together with its Session transitions. See [ADR-0016](decisions/ADR-0016-project-recovery-and-test-evidence.md).
 
 ---
 

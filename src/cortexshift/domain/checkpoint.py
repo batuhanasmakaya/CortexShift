@@ -23,6 +23,7 @@ CHECKPOINT_PROTOCOL_VERSION = 1
 MAX_OPERATOR_NOTE_CHARS = 2_000
 MAX_DECISION_CHARS = 1_000
 MAX_TEST_SUMMARY_CHARS = 1_000
+UNKNOWN_TEST_SUMMARY = "No independently verified test results recorded."
 
 # Structured provenance marker recorded in the extensible `metadata` mapping that both
 # CheckpointRecord and CheckpointPayload already carry. ADR-0009 specifies that
@@ -68,8 +69,41 @@ class CheckpointTestStatus(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     known: bool = False
-    summary: str = "No independently verified test results recorded."
+    summary: str = UNKNOWN_TEST_SUMMARY
     provenance: CheckpointTestProvenance = CheckpointTestProvenance.UNKNOWN
+
+    @property
+    def has_evidence(self) -> bool:
+        summary = self.summary.strip()
+        return (
+            self.known
+            and self.provenance != CheckpointTestProvenance.UNKNOWN
+            and bool(summary)
+            and summary != UNKNOWN_TEST_SUMMARY
+        )
+
+
+class CheckpointReference(BaseModel):
+    """Checkpoint provenance independently of the historical payload."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    kind: CheckpointKind
+    created_at: datetime
+
+
+class CheckpointTestEvidence(BaseModel):
+    """One historical test status and the Git observation at capture time."""
+
+    model_config = ConfigDict(frozen=True)
+
+    checkpoint_id: str
+    created_at: datetime
+    session_id: str | None = None
+    status: CheckpointTestStatus
+    observed_head: str | None = None
+    observed_dirty: bool | None = None
 
 
 class CheckpointTaskSnapshot(BaseModel):

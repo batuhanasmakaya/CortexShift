@@ -2,7 +2,11 @@
 
 from typing import Protocol, runtime_checkable
 
-from cortexshift.domain.checkpoint import CheckpointRecord
+from cortexshift.domain.checkpoint import (
+    CheckpointRecord,
+    CheckpointReference,
+    CheckpointTestEvidence,
+)
 
 
 @runtime_checkable
@@ -42,4 +46,20 @@ class CheckpointStore(Protocol):
         task_id: str,
     ) -> list[CheckpointRecord]:
         """List every checkpoint for one task, oldest first, with deterministic ordering."""
+        ...
+
+    def get_latest_checkpoint_reference(
+        self, project_id: str, task_id: str
+    ) -> CheckpointReference | None:
+        """Retrieve the latest checkpoint's identity without its payload."""
+        ...
+
+    def list_checkpoint_decisions(self, project_id: str, task_id: str) -> list[str]:
+        """Read decision text in checkpoint capture order."""
+        ...
+
+    def get_latest_checkpoint_test_evidence(
+        self, project_id: str, task_id: str
+    ) -> CheckpointTestEvidence | None:
+        """Read the latest meaningful test status for the specified Task."""
         ...

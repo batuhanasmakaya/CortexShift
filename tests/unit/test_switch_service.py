@@ -1,6 +1,7 @@
 """Unit tests for SwitchService handoff orchestration."""
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -834,14 +835,20 @@ def test_recover_after_interrupted_claude_delivery_retains_unconfirmed_handoff(
         _service(process_runner=InterruptedRunner()).switch("claude", start_dir=tmp_path)
     assert exc.value.code == 97
 
-    RecoveryService(inspector=FakeInspector()).recover(start_dir=tmp_path)
+    report = RecoveryService(inspector=FakeInspector()).recover(start_dir=tmp_path)
     with _store(tmp_path) as store:
         (handoff,) = store.list_handoffs()
         assert handoff.status == HandoffStatus.PREPARED
         assert handoff.delivered_at is None
         assert handoff.target_session_id is not None
         interrupted = store.get_session(handoff.target_session_id)
-        assert interrupted is not None and interrupted.status == SessionStatus.INTERRUPTED
+        assert interrupted is not None
+        if sys.platform == "win32":
+            assert report.uncertain_session_ids == [interrupted.id]
+            assert interrupted.status == SessionStatus.RUNNING
+        else:
+            assert report.reconciled_session_ids == [interrupted.id]
+            assert interrupted.status == SessionStatus.INTERRUPTED
         assert interrupted.ended_at is None
         assert interrupted.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
         assert store.get_task(task.id) == task

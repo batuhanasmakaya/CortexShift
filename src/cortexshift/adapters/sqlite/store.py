@@ -34,6 +34,10 @@ from cortexshift.domain.checkpoint import (
     CheckpointKind,
     CheckpointPayload,
     CheckpointRecord,
+    CheckpointReference,
+    CheckpointTestEvidence,
+    CheckpointTestProvenance,
+    CheckpointTestStatus,
 )
 from cortexshift.domain.errors import (
     DatabaseStateError,
@@ -250,7 +254,7 @@ class SQLiteStateStore(
                 raise DatabaseStateError(
                     "Could not acquire or finish the state write transaction. Try again."
                 ) from err
-            raise DatabaseStateError(f"Task write transaction failed: {err}") from err
+            raise DatabaseStateError(f"State write transaction failed: {err}") from err
 
     def _fetch_row(self, sql: str, params: tuple[object, ...] = ()) -> sqlite3.Row | None:
         with self._connection_lock, closing(self._conn.execute(sql, params)) as cursor:
@@ -587,7 +591,7 @@ class SQLiteStateStore(
     # --- Session Operations (SessionStore) ---
 
     def save_session(self, session: Session) -> None:
-        """Persist or update an agent execution Session."""
+        """Persist an invocation without rewriting a committed recovery transition."""
         try:
             with self._write(join_transaction=True):
                 self._conn.execute(
@@ -608,7 +612,8 @@ class SQLiteStateStore(
                         exit_reason = excluded.exit_reason,
                         exit_code = excluded.exit_code,
                         metadata = excluded.metadata,
-                        reconciled_at = excluded.reconciled_at;
+                        reconciled_at = excluded.reconciled_at
+                    WHERE sessions.reconciled_at IS NULL;
                     """,
                     (
                         session.id,
@@ -654,6 +659,8 @@ class SQLiteStateStore(
         project_id: str | None = None,
         task_id: str | None = None,
         limit: int | None = 20,
+        *,
+        statuses: tuple[SessionStatus, ...] | None = None,
     ) -> list[Session]:
         """List sessions, ordered newest first."""
         try:
@@ -667,6 +674,11 @@ class SQLiteStateStore(
             if project_id is not None:
                 conditions.append("t.project_id = ?")
                 params.append(project_id)
+
+            if statuses is not None:
+                placeholders = ", ".join("?" for _ in statuses)
+                conditions.append(f"s.status IN ({placeholders})")
+                params.extend(statuses)
 
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
@@ -685,6 +697,17 @@ class SQLiteStateStore(
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             msg = f"Failed to list sessions: {err}"
             raise StateCorruptionError(msg) from err
+
+    def count_reconciled_sessions(self, project_id: str) -> int:
+        """Count prior reconciliations without loading historical Session payloads."""
+        row = self._fetch_row(
+            """
+            SELECT COUNT(*) AS total FROM sessions s JOIN tasks t ON s.task_id = t.id
+            WHERE t.project_id = ? AND s.reconciled_at IS NOT NULL;
+            """,
+            (project_id,),
+        )
+        return int(row["total"]) if row is not None else 0
 
     def _row_to_session(self, row: sqlite3.Row) -> Session:
         """Convert a database row into a Session domain entity."""
@@ -1024,3 +1047,92 @@ class SQLiteStateStore(
             created_at=_parse_utc_datetime(row["created_at"]),
             metadata=json.loads(row["metadata"]),
         )
+
+    def get_latest_checkpoint_reference(
+        self, project_id: str, task_id: str
+    ) -> CheckpointReference | None:
+        """Read a checkpoint's identity even if its payload has legacy fields."""
+        row = self._fetch_row(
+            """
+            SELECT id, kind, created_at FROM checkpoints
+            WHERE project_id = ? AND task_id = ?
+            ORDER BY created_at DESC, rowid DESC LIMIT 1;
+            """,
+            (project_id, task_id),
+        )
+        if row is None:
+            return None
+        return CheckpointReference(
+            id=row["id"],
+            kind=CheckpointKind(row["kind"]),
+            created_at=_parse_utc_datetime(row["created_at"]),
+        )
+
+    def list_checkpoint_decisions(self, project_id: str, task_id: str) -> list[str]:
+        """Project only the string decisions, in chronological first-seen order."""
+        rows = self._fetch_rows(
+            """
+            SELECT decision.value FROM checkpoints cp
+            JOIN json_each(CASE WHEN json_valid(cp.payload) THEN CASE
+                WHEN json_type(cp.payload, '$.decisions') = 'array'
+                THEN json_extract(cp.payload, '$.decisions') END END) AS decision
+            WHERE cp.project_id = ? AND cp.task_id = ? AND decision.type = 'text'
+            ORDER BY cp.created_at ASC, cp.rowid ASC, decision.key ASC;
+            """,
+            (project_id, task_id),
+        )
+        return [str(row["value"]) for row in rows]
+
+    def get_latest_checkpoint_test_evidence(
+        self, project_id: str, task_id: str
+    ) -> CheckpointTestEvidence | None:
+        """Read test facts without decoding unrelated fields or retaining old reports."""
+        query = """
+            SELECT id, session_id, created_at,
+                   json_extract(payload, '$.source_session.session_id') AS source_session_id,
+                   json_extract(payload, '$.test_status.summary') AS summary,
+                   json_extract(payload, '$.test_status.provenance') AS provenance,
+                   json_extract(payload, '$.git_state.status') AS git_status,
+                   json_type(payload, '$.git_state.available') AS git_available,
+                   json_extract(payload, '$.git_state.head_sha') AS observed_head,
+                   json_type(payload, '$.git_state.dirty') AS observed_dirty
+            FROM checkpoints
+            WHERE project_id = ? AND task_id = ? AND CASE WHEN json_valid(payload) THEN
+                json_type(payload, '$.test_status.known') = 'true'
+                AND json_type(payload, '$.test_status.summary') = 'text'
+                AND json_extract(payload, '$.test_status.provenance') IN (?, ?)
+            END
+            ORDER BY created_at DESC, rowid DESC;
+        """
+        params = (
+            project_id,
+            task_id,
+            CheckpointTestProvenance.REPORTED,
+            CheckpointTestProvenance.VERIFIED,
+        )
+        with self._connection_lock, closing(self._conn.execute(query, params)) as cursor:
+            for row in cursor:
+                status = CheckpointTestStatus(
+                    known=True, summary=row["summary"], provenance=row["provenance"]
+                )
+                if not status.has_evidence:
+                    continue
+                session_id = row["session_id"] or row["source_session_id"]
+                head = row["observed_head"]
+                dirty = row["observed_dirty"]
+                has_git_observation = (
+                    row["git_status"] == "ready" and row["git_available"] == "true"
+                )
+                return CheckpointTestEvidence(
+                    checkpoint_id=row["id"],
+                    created_at=_parse_utc_datetime(row["created_at"]),
+                    session_id=session_id if isinstance(session_id, str) else None,
+                    status=status,
+                    observed_head=head if has_git_observation and isinstance(head, str) else None,
+                    observed_dirty=(
+                        dirty == "true"
+                        if has_git_observation and dirty in ("true", "false")
+                        else None
+                    ),
+                )
+        return None

@@ -25,7 +25,7 @@ from cortexshift.application.resume_service import ResumeService
 from cortexshift.application.run_service import RunService
 from cortexshift.application.switch_service import ProviderHandoffRegistry, SwitchService
 from cortexshift.domain.provider import PROVIDER_CODEX
-from cortexshift.domain.session import Session, SessionStatus
+from cortexshift.domain.session import PROVIDER_GUARDED_KEY, Session, SessionStatus
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
 from cortexshift.tui.app import CortexShiftApp
@@ -244,7 +244,7 @@ def main() -> None:
     )
     (ROOT / "tracked.txt").write_text(SENTINELS[3], encoding="utf-8")
     cli("repo", "status", "--json")
-    cli("checkpoint", "create")
+    cli("checkpoint", "create", "-t", "pytest: installed fixture result")
     cli("checkpoint", "latest", "--json")
     cli("mcp", "status", "--json")
     asyncio.run(mcp_check(dict(os.environ, CORTEXSHIFT_PROJECT_ROOT=str(ROOT)), False))
@@ -272,7 +272,12 @@ def main() -> None:
         assert task and task.current_work == "Installed MCP work"
         checkpoint = store.get_latest_checkpoint(task.id)
         assert checkpoint and checkpoint.kind.value == "session_end"
-        stale = Session(task_id=task.id, provider_id=PROVIDER_CODEX, status=SessionStatus.RUNNING)
+        stale = Session(
+            task_id=task.id,
+            provider_id=PROVIDER_CODEX,
+            status=SessionStatus.RUNNING,
+            metadata={PROVIDER_GUARDED_KEY: True},
+        )
         store.save_session(stale)
     cli("recover", "--dry-run")
     cli("recover")
@@ -280,6 +285,9 @@ def main() -> None:
         recovered = store.get_session(stale.id)
         assert recovered and recovered.status == SessionStatus.INTERRUPTED
         assert recovered.ended_at is None and recovered.reconciled_at
+    historical = json.loads(cli("handoff", "preview", "claude", "--json"))["rendered_context"]
+    assert "pytest: installed fixture result" in historical
+    assert "current verification status are unknown" in historical
     asyncio.run(tui_check())
     with sqlite3.connect(database) as connection:
         persisted = "\n".join(connection.iterdump())

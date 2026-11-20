@@ -14,7 +14,12 @@ from cortexshift.domain.checkpoint import CheckpointKind
 from cortexshift.domain.handoff import HandoffStatus
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX
-from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
+from cortexshift.domain.session import (
+    PROVIDER_GUARDED_KEY,
+    Session,
+    SessionExitReason,
+    SessionStatus,
+)
 from cortexshift.domain.task import Task
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
@@ -80,6 +85,7 @@ def test_hard_crash_recovery_flagship(tmp_path: Path, monkeypatch) -> None:
             task_id=task.id,
             provider_id=PROVIDER_CLAUDE,
             status=SessionStatus.RUNNING,
+            metadata={PROVIDER_GUARDED_KEY: True},
             native_session_id="claude-crashed-native",
         )
         store.save_session(crashed_session)

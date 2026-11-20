@@ -472,18 +472,18 @@ Unexpected Termination (Quota, SIGKILL, Terminal close, Machine crash)
 Operator / Agent invokes: cortexshift recover
   │
   ├─► Acquires exclusive workspace lease (.cortexshift/agent.lock)
-  ├─► Identifies unfinalized sessions (INITIALIZING, RUNNING)
-  ├─► Honestly reconciles: status=interrupted, exit_reason=unexpected_termination
-  │   Records reconciled_at=<UTC>, leaves ended_at=None
+  ├─► Checks unfinished sessions across the verified project, including inactive Tasks
+  ├─► Leaves live and uncertain invocations alone
   ├─► Inspects live Git working tree and commit state
-  ├─► Creates immutable RECOVERY checkpoint
+  ├─► Commits Session reconciliation and one RECOVERY checkpoint per affected Task
+  │   Records reconciled_at=<UTC> and leaves ended_at=None
   └─► Releases workspace lease
   ▼
 Next Agent Switch: cortexshift switch <target>
   │
   ├─► Ingests latest checkpoint (RECOVERY, MANUAL, or SESSION_END)
   ├─► Aggregates decisions across the task's whole checkpoint history
-  ├─► Enriches handoff with decisions & reported test status (provenance disclaimer)
+  ├─► Selects the latest meaningful test report across the Task's Sessions
   └─► Delivers enriched handoff package to incoming provider
 ```
 
@@ -493,7 +493,7 @@ Checkpoints are stored as immutable `CheckpointRecord` records wrapping a struct
 - **`git`**: Observed live commit SHA, branch, detached HEAD, dirty flag, modified files, diff summaries.
 - **`source_session`**: Details of the session that generated the checkpoint.
 - **`decisions`**: Bounded engineering decisions (`MAX_DECISION_CHARS = 1000`). Literal to this checkpoint: a checkpoint never absorbs an earlier one's decisions, and handoffs recover task-level durability by aggregating across the task's checkpoint history instead.
-- **`test_status`**: Reported test execution outcome with explicit `reported_unverified` provenance.
+- **`test_status`**: Historical test text with explicit provenance, typically `reported`.
 - **`operator_note`**: Contextual human or agent note (`MAX_OPERATOR_NOTE_CHARS = 2000`).
 
 ### Persistence Port: `CheckpointStore`
@@ -505,12 +505,13 @@ Persistence boundaries are encapsulated behind `CheckpointStore`, implemented on
 
 ### Honest Reconciliation Invariants
 1. **Never Fabricate Process End Times**: Stale sessions record `reconciled_at`, preserving `ended_at = None`.
-2. **Never Fabricate Test Verification**: Checkpoint test summaries are qualified as unverified reports in handoff payloads.
+2. **Never Fabricate Test Verification**: Handoffs preserve historical test provenance and keep current verification unknown.
 3. **Historical State Never Outranks Live Truth**: Live Git inspection and verified commands always outrank historical checkpoint observations.
 4. **Cooperative Milestones Without Lease**: Manual checkpoint creation never contends for the workspace lease.
 5. **Crash Recovery Under Exclusive Lease**: Recovery operations strictly require exclusive workspace leasing.
 
-See [ADR-0008](decisions/ADR-0008-checkpoint-and-recovery.md) for detailed decisions.
+See [ADR-0008](decisions/ADR-0008-checkpoint-and-recovery.md) and
+[ADR-0016](decisions/ADR-0016-project-recovery-and-test-evidence.md).
 
 ---
 

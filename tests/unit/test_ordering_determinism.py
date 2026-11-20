@@ -31,7 +31,7 @@ from cortexshift.domain.git import RepositoryInspection, RepositoryInspectionSta
 from cortexshift.domain.handoff import HandoffRecord, HandoffStatus
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY, PROVIDER_CLAUDE, PROVIDER_CODEX
-from cortexshift.domain.session import Session, SessionStatus
+from cortexshift.domain.session import PROVIDER_GUARDED_KEY, Session, SessionStatus
 from cortexshift.domain.task import Task
 from tests.factories import make_inspection, make_payload, seed_project, seed_session
 
@@ -203,12 +203,14 @@ def test_recovery_binds_its_checkpoint_to_the_later_persisted_stale_session(
             provider_id=PROVIDER_CLAUDE,
             status=SessionStatus.INITIALIZING,
             started_at=instant,
+            metadata={PROVIDER_GUARDED_KEY: True},
         )
         later = Session(
             task_id=task.id,
             provider_id=PROVIDER_CODEX,
             status=SessionStatus.RUNNING,
             started_at=instant,
+            metadata={PROVIDER_GUARDED_KEY: True},
         )
         store.save_session(earlier)
         store.save_session(later)

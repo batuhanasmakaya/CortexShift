@@ -2173,37 +2173,43 @@ def _render_recovery_report(report: RecoveryReport) -> None:
             "[yellow bold]Dry Run Preview — no changes were made to state.[/yellow bold]\n"
         )
 
-    console.print("[bold]Task[/bold]")
-    console.print(f"  {escape(report.task_title)}\n")
-
-    console.print("[bold]Recovered Sessions[/bold]")
-    if report.reconciled_session_ids:
-        for s_id in report.reconciled_session_ids:
-            console.print(f"  {s_id}   unexpected termination")
+    console.print(
+        f"Examined {report.examined_count} unfinished or previously reconciled session(s). "
+        f"Already reconciled: {report.already_reconciled_count}."
+    )
+    label = "Would reconcile" if report.dry_run else "Reconciled"
+    console.print(f"{label} {len(report.reconciled_session_ids)} session(s).")
+    if report.tasks:
+        for task in report.tasks:
+            console.print(f"  [bold]{escape(task.task_title)}[/bold] ({escape(task.task_id)})")
+            for session_id in task.session_ids:
+                console.print(f"    {escape(session_id)}   unexpected termination")
+            if task.checkpoint_id:
+                console.print(f"    Recovery checkpoint {escape(task.checkpoint_id)}")
     else:
         console.print("  [dim]No stale running or initializing sessions found.[/dim]")
+    for label, session_ids in (
+        ("Live managed ownership", report.live_session_ids),
+        ("Uncertain ownership, inspect before continuing", report.uncertain_session_ids),
+        ("Changed during recovery, left as recorded", report.changed_session_ids),
+    ):
+        if session_ids:
+            console.print(f"{label} ({len(session_ids)}): {escape(', '.join(session_ids))}")
     console.print()
 
-    if report.checkpoint_id:
-        console.print("[bold]Checkpoint[/bold]")
-        console.print(f"  {report.checkpoint_id}\n")
-
     console.print("[bold]Repository[/bold]")
-    console.print(f"  {'Dirty' if report.dirty else 'Clean'}")
-    console.print(f"  {len(report.files_touched)} changed files\n")
+    if report.repository_status == RepositoryInspectionStatus.READY:
+        console.print(f"  {'Dirty' if report.dirty else 'Clean'}")
+        console.print(f"  {len(report.files_touched)} changed files\n")
+    else:
+        console.print(f"  Git observation unavailable ({report.repository_status.value}).\n")
 
-    if not report.dry_run and report.reconciled_session_ids:
-        console.print("[bold]Next[/bold]")
-        if report.checkpoint_id:
+    if not report.dry_run and report.tasks:
+        for task in report.tasks:
             console.print(
-                f"  Review checkpoint:\n    cortexshift checkpoint show {report.checkpoint_id}\n"
+                f"  Review recovery evidence with cortexshift checkpoint show "
+                f"{escape(task.checkpoint_id or '')}"
             )
-        console.print(
-            "  Then continue with:\n"
-            "    cortexshift resume <provider>\n"
-            "  or\n"
-            "    cortexshift switch <provider>\n"
-        )
 
 
 @app.command(name="recover")

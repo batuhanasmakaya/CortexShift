@@ -480,13 +480,22 @@ with store, FileWorkspaceLease(workspace.root / '.cortexshift' / 'agent.lock'):
                 if sys.platform != "win32":
                     with pytest.raises(WorkspaceLockedError, match="surviving provider work"):
                         recovery.recover(tmp_path)
+                else:
+                    report = recovery.recover(tmp_path)
+                    assert report.uncertain_session_ids == [session_id]
+                    assert report.reconciled_session_ids == []
 
                 # The real fake-provider subprocess is still in readline after launcher death.
                 process.stdin.write("finish\n")
                 process.stdin.flush()
                 lease = FileWorkspaceLeaseManager().get_lease(tmp_path)
                 wait_for(lambda: not lease.is_locked())
-                assert recovery.recover(tmp_path).reconciled_session_ids == [session_id]
+                report = recovery.recover(tmp_path)
+                if sys.platform == "win32":
+                    assert report.uncertain_session_ids == [session_id]
+                    assert report.reconciled_session_ids == []
+                else:
+                    assert report.reconciled_session_ids == [session_id]
 
                 second = await client.call_tool("create_checkpoint")
                 assert second.is_error
@@ -496,8 +505,11 @@ with store, FileWorkspaceLease(workspace.root / '.cortexshift' / 'agent.lock'):
             with SQLiteStateStore(db_path) as store:
                 reconciled = store.get_session(session_id)
                 assert reconciled is not None
-                assert reconciled.status == SessionStatus.INTERRUPTED
-                assert reconciled.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
+                if sys.platform == "win32":
+                    assert reconciled == unfinished
+                else:
+                    assert reconciled.status == SessionStatus.INTERRUPTED
+                    assert reconciled.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
                 assert reconciled.ended_at is None and reconciled.reconciled_at is not None
                 assert len(store.list_checkpoints()) == 1
         finally:

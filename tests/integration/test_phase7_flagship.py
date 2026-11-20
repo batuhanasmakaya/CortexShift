@@ -18,7 +18,12 @@ from cortexshift.domain.checkpoint import CheckpointKind
 from cortexshift.domain.handoff import HandoffStatus
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY, PROVIDER_CODEX
-from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
+from cortexshift.domain.session import (
+    PROVIDER_GUARDED_KEY,
+    Session,
+    SessionExitReason,
+    SessionStatus,
+)
 from cortexshift.domain.task import Task
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
@@ -41,6 +46,8 @@ class RecordingProcessRunner(InteractiveProcessRunner):
 
 
 class FakeBootstrap(HeadlessProviderRunner):
+    received_context: str | None = None
+
     def run_headless(
         self,
         argv: list[str],
@@ -50,6 +57,7 @@ class FakeBootstrap(HeadlessProviderRunner):
         *,
         input_text: str | None = None,
     ) -> HeadlessResult:
+        self.received_context = input_text
         if "codex" in argv[0]:
             output = "\n".join(
                 [
@@ -164,6 +172,7 @@ def test_full_phase7_resilience_and_restart_flagship(tmp_path: Path, monkeypatch
             task_id=task.id,
             provider_id=PROVIDER_CODEX,
             status=SessionStatus.RUNNING,
+            metadata={PROVIDER_GUARDED_KEY: True},
             native_session_id="11111111-1111-4111-8111-111111111111",
         )
         store.save_session(crashed_session)
@@ -201,6 +210,11 @@ def test_full_phase7_resilience_and_restart_flagship(tmp_path: Path, monkeypatch
     assert switch_res.handoff.payload.source_checkpoint_id == rec_report["checkpoint_id"]
     assert switch_res.handoff.payload.source_checkpoint_kind == "recovery"
     assert switch_res.target_session.provider_id == PROVIDER_ANTIGRAVITY
+    assert bootstrap.received_context is not None
+    assert "50 passed in 0.5s" in bootstrap.received_context
+    assert manual_cp["id"] in bootstrap.received_context
+    assert "reported / unverified" in bootstrap.received_context
+    assert "current verification status are unknown" in bootstrap.received_context
 
     # 6. Full Restart Simulation (Section 94):
     # Reopen state from an entirely fresh SQLiteStateStore instance and verify

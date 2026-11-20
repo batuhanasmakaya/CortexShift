@@ -535,30 +535,37 @@ def render_switch_preview(preview: TuiSwitchPreview) -> Text:
 def render_recovery_preview(preview: TuiRecoveryPreview) -> Text:
     """Render a recovery confirmation summary from a non-mutating dry run."""
     body = Text()
-    body.append("Task", style="bold cyan")
-    body.append(f"        {preview.task_title} ({preview.task_id})\n")
-    body.append("Repository", style="bold cyan")
     body.append(
-        f"  {preview.repository_status} · "
-        f"{'dirty' if preview.dirty else 'clean'} · "
-        f"{len(preview.files_touched)} changed file(s)\n\n"
+        f"Examined {preview.examined_count} project session(s). "
+        f"Already reconciled: {preview.already_reconciled_count}.\n"
+        f"Live ownership: {preview.live_count}. Uncertain: {preview.uncertain_count}.\n"
     )
+    body.append("Repository", style="bold cyan")
+    body.append(f"  {preview.repository_status}")
+    if preview.repository_status == "ready":
+        body.append(
+            f" · {'dirty' if preview.dirty else 'clean'} · "
+            f"{len(preview.files_touched)} changed file(s)"
+        )
+    body.append("\n\n")
 
     if preview.stale_count == 0:
-        body.append("No unfinalized sessions were found. Recovery would change nothing.")
+        body.append("No sessions are eligible for recovery.")
         return body
 
     body.append(
         f"{preview.stale_count} unfinalized session(s) would be reconciled:\n", style="bold"
     )
-    for session_id in preview.stale_session_ids:
-        body.append(f"  • {session_id}\n")
+    for task in preview.tasks:
+        body.append(f"  {task.task_title} ({task.task_id})\n", style="bold")
+        for session_id in task.session_ids:
+            body.append(f"  • {session_id}\n")
 
     body.append(
         "\nEach is recorded as status=interrupted with "
         "exit_reason=unexpected_termination and a reconciled_at timestamp. "
         "CortexShift never fabricates an unobserved process end time, so ended_at stays "
-        "empty. A RECOVERY checkpoint is captured from live repository state.\n\n",
+        "empty. Each affected Task gets one RECOVERY checkpoint.\n\n",
         style="dim",
     )
     body.append(

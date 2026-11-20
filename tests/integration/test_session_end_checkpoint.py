@@ -8,6 +8,7 @@ import pytest
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.checkpoint_service import CheckpointService
 from cortexshift.application.session_launcher import ProviderSessionLauncher
+from cortexshift.cli.app import app
 from cortexshift.domain.checkpoint import CheckpointKind
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.project import Project
@@ -15,6 +16,7 @@ from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.session import SessionStatus
 from cortexshift.domain.task import Task
 from cortexshift.ports.process_runner import InteractiveProcessRunner
+from tests.cli_runner import AnsiFreeCliRunner
 
 
 class StubProcessRunner(InteractiveProcessRunner):
@@ -159,3 +161,35 @@ def test_spawn_failure_does_not_create_checkpoint(tmp_path: Path) -> None:
         assert len(cps) == 0
     finally:
         store.close()
+
+
+def test_session_end_checkpoint_preserves_earlier_test_evidence_in_cli_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _, task, store = _seed(tmp_path)
+    with store:
+        checkpoints = CheckpointService()
+        launcher = ProviderSessionLauncher(
+            process_runner=StubProcessRunner(), store=store, checkpoint_service=checkpoints
+        )
+        session = launcher.start_session(task_id=task.id, provider_id=PROVIDER_CLAUDE)
+        reported = checkpoints.create_checkpoint(
+            start_dir=tmp_path, session_id=session.id, test_summary="pytest: 900 tests passed"
+        )
+        launcher.run(
+            session,
+            LaunchSpecification(
+                provider_id=PROVIDER_CLAUDE, executable="claude", cwd=tmp_path, argv=["claude"]
+            ),
+        )
+        latest = store.get_latest_checkpoint(task.id)
+        assert latest is not None and latest.kind == CheckpointKind.SESSION_END
+        assert latest.payload.test_status.known is False
+
+        result = AnsiFreeCliRunner().invoke(app, ["handoff", "preview", "codex"])
+        assert result.exit_code == 0
+        assert "pytest: 900 tests passed" in result.stdout
+        assert reported.id in result.stdout
+        assert "matches live HEAD" in " ".join(result.stdout.split())
+        assert store.get_checkpoint(reported.id) == reported

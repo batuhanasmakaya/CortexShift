@@ -35,6 +35,10 @@ Initial public alpha; no publication date has been assigned.
 
 ### Fixed
 
+- Recover eligible unfinished Sessions across the project. Each affected Task's
+  reconciliation and checkpoint commit together, and retries skip committed work.
+- Preserve the newest meaningful test report in handoffs after empty checkpoints,
+  with original provenance and explicit uncertainty about current verification.
 - Preserve architectural decisions across handoffs. Handoffs read decisions from the
   newest checkpoint alone, so any later checkpoint recorded without decisions of its
   own — including the session-end checkpoint captured automatically when a provider

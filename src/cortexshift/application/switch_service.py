@@ -34,7 +34,7 @@ from cortexshift.adapters.providers.codex import CodexHandoffAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.checkpoint_service import CheckpointService
-from cortexshift.application.handoff_builder import HandoffBuilder, aggregate_task_decisions
+from cortexshift.application.handoff_builder import HandoffBuilder, unique_checkpoint_decisions
 from cortexshift.application.handoff_renderer import HandoffRenderer, RenderedHandoffContext
 from cortexshift.application.native_session import native_capabilities, select_native_session
 from cortexshift.application.run_service import ProviderRuntimeRegistry
@@ -313,17 +313,31 @@ class SwitchService:
             project_id=context.project.id,
         )
 
-    def _aggregate_task_decisions(self, context: _SwitchContext) -> list[str]:
-        """Collect the decisions recorded across the bound task's checkpoint history.
-
-        Checkpoints stay immutable point-in-time observations, so a decision recorded by
-        `record_decision` is not copied forward into later checkpoints. Reading the whole
-        history here is what keeps such a decision in the handoff after an ordinary or
-        session-end checkpoint has since become the newest one. The query is scoped to
-        `context.task.id`, so decisions never cross task boundaries.
-        """
-        history = context.store.list_task_checkpoint_history(context.task.id)
-        return aggregate_task_decisions(history, context.task.id)
+    def _build_payload(
+        self,
+        context: _SwitchContext,
+        inspection: RepositoryInspection,
+        note: str | None,
+        snapshot_id: str | None = None,
+    ) -> HandoffPayload:
+        store, project, task = context.store, context.project, context.task
+        decisions = unique_checkpoint_decisions(
+            store.list_checkpoint_decisions(project.id, task.id)
+        )
+        evidence = store.get_latest_checkpoint_test_evidence(project.id, task.id)
+        latest = store.get_latest_checkpoint_reference(project.id, task.id)
+        return self._builder.build(
+            project=project,
+            task=task,
+            source_session=context.source_session,
+            inspection=inspection,
+            target_provider_id=context.adapter.provider_id,
+            snapshot_id=snapshot_id,
+            operator_note=note,
+            latest_checkpoint=latest,
+            task_decisions=decisions,
+            test_evidence=evidence,
+        )
 
     # --- Non-mutating operations ---
 
@@ -348,19 +362,7 @@ class SwitchService:
         )
         try:
             inspection = self._inspect(context)
-            latest_checkpoint = context.store.get_latest_checkpoint(context.task.id)
-            task_decisions = self._aggregate_task_decisions(context)
-            payload = self._builder.build(
-                project=context.project,
-                task=context.task,
-                source_session=context.source_session,
-                inspection=inspection,
-                target_provider_id=context.adapter.provider_id,
-                snapshot_id=None,
-                operator_note=note,
-                latest_checkpoint=latest_checkpoint,
-                task_decisions=task_decisions,
-            )
+            payload = self._build_payload(context, inspection, note)
             rendered = self._renderer.render(
                 payload, overhead_bytes=context.adapter.context_overhead_bytes
             )
@@ -401,19 +403,7 @@ class SwitchService:
         try:
             self._select_target(context, new_session, resume_session_id)
             inspection = self._inspect(context)
-            latest_checkpoint = context.store.get_latest_checkpoint(context.task.id)
-            task_decisions = self._aggregate_task_decisions(context)
-            payload = self._builder.build(
-                project=context.project,
-                task=context.task,
-                source_session=context.source_session,
-                inspection=inspection,
-                target_provider_id=context.adapter.provider_id,
-                snapshot_id=None,
-                operator_note=note,
-                latest_checkpoint=latest_checkpoint,
-                task_decisions=task_decisions,
-            )
+            payload = self._build_payload(context, inspection, note)
             rendered = self._renderer.render(
                 payload, overhead_bytes=context.adapter.context_overhead_bytes
             )
@@ -499,19 +489,7 @@ class SwitchService:
                 snapshot = self._handoff_snapshot(inspection)
                 snapshot_id = snapshot.id if snapshot else None
 
-                latest_checkpoint = store.get_latest_checkpoint(context.task.id)
-                task_decisions = self._aggregate_task_decisions(context)
-                payload = self._builder.build(
-                    project=context.project,
-                    task=context.task,
-                    source_session=context.source_session,
-                    inspection=inspection,
-                    target_provider_id=context.adapter.provider_id,
-                    snapshot_id=snapshot_id,
-                    operator_note=note,
-                    latest_checkpoint=latest_checkpoint,
-                    task_decisions=task_decisions,
-                )
+                payload = self._build_payload(context, inspection, note, snapshot_id)
 
                 handoff_id = generate_handoff_id()
                 rendered = self._renderer.render(
@@ -527,7 +505,7 @@ class SwitchService:
                     source_session_id=context.source_session.id,
                     source_provider_id=context.source_session.provider_id,
                     target_provider_id=context.adapter.provider_id,
-                    source_checkpoint_id=latest_checkpoint.id if latest_checkpoint else None,
+                    source_checkpoint_id=payload.source_checkpoint_id,
                     git_snapshot_id=snapshot_id,
                     status=HandoffStatus.PREPARED,
                     payload=payload,
