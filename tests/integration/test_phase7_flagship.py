@@ -23,6 +23,7 @@ from cortexshift.domain.task import Task
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
 from tests.cli_runner import AnsiFreeCliRunner
+from tests.factories import antigravity_result_event
 
 runner = AnsiFreeCliRunner()
 
@@ -46,6 +47,8 @@ class FakeBootstrap(HeadlessProviderRunner):
         cwd: Path | str,
         timeout: float = 30.0,
         env: dict[str, str] | None = None,
+        *,
+        input_text: str | None = None,
     ) -> HeadlessResult:
         if "codex" in argv[0]:
             output = "\n".join(
@@ -60,8 +63,8 @@ class FakeBootstrap(HeadlessProviderRunner):
                 ]
             )
         else:  # Antigravity
-            output = json.dumps(
-                {"conversation_id": "22222222-2222-4222-8222-222222222222", "status": "SUCCESS"}
+            output = antigravity_result_event(
+                conversation_id="22222222-2222-4222-8222-222222222222", status="SUCCESS"
             )
         return HeadlessResult(exit_code=0, stdout=output, stderr="")
 

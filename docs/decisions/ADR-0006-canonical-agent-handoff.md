@@ -1,5 +1,7 @@
 # ADR-0006: Canonical Agent Handoff & Manual Provider Switching
 
+[ADR-0015](ADR-0015-bounded-handoff-delivery.md) supersedes the handoff size and transport details in this record.
+
 - **Status**: Accepted
 - **Date**: 2026-09-05
 - **Deciders**: CortexShift Core Architecture Team

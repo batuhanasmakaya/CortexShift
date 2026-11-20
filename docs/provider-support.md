@@ -10,7 +10,7 @@ what has actually been exercised against real, authenticated provider CLIs.
 | Passive discovery/version | Yes | Yes | Yes |
 | Passive authentication | Native auth status | Native login status | Unknown |
 | Interactive run | Direct terminal | Direct terminal | Direct terminal |
-| Canonical handoff | Direct context | Read-only JSONL bootstrap, then resume | Plan-mode JSON bootstrap, then resume |
+| Canonical handoff | Invocation-bound MCP retrieval | Read-only stdin bootstrap with JSONL output, then resume | Plan-mode stream-JSON bootstrap over stdin, then resume |
 | Managed native identity | Preallocated UUID on run/switch | ID captured during managed handoff | ID captured during managed handoff |
 | Exact resume | Known ID required | Known ID required | Known ID required |
 | Return to provider | Same ID + fresh handoff | Same ID + fresh bootstrap | Same ID + fresh plan bootstrap |
@@ -37,7 +37,10 @@ MCP workflows. These run in CI on Linux, macOS, and Windows across CPython
 3.12–3.14 and consume no model quota. Fake-provider coverage proves CortexShift's
 own logic, not a native CLI's behavior.
 
-**Real end-to-end validated: Claude Code and Codex.** Both were exercised against
+The authenticated checks below predate the bounded handoff transport. Current
+Claude MCP retrieval and Codex stdin delivery have fake-provider coverage.
+
+**Prior authenticated validation: Claude Code and Codex.** Both were exercised against
 authenticated, installed CLIs by a maintainer. In each case the managed MCP
 session binding was confirmed, the managed write tools were available and usable,
 checkpoint provenance was bound to the managed session, the native session ID was

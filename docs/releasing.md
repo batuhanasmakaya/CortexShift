@@ -103,6 +103,10 @@ installed contract drift is a release blocker requiring an adapter fix.
 The following intentionally consume native provider usage and must be performed
 by a maintainer, not automatically by CI:
 
+The completed Claude and Codex checks below describe the transport before C5.
+Fresh authenticated validation remains pending for MCP handoff retrieval and the
+stdin bootstrap transports.
+
 - [x] Claude real run, handoff/resume, and visible MCP tools. Validated against
       authenticated Claude Code 2.1.204: managed MCP session binding confirmed,
       all 10 MCP tools visible and all 6 write tools usable in the managed

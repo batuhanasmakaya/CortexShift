@@ -28,6 +28,9 @@ from cortexshift.domain.session import SessionExitReason, SessionStatus
 # without a database migration, and vice versa.
 HANDOFF_PROTOCOL_VERSION = 1
 
+# Maximum UTF-8 bytes in the complete handoff prompt, including any provider preamble.
+MAX_HANDOFF_BYTES = 48_000
+
 # Maximum number of characters retained for an operator-supplied note. The note is
 # optional advisory context and must never make the canonical payload unbounded.
 MAX_OPERATOR_NOTE_CHARS = 2_000
@@ -37,7 +40,7 @@ class HandoffStatus(StrEnum):
     """Delivery lifecycle of a handoff record.
 
     - PREPARED: canonical handoff exists; target delivery is not yet known complete.
-    - DELIVERED: handoff context was successfully delivered via the provider strategy.
+    - DELIVERED: the transport gave CortexShift a bootstrap or MCP retrieval receipt.
     - FAILED: delivery or provider bootstrap could not be completed.
 
     Handoff status is distinct from Session status: the target Session remains the
@@ -55,6 +58,8 @@ class HandoffFailureCode(StrEnum):
     Failure codes never embed raw provider stdout/stderr, credentials, or prompts.
     """
 
+    CONTEXT_EMPTY = "context_empty"
+    CONTEXT_TOO_LARGE = "context_too_large"
     TARGET_PROVIDER_MISSING = "target_provider_missing"
     BOOTSTRAP_FAILED = "bootstrap_failed"
     BOOTSTRAP_TIMEOUT = "bootstrap_timeout"

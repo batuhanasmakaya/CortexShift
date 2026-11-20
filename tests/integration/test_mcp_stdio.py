@@ -1,5 +1,6 @@
 """Integration tests for CortexShift MCP stdio server wire protocol."""
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -8,14 +9,19 @@ from typing import Any, cast
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.types import TextContent
 
+from cortexshift.adapters.providers.claude import CLAUDE_HANDOFF_PROMPT
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
+from cortexshift.application.switch_service import SwitchService
 from cortexshift.domain.checkpoint import CheckpointTestProvenance
+from cortexshift.domain.handoff import MAX_HANDOFF_BYTES, HandoffStatus
 from cortexshift.domain.mcp_binding import McpSessionBinding
 from cortexshift.domain.project import Project
-from cortexshift.domain.provider import PROVIDER_CLAUDE
+from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX
 from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task
+from tests.factories import seed_project, seed_session
 from tests.mcp_invocations import LiveMcpInvocations
 
 
@@ -65,12 +71,13 @@ async def test_mcp_stdio_server_lifecycle_and_tools(
     ):
         await client.initialize()
 
-        # 1. List tools: managed session gets 10 tools
+        # 1. List tools: managed session gets 11 tools
         tools_result = await client.list_tools()
         tool_names = {t.name for t in tools_result.tools}
         expected = {
             "get_project_context",
             "get_current_task",
+            "get_handoff_context",
             "get_latest_checkpoint",
             "get_repository_status",
             "set_current_work",
@@ -192,3 +199,86 @@ async def test_mcp_stdio_read_only_mode(tmp_path: Path) -> None:
             {"current_work": "Should fail"},
         )
         assert call_res.is_error
+
+
+def test_claude_switch_serves_only_its_bound_handoff(tmp_path: Path) -> None:
+    """Exercise the actual MCP wire and the native interactive adapter without a provider."""
+    objective = "Continue the implementation.\n" + "詳細 🎉 " * 3500 + "\nKeep this instruction."
+    project, task = seed_project(tmp_path, objective=objective, constraints=["Keep schema v6"])
+    source = seed_session(tmp_path, task.id, provider_id=PROVIDER_CODEX)
+
+    async def fetch(config: dict[str, Any], expect_live: bool) -> str | None:
+        params = StdioServerParameters(
+            command=config["command"], args=config["args"], env=config["env"], cwd=tmp_path
+        )
+        async with (
+            stdio_client(params) as (read, write),
+            ClientSession(read, write) as client,
+        ):
+            await client.initialize()
+            names = {item.name for item in (await client.list_tools()).tools}
+            assert ("get_handoff_context" in names) == expect_live
+            if not expect_live:
+                return None
+            response = await client.call_tool("get_handoff_context")
+            assert not response.is_error
+            (content,) = response.content
+            assert isinstance(content, TextContent)
+            return content.text
+
+    class McpReader:
+        config: dict[str, Any]
+        context: str
+
+        def run_interactive(
+            self, argv: list[str], cwd: Path | str, env: dict[str, str] | None = None
+        ) -> int:
+            assert argv[-1] == CLAUDE_HANDOFF_PROMPT
+            assert all("Keep this instruction" not in arg for arg in argv)
+            assert cwd == tmp_path.resolve()
+            self.config = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"][
+                "cortexshift"
+            ]
+
+            with SQLiteStateStore(tmp_path / ".cortexshift" / "state.sqlite3") as store:
+                (before,) = store.list_handoffs()
+                assert before.status == HandoffStatus.PREPARED
+                assert before.delivered_at is None
+                assert before.target_session_id is not None
+                another = Task(project_id=project.id, title="Other", objective="Unrelated data")
+                store.save_task(another)
+                store.set_active_task_id(project.id, another.id)
+
+                context = asyncio.run(fetch(self.config, expect_live=True))
+                assert context is not None
+                self.context = context
+                delivered = store.get_handoff(before.id)
+                assert delivered is not None and delivered.delivered_at is not None
+                assert asyncio.run(fetch(self.config, expect_live=True)) == context
+                assert store.get_handoff(before.id) == delivered
+            return 0
+
+    provider = McpReader()
+    prepared: list[str] = []
+    result = SwitchService(
+        process_runner=provider,
+        which_fn=lambda _: "fake claude",
+        is_tty_fn=lambda: True,
+    ).switch(
+        "claude",
+        start_dir=tmp_path,
+        on_prepared=lambda _, rendered: prepared.append(rendered.text),
+    )
+
+    assert result.handoff.status == HandoffStatus.DELIVERED
+    assert result.handoff.source_session_id == source.id
+    assert result.target_session.status == SessionStatus.COMPLETED
+    assert prepared == [provider.context]
+    assert objective in provider.context
+    assert "Keep schema v6" in provider.context
+    assert "Unrelated data" not in provider.context
+    assert len(provider.context.encode("utf-8")) <= MAX_HANDOFF_BYTES
+    assert asyncio.run(fetch(provider.config, expect_live=False)) is None
+    with SQLiteStateStore(tmp_path / ".cortexshift" / "state.sqlite3") as store:
+        assert store.get_task(task.id) == task
+        assert store.get_session(source.id) == source

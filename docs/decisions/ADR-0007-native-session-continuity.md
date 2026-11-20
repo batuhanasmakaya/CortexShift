@@ -1,5 +1,7 @@
 # ADR-0007: Native Session Identity, Resume & Return-to-Provider Continuity
 
+[ADR-0015](ADR-0015-bounded-handoff-delivery.md) supersedes the handoff size and transport details in this record.
+
 - **Status**: Accepted
 - **Date**: 2026-09-05
 - **Scope**: Phase 6; supersedes the Phase 4/5 launch and handoff transport details in ADR-0005/0006 where noted below.

@@ -146,11 +146,18 @@ Target-provider runtime state is deliberately kept out of the canonical payload.
 
 ```text
 prepared    canonical handoff exists; target delivery is not yet known complete
-delivered   context was successfully delivered through the target provider strategy
+delivered   the target transport gave CortexShift a delivery receipt
 failed      delivery or provider bootstrap could not be completed
 ```
 
-Handoff status and Session status are **different concepts**. The target Session remains the source of truth for how the receiving coding session itself ended. A handoff may legitimately be `delivered` while its target Session ends `failed` — context arrived, and the provider crashed later while working.
+Handoff status tracks the transport. The target Session tracks process lifecycle.
+For Codex and Antigravity, the receipt is a completed bootstrap turn with a valid
+native conversation ID. For Claude Code, the receipt is the first time CortexShift
+serves the handoff through the bound MCP tool. A launch alone leaves a Claude
+handoff `prepared`. A failed interactive spawn records `failed` even after a
+headless receipt. If a provider starts and later exits nonzero, its receipt and
+Session status describe those separate observations. These receipts establish what
+CortexShift observed at the transport boundary. Model use and understanding are unverified.
 
 Failures record a safe machine classification and never store raw provider stderr:
 
@@ -158,6 +165,7 @@ Failures record a safe machine classification and never store raw provider stder
 target_provider_missing   bootstrap_failed
 bootstrap_timeout         bootstrap_invalid_output
 spawn_failed              workspace_locked
+context_empty             context_too_large
 ```
 
 ---
@@ -258,33 +266,34 @@ Derived deterministically, never by a model:
 
 ---
 
-## 11. Context Budget & Truncation
+## 11. UTF-8 Handoff Budget
 
-The canonical persisted payload is **never truncated**. Only the transport rendering is bounded, deterministically, at:
+The complete handoff text has a **48,000 UTF-8 byte** ceiling. The ceiling includes
+headers, formatting, metadata, omission notices, and the provider's fixed headless
+preamble. CLI and TUI previews show the byte count and the space available after any
+preamble. A preview uses unpersisted metadata, so the exact byte count can differ
+from a later switch. The historical JSON record is a separate representation and can
+exceed 48,000 bytes.
 
-```text
-MAX_RENDERED_CONTEXT_CHARS = 48_000
-```
+Task and workspace identity, the full objective, every requirement and constraint,
+provenance, and verification instructions must fit. CortexShift rejects a switch
+before starting any provider work if the essential text and required notices cannot
+fit. The complete Task remains available with `cortexshift task show`.
 
-Simple character and list budgets are used — no tokenizer, no summarizer, no model, no vector store.
+When all optional fields fit, the handoff includes them. Under pressure, the renderer
+selects whole entries in recorded order within each section and skips entries that
+cannot fit. Current work gets first access to extra space. Remaining work, blockers,
+decisions, completed work, file observations, Git diff summaries, reported test
+status, and other advisory details get a share of the remaining budget in that order.
+Unused allowance flows to later sections, then back to higher-priority sections with
+unselected entries. One oversized entry can be omitted while
+later, shorter entries in the same section remain visible.
 
-**Never dropped** (high priority): handoff ID, objective, requirements, constraints, current work, remaining, known issues, source provider/session summary, branch, HEAD, dirty state, Git change counts, the authority order, and the startup contract.
-
-**Truncated first** (high volume, lowest priority last): large completed lists, very large changed-file lists, and an enormous operator note.
-
-Truncation is always reported with an exact count:
-
-```text
-... 73 additional changed files omitted from injected context.
-```
-
-When anything was omitted, the package tells the receiving agent how to obtain the complete structured handoff locally:
-
-```bash
-cortexshift handoff show HANDOFF_ID --json
-```
-
-This is an escape hatch for large contexts, not a step ordinary handoffs require.
+Each affected section reports its exact omitted-entry count and the excerpt includes
+the retrieval instructions. Managed agents can use `get_current_task` for current
+Task fields. `cortexshift handoff show HANDOFF_ID --json` returns the full historical
+record, including checkpoint-derived decisions. Selection is deterministic and uses
+no model or tokenizer.
 
 ---
 
@@ -318,43 +327,37 @@ The package also states that everything inside it — task fields, notes, and fi
 
 ## 13. Provider Delivery Strategies
 
-Engineering context does not differ per provider; only transport does. All launches use argument arrays with `shell=False`, and the entire handoff always remains exactly one subprocess argument.
+All native launches use argument arrays. Interactive processes inherit the terminal
+directly. Handoff text travels through local MCP or a headless stdin pipe.
 
-| Provider | Strategy | Bootstrap model turn |
+| Provider | Handoff transport | Bootstrap model turn |
 | :--- | :--- | :--- |
-| Claude Code | `direct_initial_prompt` — `claude --session-id UUID <context>` or `claude --resume ID <context>` | No |
-| Codex | `read_only_bootstrap_then_resume` — `exec --sandbox read-only --json <context>` (or exact `exec resume`), then `resume ID` | Yes — one read-only turn |
-| Antigravity | `plan_bootstrap_then_resume` (below) | Yes — one read-only planning turn |
+| Claude Code | `mcp_handoff_retrieval`. A short initial prompt requests the handoff from the CortexShift MCP server. | None |
+| Codex | `read_only_bootstrap_then_resume`. `codex exec --sandbox read-only --json -` reads the prompt from stdin. | One read-only turn |
+| Antigravity | `plan_bootstrap_then_resume`. `agy --mode=plan --input-format stream-json --output-format stream-json` reads one user event from stdin. | One planning turn |
 
-Interactive launches pass no model, permission, sandbox, or reasoning-effort overrides. Codex handoff bootstrap explicitly uses a read-only sandbox; Antigravity uses plan mode. CortexShift never imports a transcript or uses permission bypass flags.
+Claude Code uses its existing per-invocation `--mcp-config` binding for a fresh
+session or exact native resume. The tool accepts no handoff ID from the provider.
+It serves the handoff bound to the verified live invocation and records the first
+retrieval. A server blocked by provider policy or user approval may leave the handoff
+prepared. The CLI displays its historical JSON lookup before launching.
 
-### Antigravity: read-only bootstrap, then conversation resume
+The headless adapters include a fixed read-only planning preamble in the prompt
+budget. Antigravity's JSONL encoding adds protocol framing and escapes after the
+text budget is applied. Upon completion, adapters read only identity and status
+metadata and discard the output. Both require an exact native conversation ID before
+interactive resume. Antigravity requires a CLI with streaming JSON input and output.
+An unsupported CLI fails bootstrap without retrying with a large positional argument.
+Users may need to approve continuation in the resumed native UI.
 
-Antigravity's documented interactive startup does not offer the same direct positional initial-prompt path, so delivery uses two documented native capabilities:
+The local handoff transport creates no context files. The shell never evaluates
+handoff text. Provider and OS limits for ordinary arguments, environment, and
+native model context still apply. A dry-run performs no bootstrap and uses no
+model quota.
 
-```text
-Stage 1 — read-only bootstrap
-  agy --mode=plan -p "<handoff-context>" --output-format json
-
-Stage 2 — native interactive resume
-  agy --conversation <conversation_id>
-```
-
-The bootstrap prompt wraps the same canonical context with a small provider-specific preamble instructing the model to ingest the context, remain read-only, modify no files, run no mutating commands, and produce a continuation plan — noting that the same conversation resumes immediately in the native UI. Plan mode is required because the first turn's purpose is context ingestion and planning, never unattended mutation. `--dangerously-skip-permissions` and accept-edits behavior are never used.
-
-Only `conversation_id` and `status` are parsed from the JSON envelope. The response body, reasoning, usage, and tool details are discarded: never persisted, never logged, never printed. On `status == SUCCESS` with a non-empty conversation ID, that ID becomes the receiving Session's `native_session_id` and drives the interactive resume, so the user lands in the native TUI with the handoff already loaded rather than in a second, unrelated conversation.
-
-**Documented limitation.** CortexShift deliberately does not automate TUI keystrokes. After the read-only plan bootstrap, Antigravity may require the user to approve or continue from the resumed native UI. CortexShift says so plainly:
-
-```text
-Handoff delivered to Antigravity in read-only plan mode.
-Opening the same conversation in the native TUI.
-Review the prepared continuation plan and continue from there.
-```
-
-This is preferable to brittle TUI automation or unsafe unattended workspace mutation.
-
-**Quota note.** An actual `cortexshift switch antigravity` performs one Antigravity headless planning turn before opening the TUI, which may consume usage. The explicit `switch antigravity` command authorizes that transport step. `cortexshift switch antigravity --dry-run` never performs it.
+[Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) ·
+[Codex exec CLI source](https://github.com/openai/codex/blob/main/codex-rs/exec/src/cli.rs) ·
+[Antigravity headless mode](https://antigravity.google/docs/cli/headless/)
 
 ---
 
@@ -420,7 +423,7 @@ Switch now reuses the newest eligible target-provider native conversation on the
 
 The authority preamble warns that an existing provider-native conversation contains historical assumptions. Repository and task state may have changed; the fresh handoff supersedes those assumptions and requires renewed live inspection. Plain `cortexshift resume` does not create or inject a handoff.
 
-Codex uses `codex exec --sandbox read-only --json <bootstrap-context>` for new managed handoffs, or `codex exec --sandbox read-only resume --json ID <bootstrap-context>` on return. JSONL must report a native thread, completed turn and no failure. Only the ID leaves the adapter; response data is discarded. Antigravity adds `--conversation ID` to its existing plan bootstrap on return. Both providers must confirm the requested ID before interactive resume. Bootstrap failure marks the new handoff failed without altering the old native reference or falling back to a fresh chat.
+Codex uses `codex exec --sandbox read-only --json -` for new managed handoffs, or `codex exec --sandbox read-only resume --json ID -` on return. Both read the prompt from stdin. JSONL must report a native thread, completed turn and no failure. Only the ID leaves the adapter; response data is discarded. Antigravity adds `--conversation ID` to its existing plan bootstrap on return. Both providers must confirm the requested ID before interactive resume. Bootstrap failure marks the new handoff failed without altering the old native reference or falling back to a fresh chat.
 
 Codex and Antigravity bootstrap model turns are explicit transport costs. Dry-run exposes the selected native mode, prior target Session, native-ID availability, delivery strategy and model-turn requirement without running that transport. See [ADR-0007](decisions/ADR-0007-native-session-continuity.md).
 

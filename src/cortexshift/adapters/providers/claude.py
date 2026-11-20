@@ -21,6 +21,7 @@ from cortexshift.ports.handoff_delivery import (
     HandoffDeliveryPreparation,
     HandoffDeliveryStrategy,
     ProviderHandoffAdapter,
+    validate_delivery_context,
 )
 from cortexshift.ports.provider import ProviderRuntimeAdapter
 
@@ -304,14 +305,17 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
         )
 
 
-class ClaudeHandoffAdapter(ProviderHandoffAdapter):
-    """Delivers canonical handoff context to Claude Code's native interactive CLI.
+CLAUDE_HANDOFF_PROMPT = (
+    "CortexShift prepared a fresh handoff for this session. Call the CortexShift MCP "
+    "tool get_handoff_context before acting, and follow its verification steps. "
+    "If the tool is unavailable, ask the operator for the handoff before continuing."
+)
 
-    Claude Code's documented interactive launch accepts an initial prompt as a trailing
-    positional argument, so the canonical context is delivered directly as a single
-    argv element. No extra headless model turn is required, no transcript is imported,
-    and model, permission mode, and sandbox settings remain the user's own.
-    """
+
+class ClaudeHandoffAdapter(ProviderHandoffAdapter):
+    """Open native Claude Code with a short request to retrieve its bound handoff."""
+
+    context_overhead_bytes = 0
 
     def __init__(self, runtime_adapter: ClaudeRuntimeAdapter | None = None) -> None:
         self._runtime = runtime_adapter or ClaudeRuntimeAdapter()
@@ -330,7 +334,7 @@ class ClaudeHandoffAdapter(ProviderHandoffAdapter):
 
     @property
     def delivery_strategy(self) -> HandoffDeliveryStrategy:
-        return HandoffDeliveryStrategy.DIRECT_INITIAL_PROMPT
+        return HandoffDeliveryStrategy.MCP_HANDOFF_RETRIEVAL
 
     @property
     def bootstrap_model_turn_required(self) -> bool:
@@ -351,14 +355,15 @@ class ClaudeHandoffAdapter(ProviderHandoffAdapter):
         rendered_context: str,
         native_session_id: str | None = None,
     ) -> HandoffDeliveryPreparation:
-        """Build the native interactive launch carrying the handoff as one argument."""
+        """Build a fresh or exact-resume TTY launch with the MCP context request."""
+        validate_delivery_context(rendered_context)
         if native_session_id is not None:
             launch_spec = self._runtime.build_exact_resume(
                 project_root, executable_path, native_session_id
             )
             launch_spec = launch_spec.model_copy(
                 update={
-                    "argv": [*launch_spec.argv, rendered_context],
+                    "argv": [*launch_spec.argv, CLAUDE_HANDOFF_PROMPT],
                     "prompt_supplied": True,
                 }
             )
@@ -366,7 +371,7 @@ class ClaudeHandoffAdapter(ProviderHandoffAdapter):
             launch_spec = self._runtime.build_launch_spec(
                 project_root=project_root,
                 executable_path=executable_path,
-                prompt=rendered_context,
+                prompt=CLAUDE_HANDOFF_PROMPT,
             )
         return HandoffDeliveryPreparation(
             launch_spec=launch_spec,

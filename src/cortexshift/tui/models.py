@@ -414,6 +414,8 @@ class TuiSwitchPreview:
     checkpoint_enrichment: str
     context_characters: int
     context_max_characters: int
+    context_bytes: int
+    context_max_bytes: int
     context_truncated: bool
 
 
@@ -428,6 +430,8 @@ class TuiHandoffPreview:
     rendered_context: str
     context_characters: int
     context_max_characters: int
+    context_bytes: int
+    context_max_bytes: int
     context_truncated: bool
 
 

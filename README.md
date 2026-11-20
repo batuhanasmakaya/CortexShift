@@ -94,7 +94,9 @@ cortexshift switch codex
 
 Preview and dry-run launch no model and persist nothing. Actual Codex and
 Antigravity handoffs each use one read-only bootstrap model turn before native
-resume, which may consume provider usage. Claude receives context directly.
+resume, which may consume provider usage. Claude Code retrieves the handoff through
+the CortexShift MCP tool in its interactive session. Handoffs keep the objective and
+constraints complete and show which optional context was omitted to fit 48,000 UTF-8 bytes.
 
 ## Terminal control center
 

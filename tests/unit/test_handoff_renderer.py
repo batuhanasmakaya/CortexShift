@@ -1,13 +1,16 @@
 """Unit tests for deterministic, bounded receiving-agent context rendering."""
 
+import pytest
+
 from cortexshift.application.handoff_renderer import (
     MAX_RENDERED_CONTEXT_CHARS,
     HandoffRenderer,
     sanitize_path,
     sanitize_text,
 )
+from cortexshift.domain.errors import HandoffDeliveryError
 from cortexshift.domain.git import RepositoryInspectionStatus
-from cortexshift.domain.handoff import HandoffGitState
+from cortexshift.domain.handoff import MAX_HANDOFF_BYTES, HandoffFailureCode, HandoffGitState
 from tests.factories import make_payload
 
 
@@ -269,3 +272,119 @@ def test_sanitizers_are_narrowly_scoped() -> None:
     assert sanitize_path("a\nb") == "a\\x0ab"
     assert sanitize_path("a\tb") == "a\\x09b"
     assert sanitize_path("naïve/файл.py") == "naïve/файл.py"
+
+
+def test_many_decisions_fit_in_final_utf8_budget() -> None:
+    payload = make_payload().model_copy(
+        update={
+            "decisions_known": True,
+            "important_decisions": [f"{i}: " + "🎉" * 300 for i in range(500)],
+        }
+    )
+    rendered = HandoffRenderer().render(payload, handoff_id="handoff_decisions")
+    assert len(rendered.text.encode("utf-8")) <= 48_000
+    assert "important decisions omitted" in rendered.text
+    assert "Support refresh tokens" in rendered.text
+
+
+def test_objective_larger_than_old_field_cap_is_preserved_when_it_fits() -> None:
+    objective = "Objective:\n" + "詳細🎉 " * 1500 + "\nThe final instruction."
+    rendered = HandoffRenderer().render(make_payload(objective=objective))
+    assert objective in rendered.text
+
+
+def test_combined_unicode_payload_includes_metadata_and_omissions_in_budget() -> None:
+    payload = make_payload(
+        objective="🎉" * 3000,
+        completed=["a" * 250] * 500,
+        remaining=["b" * 250] * 500,
+        known_issues=["c" * 250] * 500,
+        files_touched=["d" * 250] * 500,
+    )
+    payload = payload.model_copy(
+        update={
+            "decisions_known": True,
+            "important_decisions": ["e" * 250] * 500,
+            "git_state": payload.git_state.model_copy(
+                update={"working_tree_diff_summary": "🧪" * 30000}
+            ),
+            "source_checkpoint_id": "cp_latest",
+            "source_checkpoint_kind": "milestone",
+        }
+    )
+    original = payload.model_dump()
+    rendered = HandoffRenderer().render(payload, handoff_id="handoff_combined")
+    assert len(rendered.text.encode("utf-8")) <= 48_000
+    assert payload.model_dump() == original
+    assert "cp_latest" in rendered.text
+    assert "cortexshift handoff show handoff_combined --json" in rendered.text
+
+
+def test_utf8_boundary_counts_entire_package_and_provider_preamble() -> None:
+    renderer = HandoffRenderer()
+    overhead = len("Planning 🎉\n".encode())
+    payload = make_payload(objective="")
+    base = renderer.render(payload, handoff_id="handoff_boundary", overhead_bytes=overhead)
+    objective = "🎉" + "x" * (MAX_HANDOFF_BYTES - overhead - base.byte_count - 4)
+    payload = payload.model_copy(update={"original_objective": objective})
+    rendered = renderer.render(payload, handoff_id="handoff_boundary", overhead_bytes=overhead)
+    assert rendered.byte_count == len(rendered.text.encode("utf-8")) == rendered.max_bytes
+    assert rendered.byte_count + overhead == MAX_HANDOFF_BYTES
+    assert rendered.character_count < rendered.byte_count
+    assert not rendered.truncated
+    assert objective in rendered.text
+
+    with pytest.raises(HandoffDeliveryError, match="Essential handoff context"):
+        renderer.render(
+            payload.model_copy(update={"original_objective": objective + "x"}),
+            handoff_id="handoff_boundary",
+            overhead_bytes=overhead,
+        )
+
+
+@pytest.mark.parametrize("field", ["original_objective", "requirements", "constraints"])
+def test_essential_context_above_budget_fails_explicitly(field: str) -> None:
+    text = "🎉" * 50_000
+    value = text if field == "original_objective" else [text]
+    payload = make_payload().model_copy(update={field: value})
+    with pytest.raises(HandoffDeliveryError) as exc:
+        HandoffRenderer().render(payload)
+    assert exc.value.failure_code == HandoffFailureCode.CONTEXT_TOO_LARGE
+    assert "cortexshift task show" in str(exc.value)
+    assert text not in str(exc.value)
+
+
+def test_unfit_entries_are_omitted_whole_and_later_decisions_are_kept() -> None:
+    oversized_entry = "```python\n" + "x" * 50_000 + "\n```"
+    fitting = "Preserve compatibility with old checkpoints"
+    payload = make_payload(
+        remaining=[oversized_entry, "Finish the next action"],
+        files_touched=["p" * 50_000, "src/confirmed.py"],
+    ).model_copy(
+        update={"decisions_known": True, "important_decisions": [oversized_entry, fitting]}
+    )
+    result = HandoffRenderer().render(payload)
+
+    assert "```python" not in result.text
+    assert fitting in result.text
+    assert "Finish the next action" in result.text
+    assert "src/confirmed.py" in result.text
+    assert "get_current_task" in result.text
+    assert {entry.section: entry.omitted_items for entry in result.omissions} == {
+        "remaining": 1,
+        "important_decisions": 1,
+        "files_touched": 1,
+    }
+    assert result.byte_count <= MAX_HANDOFF_BYTES
+
+
+def test_later_sections_return_unused_budget_to_recorded_decisions() -> None:
+    payload = make_payload(
+        completed=[f"Completed {i}" for i in range(5_000)],
+    ).model_copy(update={"decisions_known": True, "important_decisions": ["🧪" * 200] * 2_000})
+    result = HandoffRenderer().render(payload)
+    assert 47_000 <= result.byte_count <= MAX_HANDOFF_BYTES
+    assert "Scaffolded auth module" not in result.text
+    assert "Completed 0" in result.text
+    assert "🧪" * 200 in result.text
+    assert result.truncated

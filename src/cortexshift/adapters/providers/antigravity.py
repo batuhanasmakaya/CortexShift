@@ -25,6 +25,7 @@ from cortexshift.ports.handoff_delivery import (
     HandoffDeliveryPreparation,
     HandoffDeliveryStrategy,
     ProviderHandoffAdapter,
+    validate_delivery_context,
 )
 from cortexshift.ports.headless_runner import (
     DEFAULT_HEADLESS_TIMEOUT_SECONDS,
@@ -230,42 +231,33 @@ in the native interactive Antigravity UI.
 
 
 def _parse_bootstrap_metadata(stdout: str) -> tuple[str | None, str | None]:
-    """Extract only the required machine fields from Antigravity's JSON bootstrap output.
-
-    Returns a `(conversation_id, status)` tuple. The provider response body, reasoning,
-    usage, and tool details are intentionally not read, returned, logged, or persisted.
-
-    Raises:
-        HandoffDeliveryError: If the output is not parseable structured JSON.
-    """
-    text = stdout.strip()
-    if not text:
-        raise HandoffDeliveryError(
-            HandoffFailureCode.BOOTSTRAP_INVALID_OUTPUT.value,
-            "The Antigravity handoff bootstrap returned no structured output.",
-        )
-
+    """Read only terminal metadata for exactly one JSONL bootstrap turn."""
+    result: dict[str, object] | None = None
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError as err:
+        for line in stdout.split("\n"):
+            if not line.strip():
+                continue
+            frame = json.loads(line)
+            if not isinstance(frame, dict):
+                raise ValueError
+            if frame.get("event") == "result":
+                if result is not None or not isinstance(frame.get("result"), dict):
+                    raise ValueError
+                result = frame["result"]
+        if result is None:
+            raise ValueError
+    except ValueError:
         raise HandoffDeliveryError(
             HandoffFailureCode.BOOTSTRAP_INVALID_OUTPUT.value,
-            "The Antigravity handoff bootstrap did not return parseable JSON output.",
-        ) from err
+            "Antigravity did not return one structured bootstrap result.",
+        ) from None
 
-    if not isinstance(data, dict):
-        raise HandoffDeliveryError(
-            HandoffFailureCode.BOOTSTRAP_INVALID_OUTPUT.value,
-            "The Antigravity handoff bootstrap returned an unexpected JSON structure.",
-        )
-
-    raw_conversation_id = data.get("conversation_id")
-    conversation_id = raw_conversation_id.strip() if isinstance(raw_conversation_id, str) else None
-
-    raw_status = data.get("status")
-    status = raw_status.strip() if isinstance(raw_status, str) else None
-
-    return (conversation_id or None), status
+    conversation_id = result.get("conversation_id")
+    status = result.get("status")
+    return (
+        conversation_id if isinstance(conversation_id, str) else None,
+        status if isinstance(status, str) else None,
+    )
 
 
 class AntigravityHandoffAdapter(ProviderHandoffAdapter):
@@ -276,7 +268,7 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
     keystrokes, scraping the TUI, or silently dropping the handoff, CortexShift uses two
     documented native capabilities:
 
-    1. A read-only headless planning turn (`--mode=plan -p <context> --output-format json`)
+    1. A read-only headless planning turn (`--mode=plan` with stream-JSON stdin)
        that ingests the canonical context and produces a continuation plan. Plan mode is
        required here because the purpose of the first turn is context ingestion and
        planning, never unattended workspace mutation.
@@ -286,6 +278,8 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
     Only `conversation_id` and `status` are read from the bootstrap output; the response
     body is discarded. Permission bypass flags are never used.
     """
+
+    context_overhead_bytes = len((ANTIGRAVITY_BOOTSTRAP_PREFIX + "\n").encode("utf-8"))
 
     def __init__(
         self,
@@ -327,21 +321,27 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
         """Run the read-only plan bootstrap, then prepare interactive conversation resume."""
         if native_session_id is not None and not valid_native_id(native_session_id):
             raise NativeResumeError("Invalid native session identifier.")
+        validate_delivery_context(rendered_context, self.context_overhead_bytes)
         bootstrap_prompt = f"{ANTIGRAVITY_BOOTSTRAP_PREFIX}\n{rendered_context}"
 
         result = self._headless.run_headless(
             argv=[
                 executable_path,
                 "--mode=plan",
-                "-p",
-                bootstrap_prompt,
+                "--input-format",
+                "stream-json",
                 "--output-format",
-                "json",
+                "stream-json",
                 *(["--conversation", native_session_id] if native_session_id else []),
             ],
             cwd=project_root,
             timeout=self._timeout,
             env={"CORTEXSHIFT_MCP_READ_ONLY": "1"},
+            input_text=json.dumps(
+                {"event": "user", "message": {"content": bootstrap_prompt}},
+                ensure_ascii=False,
+            )
+            + "\n",
         )
 
         if result.timed_out:

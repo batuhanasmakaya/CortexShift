@@ -450,6 +450,8 @@ class TuiFacade:
             rendered_context=result.rendered_context,
             context_characters=result.context_characters,
             context_max_characters=result.context_max_characters,
+            context_bytes=result.context_bytes,
+            context_max_bytes=result.context_max_bytes,
             context_truncated=result.context_truncated,
         )
 
@@ -497,6 +499,8 @@ class TuiFacade:
             checkpoint_enrichment=checkpoint_enrichment,
             context_characters=result.context_characters,
             context_max_characters=result.context_max_characters,
+            context_bytes=result.context_bytes,
+            context_max_bytes=result.context_max_bytes,
             context_truncated=result.context_truncated,
         )
 

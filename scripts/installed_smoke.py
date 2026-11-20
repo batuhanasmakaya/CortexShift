@@ -79,7 +79,8 @@ async def mcp_check(env: dict[str, str], writable: bool) -> None:
     async with stdio_client(params) as (read, write), ClientSession(read, write) as client:
         await client.initialize()
         tools = {tool.name for tool in (await client.list_tools()).tools}
-        assert len(tools) == (10 if writable else 4)
+        assert len(tools) == (11 if writable else 4)
+        assert ("get_handoff_context" in tools) == writable
         result = await client.call_tool("get_current_task")
         assert not result.is_error
         if writable:
@@ -130,9 +131,10 @@ class FakeInteractive(InteractiveProcessRunner):
 
 
 class FakeBootstrap(HeadlessProviderRunner):
-    def run_headless(self, argv, cwd, timeout=30.0, env=None):
+    def run_headless(self, argv, cwd, timeout=30.0, env=None, *, input_text=None):
         assert is_same_directory(cwd, ROOT) and timeout > 0
-        assert "--json" in argv
+        assert "--json" in argv and argv[-1] == "-"
+        assert input_text and "CORTEXSHIFT HANDOFF PROTOCOL v1" in input_text
         assert env and env["CORTEXSHIFT_MCP_READ_ONLY"] == "1"
         return HeadlessResult(
             exit_code=0,

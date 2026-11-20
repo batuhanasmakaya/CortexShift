@@ -12,9 +12,8 @@ from cortexshift.ports.headless_runner import (
     HeadlessResult,
 )
 
-# Captured provider output is parsed for a handful of machine fields only. The bound
-# stops a pathological provider from streaming unbounded output into memory; it is not
-# a redaction mechanism, because the output is discarded rather than stored.
+# Limit how much captured text reaches the metadata parser. subprocess.run buffers
+# the streams in memory and the callers discard both after parsing.
 _MAX_CAPTURED_OUTPUT_CHARS = 2_000_000
 
 
@@ -46,6 +45,8 @@ class SubprocessHeadlessProviderRunner(HeadlessProviderRunner):
         cwd: Path | str,
         timeout: float = DEFAULT_HEADLESS_TIMEOUT_SECONDS,
         env: dict[str, str] | None = None,
+        *,
+        input_text: str | None = None,
     ) -> HeadlessResult:
         """Execute a bounded headless provider process without a shell or TTY."""
         if not argv:
@@ -67,17 +68,17 @@ class SubprocessHeadlessProviderRunner(HeadlessProviderRunner):
                     cwd=str(cwd),
                     env=full_env,
                     capture_output=True,
-                    text=True,
+                    input=input_text.encode("utf-8") if input_text is not None else None,
                     timeout=timeout,
                     shell=False,
                     check=False,
-                    stdin=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL if input_text is None else None,
                     pass_fds=pass_fds,
                 )
             return HeadlessResult(
                 exit_code=completed.returncode,
-                stdout=_bound(completed.stdout),
-                stderr=_bound(completed.stderr),
+                stdout=_bound(completed.stdout.decode("utf-8", errors="replace")),
+                stderr=_bound(completed.stderr.decode("utf-8", errors="replace")),
             )
         except subprocess.TimeoutExpired:
             return HeadlessResult(

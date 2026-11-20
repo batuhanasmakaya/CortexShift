@@ -88,6 +88,20 @@ def register_tools(
         return
 
     @server.tool(
+        name="get_handoff_context",
+        description=(
+            "Read the bounded CortexShift handoff assigned to this live switch invocation. "
+            "Includes the objective, constraints, historical observations and any omission notices."
+        ),
+        structured_output=False,
+    )
+    def get_handoff_context() -> str:
+        try:
+            return facade.get_handoff_context()
+        except (CortexShiftError, ValueError) as err:
+            raise ToolError(f"Failed to get handoff context: {err}") from err
+
+    @server.tool(
         name="set_current_work",
         description=(
             "Update the description of what the agent is currently working on. "

@@ -1,5 +1,6 @@
 """Shared deterministic factories and test doubles for Phase 5 handoff tests."""
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -211,11 +212,16 @@ def patch_which(
     monkeypatch.setattr(f"{module}.shutil", FakeShutil(resolver))
 
 
+def antigravity_result_event(**result: object) -> str:
+    return json.dumps({"event": "result", "result": result})
+
+
 class FakeCodexBootstrap:
     """Deterministic native CLI event stream; records transport only in test memory."""
 
     def __init__(self) -> None:
         self.invocations: list[list[str]] = []
+        self.input_texts: list[str] = []
 
     def run_headless(
         self,
@@ -223,12 +229,14 @@ class FakeCodexBootstrap:
         cwd: Path | str,
         timeout: float = 300.0,
         env: dict[str, str] | None = None,
+        *,
+        input_text: str | None = None,
     ) -> "HeadlessResult":
-        import json
-
         from cortexshift.ports.headless_runner import HeadlessResult
 
+        assert input_text is not None and argv[-1] == "-"
         self.invocations.append(argv)
+        self.input_texts.append(input_text)
         native_id = argv[argv.index("--json") + 1] if "resume" in argv else "test-codex-native-id"
         return HeadlessResult(
             exit_code=0,
