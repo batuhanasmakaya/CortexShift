@@ -1,5 +1,6 @@
 """Port defining persistence boundaries for CortexShift state."""
 
+from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
 from cortexshift.domain.project import Project
@@ -28,8 +29,16 @@ class StateStore(Protocol):
         ...
 
     # Task operations
+    def task_write_transaction(self) -> AbstractContextManager[None]:
+        """Serialize Task reads and writes until commit, or roll back on error.
+
+        Resolve the active ID and load existing Tasks inside this scope before
+        mutating them. Nested write transactions are unsupported.
+        """
+        ...
+
     def save_task(self, task: Task) -> None:
-        """Persist or update a Task."""
+        """Persist a new Task or one loaded in the current Task write transaction."""
         ...
 
     def get_task(self, task_id: str) -> Task | None:
@@ -46,7 +55,7 @@ class StateStore(Protocol):
         ...
 
     def set_active_task_id(self, project_id: str, task_id: str | None) -> None:
-        """Set or clear the active task identifier for the project."""
+        """Set or clear the active Task pointer inside a Task write transaction."""
         ...
 
     # Schema inspection

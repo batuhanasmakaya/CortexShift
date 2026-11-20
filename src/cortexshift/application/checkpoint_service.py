@@ -19,6 +19,7 @@ from cortexshift.domain.errors import (
     ProjectConflictError,
     SessionNotFoundError,
     SessionTaskMismatchError,
+    TaskNotFoundError,
 )
 from cortexshift.domain.git import RepositoryInspectionStatus
 from cortexshift.domain.session import Session, SessionExitReason
@@ -40,17 +41,20 @@ class CheckpointService:
     def _resolve_context(
         self,
         start_dir: WorkspaceStart = None,
+        task_id: str | None = None,
     ) -> tuple[WorkspaceIdentity, Task, SQLiteStateStore]:
-        """Resolve project, active task, and state store."""
+        """Resolve project, selected task, and state store."""
         workspace, store = open_workspace(start_dir)
         project = workspace.project
         try:
-            active_task_id = store.get_active_task_id(project.id)
-            if not active_task_id:
+            target_id = task_id if task_id is not None else store.get_active_task_id(project.id)
+            if target_id is None:
                 raise NoActiveTaskError()
 
-            task = store.get_task(active_task_id)
-            if task is None:
+            task = store.get_task(target_id)
+            if task is None or task.project_id != project.id:
+                if task_id is not None:
+                    raise TaskNotFoundError(task_id)
                 raise NoActiveTaskError()
 
             return workspace, task, store
@@ -68,16 +72,18 @@ class CheckpointService:
         note: str | None = None,
         start_dir: WorkspaceStart = None,
         metadata: dict[str, Any] | None = None,
+        *,
+        task_id: str | None = None,
     ) -> CheckpointRecord:
         """Create and persist a canonical Checkpoint without requiring the workspace lease.
 
         Manual checkpoints may be called from within a running provider session.
         Inspection is non-atomic and advisory.
         """
-        workspace, task, store = self._resolve_context(start_dir)
+        workspace, task, store = self._resolve_context(start_dir, task_id)
         project = workspace.project
         try:
-            # 1. Resolve session if requested or find latest for active task
+            # 1. Resolve session if requested or find latest for the selected task
             session: Session | None = None
             if session_id is not None:
                 session = store.get_session(session_id)

@@ -5,6 +5,7 @@ from cortexshift.domain.errors import (
     TaskAlreadyCompletedError,
     TaskNotActivatableError,
     TaskNotFoundError,
+    TaskTerminalError,
 )
 from cortexshift.domain.task import Task, TaskStatus
 from cortexshift.ports.state_store import StateStore
@@ -14,7 +15,7 @@ class TaskService:
     """Orchestrates persistent Task creation, updates, and activation transitions."""
 
     def __init__(self, store: StateStore) -> None:
-        self.store = store
+        self._store = store
 
     def start_task(
         self,
@@ -48,9 +49,10 @@ class TaskService:
             status=initial_status,
         )
 
-        self.store.save_task(task)
-        if set_active:
-            self.store.set_active_task_id(project_id, task.id)
+        with self._store.task_write_transaction():
+            self._store.save_task(task)
+            if set_active:
+                self._store.set_active_task_id(project_id, task.id)
         return task
 
     def get_task(self, task_id: str) -> Task:
@@ -59,21 +61,21 @@ class TaskService:
         Raises:
             TaskNotFoundError: If the task does not exist.
         """
-        task = self.store.get_task(task_id)
+        task = self._store.get_task(task_id)
         if task is None:
             raise TaskNotFoundError(task_id)
         return task
 
     def get_active_task(self, project_id: str) -> Task | None:
         """Retrieve the currently active task for a project, or None if no task is active."""
-        active_id = self.store.get_active_task_id(project_id)
+        active_id = self._store.get_active_task_id(project_id)
         if active_id is None:
             return None
-        return self.store.get_task(active_id)
+        return self._store.get_task(active_id)
 
     def list_tasks(self, project_id: str) -> list[Task]:
         """List all tasks associated with a project."""
-        return self.store.list_tasks(project_id)
+        return self._store.list_tasks(project_id)
 
     def activate_task(self, project_id: str, task_id: str) -> Task:
         """Make an existing task the active task for the project.
@@ -89,19 +91,16 @@ class TaskService:
             TaskNotFoundError: If the task does not exist or does not belong to the project.
             TaskNotActivatableError: If the task is in a terminal status (completed/cancelled).
         """
-        task = self.get_task(task_id)
-        if task.project_id != project_id:
-            raise TaskNotFoundError(task_id)
+        with self._store.task_write_transaction():
+            task = self._get_project_task(project_id, task_id, "activate")
+            if task.is_terminal:
+                raise TaskNotActivatableError(
+                    f"Cannot activate task '{task_id}' because it is in terminal status "
+                    f"'{task.status.value}'."
+                )
 
-        if task.is_terminal:
-            msg = (
-                f"Cannot activate task '{task_id}' because it is in terminal status "
-                f"'{task.status.value}'."
-            )
-            raise TaskNotActivatableError(msg)
-
-        self.store.set_active_task_id(project_id, task.id)
-        return task
+            self._store.set_active_task_id(project_id, task.id)
+            return task
 
     def complete_task(self, project_id: str, task_id: str | None = None) -> Task:
         """Mark a task as completed.
@@ -120,29 +119,19 @@ class TaskService:
             NoActiveTaskError: If task_id is None and no task is currently active.
             TaskNotFoundError: If the specified task does not exist.
             TaskAlreadyCompletedError: If the task is already completed.
+            TaskTerminalError: If the task is cancelled.
         """
-        if task_id is None:
-            active_id = self.store.get_active_task_id(project_id)
-            if active_id is None:
-                raise NoActiveTaskError("No active task to complete.")
-            target_task = self.get_task(active_id)
-        else:
-            target_task = self.get_task(task_id)
-            if target_task.project_id != project_id:
-                raise TaskNotFoundError(task_id)
+        with self._store.task_write_transaction():
+            task = self._get_project_task(project_id, task_id, "complete")
+            if task.status == TaskStatus.COMPLETED:
+                raise TaskAlreadyCompletedError(task.id)
+            self._require_nonterminal(task, "complete")
 
-        if target_task.status == TaskStatus.COMPLETED:
-            raise TaskAlreadyCompletedError(target_task.id)
-
-        completed_task = target_task.mark_completed()
-        self.store.save_task(completed_task)
-
-        # Clear active task pointer if this task was active
-        active_id = self.store.get_active_task_id(project_id)
-        if active_id == completed_task.id:
-            self.store.set_active_task_id(project_id, None)
-
-        return completed_task
+            completed = task.mark_completed()
+            self._store.save_task(completed)
+            if self._store.get_active_task_id(project_id) == task.id:
+                self._store.set_active_task_id(project_id, None)
+            return completed
 
     def update_task(
         self,
@@ -153,6 +142,8 @@ class TaskService:
         add_completed: list[str] | None = None,
         add_remaining: list[str] | None = None,
         add_issues: list[str] | None = None,
+        *,
+        complete_items: list[str] | None = None,
     ) -> Task:
         """Update fields and progression lists on a task.
 
@@ -166,6 +157,7 @@ class TaskService:
             add_completed: Optional list of completed item strings to append.
             add_remaining: Optional list of remaining item strings to append.
             add_issues: Optional list of known issue strings to append.
+            complete_items: Optional items to add to completed and remove from remaining.
 
         Returns:
             The updated Task entity.
@@ -173,29 +165,45 @@ class TaskService:
         Raises:
             NoActiveTaskError: If task_id is None and no task is active.
             TaskNotFoundError: If the specified task does not exist.
+            TaskTerminalError: If the task is completed or cancelled.
         """
+        with self._store.task_write_transaction():
+            task = self._get_project_task(project_id, task_id, "update")
+            self._require_nonterminal(task, "update")
+
+            if clear_current_work:
+                task = task.with_current_work(None)
+            elif current_work is not None:
+                task = task.with_current_work(current_work)
+
+            if add_completed:
+                task = task.add_completed_items(add_completed)
+            if add_remaining:
+                task = task.add_remaining_items(add_remaining)
+            if add_issues:
+                task = task.add_known_issues(add_issues)
+            if complete_items:
+                task = task.complete_items(complete_items)
+
+            self._store.save_task(task)
+            return task
+
+    def _get_project_task(self, project_id: str, task_id: str | None, action: str) -> Task:
+        """Resolve and validate a mutation target within the caller's write transaction."""
         if task_id is None:
-            active_id = self.store.get_active_task_id(project_id)
-            if active_id is None:
-                raise NoActiveTaskError("No active task to update.")
-            target_task = self.get_task(active_id)
-        else:
-            target_task = self.get_task(task_id)
-            if target_task.project_id != project_id:
-                raise TaskNotFoundError(task_id)
+            task_id = self._store.get_active_task_id(project_id)
+            if task_id is None:
+                raise NoActiveTaskError(f"No active task to {action}.")
 
-        updated = target_task
-        if clear_current_work:
-            updated = updated.with_current_work(None)
-        elif current_work is not None:
-            updated = updated.with_current_work(current_work)
+        task = self.get_task(task_id)
+        if task.project_id != project_id:
+            raise TaskNotFoundError(task_id)
+        return task
 
-        if add_completed:
-            updated = updated.add_completed_items(add_completed)
-        if add_remaining:
-            updated = updated.add_remaining_items(add_remaining)
-        if add_issues:
-            updated = updated.add_known_issues(add_issues)
-
-        self.store.save_task(updated)
-        return updated
+    @staticmethod
+    def _require_nonterminal(task: Task, action: str) -> None:
+        if task.is_terminal:
+            raise TaskTerminalError(
+                f"Cannot {action} task '{task.id}' because it is in terminal status "
+                f"'{task.status.value}'."
+            )

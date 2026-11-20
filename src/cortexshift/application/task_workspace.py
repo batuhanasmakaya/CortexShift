@@ -16,7 +16,6 @@ from pathlib import Path
 from cortexshift.application.locator import ProjectLocator
 from cortexshift.application.task_service import TaskService
 from cortexshift.application.workspace import WorkspaceStart, open_workspace
-from cortexshift.domain.errors import NoActiveTaskError
 from cortexshift.domain.project import Project
 from cortexshift.domain.task import Task
 
@@ -95,47 +94,35 @@ class TaskWorkspaceService:
         self,
         current_work: str | None,
         start_dir: WorkspaceStart = None,
+        *,
+        task_id: str | None = None,
     ) -> Task:
-        """Replace the active Task's in-flight work description."""
+        """Replace the specified or active Task's in-flight work description."""
         with self.open(start_dir) as workspace:
             return workspace.tasks.update_task(
                 project_id=workspace.project.id,
+                task_id=task_id,
                 current_work=current_work,
                 clear_current_work=current_work is None,
             )
 
-    def mark_completed(self, items: list[str], start_dir: WorkspaceStart = None) -> Task:
-        """Mark items completed on the active Task and drop them from remaining.
-
-        Applies the canonical `Task.complete_items` rule — the same rule MCP agents use —
-        so the Task itself is never completed as a side effect.
-        """
+    def mark_completed(
+        self, items: list[str], start_dir: WorkspaceStart = None, *, task_id: str | None = None
+    ) -> Task:
+        """Mark items completed on the specified or active Task and drop them from remaining."""
         with self.open(start_dir) as workspace:
-            task = self._require_active(workspace)
-            updated = task.complete_items(items)
-            workspace.tasks.store.save_task(updated)
-            return updated
+            return workspace.tasks.update_task(workspace.project.id, task_id, complete_items=items)
 
-    def add_remaining(self, items: list[str], start_dir: WorkspaceStart = None) -> Task:
-        """Append newly discovered remaining items to the active Task."""
+    def add_remaining(
+        self, items: list[str], start_dir: WorkspaceStart = None, *, task_id: str | None = None
+    ) -> Task:
+        """Append remaining items to the specified or active Task."""
         with self.open(start_dir) as workspace:
-            return workspace.tasks.update_task(
-                project_id=workspace.project.id,
-                add_remaining=items,
-            )
+            return workspace.tasks.update_task(workspace.project.id, task_id, add_remaining=items)
 
-    def record_issues(self, items: list[str], start_dir: WorkspaceStart = None) -> Task:
-        """Record known issues or blockers on the active Task."""
+    def record_issues(
+        self, items: list[str], start_dir: WorkspaceStart = None, *, task_id: str | None = None
+    ) -> Task:
+        """Record known issues or blockers on the specified or active Task."""
         with self.open(start_dir) as workspace:
-            return workspace.tasks.update_task(
-                project_id=workspace.project.id,
-                add_issues=items,
-            )
-
-    @staticmethod
-    def _require_active(workspace: ResolvedTaskWorkspace) -> Task:
-        """Return the active Task or fail with the canonical error."""
-        task = workspace.tasks.get_active_task(workspace.project.id)
-        if task is None:
-            raise NoActiveTaskError("No active task to update.")
-        return task
+            return workspace.tasks.update_task(workspace.project.id, task_id, add_issues=items)

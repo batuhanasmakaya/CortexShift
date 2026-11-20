@@ -356,21 +356,21 @@ class TuiFacade:
     # Task operations (delegated to canonical services)
     # ------------------------------------------------------------------
 
-    def set_current_work(self, current_work: str | None) -> Task:
-        """Set the active Task's in-flight work description."""
-        return self._task_workspace.set_current_work(current_work, self.workspace)
+    def set_current_work(self, current_work: str | None, *, task_id: str | None = None) -> Task:
+        """Set the specified or active Task's in-flight work description."""
+        return self._task_workspace.set_current_work(current_work, self.workspace, task_id=task_id)
 
-    def mark_completed(self, items: list[str]) -> Task:
-        """Mark items completed on the active Task and drop them from remaining."""
-        return self._task_workspace.mark_completed(items, self.workspace)
+    def mark_completed(self, items: list[str], *, task_id: str | None = None) -> Task:
+        """Mark items completed on the specified or active Task."""
+        return self._task_workspace.mark_completed(items, self.workspace, task_id=task_id)
 
-    def add_remaining(self, items: list[str]) -> Task:
-        """Append newly discovered remaining items to the active Task."""
-        return self._task_workspace.add_remaining(items, self.workspace)
+    def add_remaining(self, items: list[str], *, task_id: str | None = None) -> Task:
+        """Append remaining items to the specified or active Task."""
+        return self._task_workspace.add_remaining(items, self.workspace, task_id=task_id)
 
-    def record_issues(self, items: list[str]) -> Task:
-        """Record known issues on the active Task."""
-        return self._task_workspace.record_issues(items, self.workspace)
+    def record_issues(self, items: list[str], *, task_id: str | None = None) -> Task:
+        """Record issues on the specified or active Task."""
+        return self._task_workspace.record_issues(items, self.workspace, task_id=task_id)
 
     def activate_task(self, task_id: str) -> Task:
         """Activate an eligible Task using canonical activation rules."""
@@ -401,6 +401,8 @@ class TuiFacade:
         decisions: list[str] | None = None,
         test_summary: str | None = None,
         note: str | None = None,
+        *,
+        task_id: str | None = None,
     ) -> CheckpointRecord:
         """Capture a cooperative MANUAL checkpoint without acquiring the workspace lease.
 
@@ -417,6 +419,7 @@ class TuiFacade:
             test_provenance=provenance,
             note=note,
             start_dir=self.workspace,
+            task_id=task_id,
         )
 
     def get_checkpoint(self, checkpoint_id: str) -> CheckpointRecord:

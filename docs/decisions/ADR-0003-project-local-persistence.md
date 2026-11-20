@@ -52,6 +52,8 @@ Project identity (`Project`) is separated from mutable runtime pointers (`Projec
 - This enables exactly one active task at a time while allowing multiple historical tasks.
 
 ### 6. Atomic Task Mutations and Transactional Boundaries
+See [ADR-0013](ADR-0013-atomic-task-writes.md) for write serialization and current lifecycle rules.
+
 All state modifications (task creation, updates, progress additions, activation, completion) execute within transactional boundaries:
 - `task start` transactionally inserts the canonical task (`title`, `objective`, `requirements`, `constraints`, `status`, timestamps) and updates `active_task_id`.
 - `task complete` transactionally marks the task completed and clears `active_task_id` if the completed task was active.

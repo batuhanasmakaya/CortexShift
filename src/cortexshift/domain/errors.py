@@ -58,6 +58,10 @@ class TaskAlreadyCompletedError(CortexShiftError):
         self.task_id = task_id
 
 
+class TaskTerminalError(CortexShiftError):
+    """Raised when an operation would change a terminal Task."""
+
+
 class DatabaseStateError(CortexShiftError):
     """Base exception for persistent storage failures."""
 

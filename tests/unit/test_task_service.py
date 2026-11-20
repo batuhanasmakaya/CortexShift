@@ -12,6 +12,7 @@ from cortexshift.domain.errors import (
     TaskAlreadyCompletedError,
     TaskNotActivatableError,
     TaskNotFoundError,
+    TaskTerminalError,
 )
 from cortexshift.domain.project import Project
 from cortexshift.domain.task import TaskStatus
@@ -166,6 +167,25 @@ def test_complete_already_completed_task_fails(
 
     with pytest.raises(TaskAlreadyCompletedError):
         service.complete_task(project.id, task.id)
+
+
+def test_cancelled_task_rejects_progress_and_completion(
+    store_and_project: tuple[SQLiteStateStore, Project],
+) -> None:
+    store, project = store_and_project
+    service = TaskService(store)
+    active = service.start_task(project.id, "Active task", "Keep it active")
+    pending = service.start_task(project.id, "Cancelled task", "Stop work", set_active=False)
+    cancelled = pending.model_copy(update={"status": TaskStatus.CANCELLED})
+    with store.task_write_transaction():
+        store.save_task(cancelled)
+
+    with pytest.raises(TaskTerminalError, match="cancelled"):
+        service.update_task(project.id, cancelled.id, add_issues=["Late report"])
+    with pytest.raises(TaskTerminalError, match="cancelled"):
+        service.complete_task(project.id, cancelled.id)
+    assert service.get_task(cancelled.id) == cancelled
+    assert service.get_active_task(project.id) == active
 
 
 def test_update_task_progress_and_deduplication(

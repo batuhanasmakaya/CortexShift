@@ -6,6 +6,7 @@ from cortexshift.adapters.git.inspector import GitRepositoryInspector
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.checkpoint_builder import CheckpointBuilder
 from cortexshift.application.repository_service import RepositoryService
+from cortexshift.application.task_service import TaskService
 from cortexshift.application.workspace import open_workspace
 from cortexshift.domain.checkpoint import (
     CHECKPOINT_TRIGGER_DECISION,
@@ -18,10 +19,8 @@ from cortexshift.domain.errors import (
     McpReadOnlyError,
     NoActiveTaskError,
     ProjectConflictError,
-    TaskNotFoundError,
 )
 from cortexshift.domain.git import RepositoryInspectionStatus
-from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.task import Task
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.models import (
@@ -68,6 +67,7 @@ class McpApplicationFacade:
         if self._workspace.project.id != context.project_id:
             raise ProjectConflictError("Workspace identity mismatch in the MCP project binding.")
         self._store = store
+        self._tasks = TaskService(store)
         self._repo_service = repository_service or RepositoryService(
             inspector=GitRepositoryInspector(),
             store=store,
@@ -80,14 +80,14 @@ class McpApplicationFacade:
             )
         self._workspace.revalidate()
 
-    def _get_bound_task(self) -> Task:
+    def _bound_task_id(self) -> str:
         self._workspace.revalidate()
         if not self._context.task_id:
             raise NoActiveTaskError("No bound task found for this MCP session.")
-        task = self._store.get_task(self._context.task_id)
-        if task is None:
-            raise TaskNotFoundError(self._context.task_id)
-        return task
+        return self._context.task_id
+
+    def _get_bound_task(self) -> Task:
+        return self._tasks.get_task(self._bound_task_id())
 
     # -------------------------------------------------------------------------
     # Read Operations
@@ -247,26 +247,13 @@ class McpApplicationFacade:
                 f"current_work exceeds maximum length of {MAX_CURRENT_WORK_CHARS} characters."
             )
 
-        clean_work: str | None = (
-            current_work.strip() if current_work and current_work.strip() else None
+        updated = self._tasks.update_task(
+            self._context.project_id,
+            self._bound_task_id(),
+            current_work=current_work,
+            clear_current_work=current_work is None,
         )
-        task = self._get_bound_task()
-        updated = task.model_copy(
-            update={
-                "current_work": clean_work,
-                "updated_at": utc_now(),
-            }
-        )
-        self._store.save_task(updated)
-
-        return TaskMutationResult(
-            task_id=updated.id,
-            updated_at=updated.updated_at.isoformat(),
-            completed=list(updated.completed),
-            remaining=list(updated.remaining),
-            current_work=updated.current_work,
-            known_issues=list(updated.known_issues),
-        )
+        return self._task_mutation_result(updated)
 
     def mark_completed(self, items: list[str]) -> TaskMutationResult:
         """Add items to completed and remove matching entries from remaining."""
@@ -288,18 +275,12 @@ class McpApplicationFacade:
         if not cleaned:
             raise ValueError("No non-empty items provided.")
 
-        task = self._get_bound_task()
-        updated = task.complete_items(cleaned)
-        self._store.save_task(updated)
-
-        return TaskMutationResult(
-            task_id=updated.id,
-            updated_at=updated.updated_at.isoformat(),
-            completed=list(updated.completed),
-            remaining=list(updated.remaining),
-            current_work=updated.current_work,
-            known_issues=list(updated.known_issues),
+        updated = self._tasks.update_task(
+            self._context.project_id,
+            self._bound_task_id(),
+            complete_items=cleaned,
         )
+        return self._task_mutation_result(updated)
 
     def add_remaining(self, items: list[str]) -> TaskMutationResult:
         """Append deduplicated items to Task.remaining."""
@@ -321,29 +302,12 @@ class McpApplicationFacade:
         if not cleaned:
             raise ValueError("No non-empty items provided.")
 
-        task = self._get_bound_task()
-
-        new_remaining = list(task.remaining)
-        for it in cleaned:
-            if it not in new_remaining:
-                new_remaining.append(it)
-
-        updated = task.model_copy(
-            update={
-                "remaining_items": new_remaining,
-                "updated_at": utc_now(),
-            }
+        updated = self._tasks.update_task(
+            self._context.project_id,
+            self._bound_task_id(),
+            add_remaining=cleaned,
         )
-        self._store.save_task(updated)
-
-        return TaskMutationResult(
-            task_id=updated.id,
-            updated_at=updated.updated_at.isoformat(),
-            completed=list(updated.completed),
-            remaining=list(updated.remaining),
-            current_work=updated.current_work,
-            known_issues=list(updated.known_issues),
-        )
+        return self._task_mutation_result(updated)
 
     def record_issue(self, items: list[str] | str) -> TaskMutationResult:
         """Append deduplicated issues to Task.known_issues."""
@@ -366,28 +330,22 @@ class McpApplicationFacade:
         if not cleaned:
             raise ValueError("No non-empty issues provided.")
 
-        task = self._get_bound_task()
-
-        new_issues = list(task.known_issues)
-        for it in cleaned:
-            if it not in new_issues:
-                new_issues.append(it)
-
-        updated = task.model_copy(
-            update={
-                "known_issues": new_issues,
-                "updated_at": utc_now(),
-            }
+        updated = self._tasks.update_task(
+            self._context.project_id,
+            self._bound_task_id(),
+            add_issues=cleaned,
         )
-        self._store.save_task(updated)
+        return self._task_mutation_result(updated)
 
+    @staticmethod
+    def _task_mutation_result(task: Task) -> TaskMutationResult:
         return TaskMutationResult(
-            task_id=updated.id,
-            updated_at=updated.updated_at.isoformat(),
-            completed=list(updated.completed),
-            remaining=list(updated.remaining),
-            current_work=updated.current_work,
-            known_issues=list(updated.known_issues),
+            task_id=task.id,
+            updated_at=task.updated_at.isoformat(),
+            completed=list(task.completed),
+            remaining=list(task.remaining),
+            current_work=task.current_work,
+            known_issues=list(task.known_issues),
         )
 
     def record_decision(self, decision: str) -> DecisionResult:

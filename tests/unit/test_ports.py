@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from cortexshift.domain import (
@@ -90,6 +92,10 @@ class DummyStateStore:
 
     def get_default_project(self) -> Project | None:
         return None
+
+    @contextmanager
+    def task_write_transaction(self) -> Iterator[None]:
+        yield
 
     def save_task(self, task: Task) -> None:
         pass
