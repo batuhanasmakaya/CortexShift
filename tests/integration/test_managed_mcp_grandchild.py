@@ -33,6 +33,7 @@ from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.recovery_service import RecoveryService
 from cortexshift.application.run_service import ProviderRuntimeRegistry, RunService
+from cortexshift.domain.checkpoint import CheckpointKind
 from cortexshift.domain.errors import WorkspaceLockedError
 from cortexshift.domain.mcp_binding import (
     ENV_INVOCATION_TOKEN,
@@ -405,7 +406,19 @@ def test_expired_managed_binding_still_serves_reads(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_launcher_death_revokes_connected_mcp_before_recovery(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "without_guard",
+    [False] if sys.platform == "win32" else [False, True],
+    ids=lambda without_guard: "without-provider-guard" if without_guard else "native",
+)
+async def test_launcher_death_revokes_connected_mcp_before_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, without_guard: bool
+) -> None:
+    guarded = sys.platform != "win32" and not without_guard
+    if without_guard:
+        monkeypatch.setattr(
+            "cortexshift.application.recovery_service.provider_guard_supported", lambda: False
+        )
     _seed(tmp_path)
     provider = """
 import json, os, sys
@@ -416,12 +429,18 @@ sys.stdin.readline()
     launcher = f"""
 import sys
 from pathlib import Path
+from cortexshift.adapters import workspace_lease
 from cortexshift.adapters.process_runner import SubprocessInteractiveProcessRunner
 from cortexshift.adapters.workspace_lease import FileWorkspaceLease
+from cortexshift.application import session_launcher
 from cortexshift.application.session_launcher import ProviderSessionLauncher
 from cortexshift.application.workspace import open_workspace
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.provider import PROVIDER_CODEX
+
+if {without_guard!r}:
+    workspace_lease.provider_guard_supported = lambda: False
+    session_launcher.provider_guard_supported = lambda: False
 
 workspace, store = open_workspace(Path.cwd())
 assert (task := store.get_active_task_id(workspace.project.id))
@@ -477,7 +496,7 @@ with store, FileWorkspaceLease(workspace.root / '.cortexshift' / 'agent.lock'):
                     assert {t.name for t in (await restarted.list_tools()).tools} == READ_TOOLS
 
                 recovery = RecoveryService()
-                if sys.platform != "win32":
+                if guarded:
                     with pytest.raises(WorkspaceLockedError, match="surviving provider work"):
                         recovery.recover(tmp_path)
                 else:
@@ -491,11 +510,11 @@ with store, FileWorkspaceLease(workspace.root / '.cortexshift' / 'agent.lock'):
                 lease = FileWorkspaceLeaseManager().get_lease(tmp_path)
                 wait_for(lambda: not lease.is_locked())
                 report = recovery.recover(tmp_path)
-                if sys.platform == "win32":
+                if guarded:
+                    assert report.reconciled_session_ids == [session_id]
+                else:
                     assert report.uncertain_session_ids == [session_id]
                     assert report.reconciled_session_ids == []
-                else:
-                    assert report.reconciled_session_ids == [session_id]
 
                 second = await client.call_tool("create_checkpoint")
                 assert second.is_error
@@ -503,15 +522,19 @@ with store, FileWorkspaceLease(workspace.root / '.cortexshift' / 'agent.lock'):
                 assert not (await client.call_tool("get_current_task")).is_error
 
             with SQLiteStateStore(db_path) as store:
-                reconciled = store.get_session(session_id)
-                assert reconciled is not None
-                if sys.platform == "win32":
-                    assert reconciled == unfinished
+                session = store.get_session(session_id)
+                assert session is not None and session.ended_at is None
+                checkpoints = store.list_checkpoints()
+                if guarded:
+                    assert session.status == SessionStatus.INTERRUPTED
+                    assert session.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
+                    assert session.reconciled_at is not None
+                    (checkpoint,) = checkpoints
+                    assert checkpoint.kind == CheckpointKind.RECOVERY
+                    assert checkpoint.session_id == session_id
                 else:
-                    assert reconciled.status == SessionStatus.INTERRUPTED
-                    assert reconciled.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
-                assert reconciled.ended_at is None and reconciled.reconciled_at is not None
-                assert len(store.list_checkpoints()) == 1
+                    assert session == unfinished
+                    assert checkpoints == []
         finally:
             if process.poll() is None:
                 process.kill()

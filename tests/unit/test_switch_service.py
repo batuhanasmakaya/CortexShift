@@ -1,7 +1,6 @@
 """Unit tests for SwitchService handoff orchestration."""
 
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +13,7 @@ from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.recovery_service import RecoveryService
 from cortexshift.application.switch_service import ProviderHandoffRegistry, SwitchService
+from cortexshift.domain.checkpoint import CheckpointKind
 from cortexshift.domain.errors import (
     GitProbeError,
     HandoffDeliveryError,
@@ -820,8 +820,9 @@ def test_claude_launch_without_retrieval_does_not_claim_delivery(tmp_path: Path)
     assert result.handoff.target_session_id == result.target_session.id
 
 
+@pytest.mark.parametrize("guarded", [True, False], ids=["guarded", "unguarded"])
 def test_recover_after_interrupted_claude_delivery_retains_unconfirmed_handoff(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, guarded: bool
 ) -> None:
     class InterruptedRunner(FakeProcessRunner):
         def run_interactive(
@@ -829,6 +830,10 @@ def test_recover_after_interrupted_claude_delivery_retains_unconfirmed_handoff(
         ) -> int:
             raise SystemExit(97)
 
+    for module in ("session_launcher", "recovery_service"):
+        monkeypatch.setattr(
+            f"cortexshift.application.{module}.provider_guard_supported", lambda: guarded
+        )
     _, task = seed_project(tmp_path)
     source = seed_session(tmp_path, task.id, provider_id=PROVIDER_CODEX)
     with pytest.raises(SystemExit) as exc:
@@ -841,15 +846,22 @@ def test_recover_after_interrupted_claude_delivery_retains_unconfirmed_handoff(
         assert handoff.status == HandoffStatus.PREPARED
         assert handoff.delivered_at is None
         assert handoff.target_session_id is not None
-        interrupted = store.get_session(handoff.target_session_id)
-        assert interrupted is not None
-        if sys.platform == "win32":
-            assert report.uncertain_session_ids == [interrupted.id]
-            assert interrupted.status == SessionStatus.RUNNING
+        session = store.get_session(handoff.target_session_id)
+        assert session is not None and session.ended_at is None
+        checkpoints = store.list_checkpoints(task_id=task.id)
+        if guarded:
+            assert report.reconciled_session_ids == [session.id]
+            assert session.status == SessionStatus.INTERRUPTED
+            assert session.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
+            assert session.reconciled_at is not None
+            (checkpoint,) = checkpoints
+            assert checkpoint.kind == CheckpointKind.RECOVERY
+            assert checkpoint.session_id == session.id
         else:
-            assert report.reconciled_session_ids == [interrupted.id]
-            assert interrupted.status == SessionStatus.INTERRUPTED
-        assert interrupted.ended_at is None
-        assert interrupted.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
+            assert report.uncertain_session_ids == [session.id]
+            assert report.reconciled_session_ids == []
+            assert session.status == SessionStatus.RUNNING
+            assert session.exit_reason is None and session.reconciled_at is None
+            assert checkpoints == []
         assert store.get_task(task.id) == task
         assert store.get_session(source.id) == source
