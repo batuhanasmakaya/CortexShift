@@ -13,10 +13,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.locator import ProjectLocator
 from cortexshift.application.task_service import TaskService
-from cortexshift.domain.errors import NoActiveTaskError, ProjectNotInitializedError
+from cortexshift.application.workspace import WorkspaceStart, open_workspace
+from cortexshift.domain.errors import NoActiveTaskError
 from cortexshift.domain.project import Project
 from cortexshift.domain.task import Task
 
@@ -37,37 +37,26 @@ class TaskWorkspaceService:
         self._locator = project_locator
 
     @contextmanager
-    def open(self, start_dir: Path | str | None = None) -> Iterator[ResolvedTaskWorkspace]:
+    def open(self, start_dir: WorkspaceStart = None) -> Iterator[ResolvedTaskWorkspace]:
         """Open the nearest initialized project and yield its Task service.
 
         Raises:
             ProjectNotInitializedError: If no initialized project root is found.
         """
-        start_path = Path(start_dir) if start_dir is not None else None
-        project_root = self._locator.find_project_root(start_path)
-        if project_root is None:
-            raise ProjectNotInitializedError()
-
-        db_path = self._locator.get_database_path(project_root)
-        store = SQLiteStateStore(db_path, auto_migrate=False)
-        try:
-            project = store.get_default_project()
-            if project is None:
-                raise ProjectNotInitializedError()
+        workspace, store = open_workspace(start_dir, locator=self._locator)
+        with store:
             yield ResolvedTaskWorkspace(
-                project_root=project_root,
-                project=project,
+                project_root=workspace.root,
+                project=workspace.project,
                 tasks=TaskService(store),
             )
-        finally:
-            store.close()
 
-    def list_tasks(self, start_dir: Path | str | None = None) -> list[Task]:
+    def list_tasks(self, start_dir: WorkspaceStart = None) -> list[Task]:
         """List every Task belonging to the resolved project."""
         with self.open(start_dir) as workspace:
             return workspace.tasks.list_tasks(workspace.project.id)
 
-    def get_active_task(self, start_dir: Path | str | None = None) -> Task | None:
+    def get_active_task(self, start_dir: WorkspaceStart = None) -> Task | None:
         """Return the active Task for the resolved project, or None."""
         with self.open(start_dir) as workspace:
             return workspace.tasks.get_active_task(workspace.project.id)
@@ -79,7 +68,7 @@ class TaskWorkspaceService:
         requirements: list[str] | None = None,
         constraints: list[str] | None = None,
         set_active: bool = True,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
     ) -> Task:
         """Create a new Task using the canonical creation rules."""
         with self.open(start_dir) as workspace:
@@ -92,7 +81,7 @@ class TaskWorkspaceService:
                 set_active=set_active,
             )
 
-    def activate_task(self, task_id: str, start_dir: Path | str | None = None) -> Task:
+    def activate_task(self, task_id: str, start_dir: WorkspaceStart = None) -> Task:
         """Activate an existing Task using canonical activation rules.
 
         Raises:
@@ -105,7 +94,7 @@ class TaskWorkspaceService:
     def set_current_work(
         self,
         current_work: str | None,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
     ) -> Task:
         """Replace the active Task's in-flight work description."""
         with self.open(start_dir) as workspace:
@@ -115,7 +104,7 @@ class TaskWorkspaceService:
                 clear_current_work=current_work is None,
             )
 
-    def mark_completed(self, items: list[str], start_dir: Path | str | None = None) -> Task:
+    def mark_completed(self, items: list[str], start_dir: WorkspaceStart = None) -> Task:
         """Mark items completed on the active Task and drop them from remaining.
 
         Applies the canonical `Task.complete_items` rule — the same rule MCP agents use —
@@ -127,7 +116,7 @@ class TaskWorkspaceService:
             workspace.tasks.store.save_task(updated)
             return updated
 
-    def add_remaining(self, items: list[str], start_dir: Path | str | None = None) -> Task:
+    def add_remaining(self, items: list[str], start_dir: WorkspaceStart = None) -> Task:
         """Append newly discovered remaining items to the active Task."""
         with self.open(start_dir) as workspace:
             return workspace.tasks.update_task(
@@ -135,7 +124,7 @@ class TaskWorkspaceService:
                 add_remaining=items,
             )
 
-    def record_issues(self, items: list[str], start_dir: Path | str | None = None) -> Task:
+    def record_issues(self, items: list[str], start_dir: WorkspaceStart = None) -> Task:
         """Record known issues or blockers on the active Task."""
         with self.open(start_dir) as workspace:
             return workspace.tasks.update_task(

@@ -1,22 +1,19 @@
 """Application service for crash recovery and stale session reconciliation."""
 
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
-from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.checkpoint_builder import CheckpointBuilder
 from cortexshift.application.handoff_builder import derive_files_touched
-from cortexshift.application.locator import ProjectLocator
+from cortexshift.application.workspace import WorkspaceStart, open_workspace
 from cortexshift.domain.checkpoint import CheckpointKind
 from cortexshift.domain.errors import (
     GitProbeError,
     NoActiveTaskError,
-    ProjectNotInitializedError,
     WorkspaceLockedError,
 )
 from cortexshift.domain.git import RepositoryInspectionStatus
@@ -59,7 +56,7 @@ class RecoveryService:
 
     def recover(
         self,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
         *,
         dry_run: bool = False,
     ) -> RecoveryReport:
@@ -68,19 +65,9 @@ class RecoveryService:
         Requires an exclusive workspace lease to verify no active CortexShift provider
         process currently owns the workspace.
         """
-        start_path = Path(start_dir) if start_dir is not None else None
-        project_root = ProjectLocator.find_project_root(start_path)
-        if project_root is None:
-            raise ProjectNotInitializedError()
-
-        db_path = ProjectLocator.get_database_path(project_root)
-        store = SQLiteStateStore(db_path, auto_migrate=False)
-
+        workspace, store = open_workspace(start_dir)
+        project = workspace.project
         try:
-            project = store.get_default_project()
-            if project is None:
-                raise ProjectNotInitializedError()
-
             active_task_id = store.get_active_task_id(project.id)
             if not active_task_id:
                 raise NoActiveTaskError()
@@ -89,7 +76,8 @@ class RecoveryService:
             if task is None:
                 raise NoActiveTaskError()
 
-            lease = self._lease_manager.get_lease(Path(project.repo_path))
+            workspace.revalidate()
+            lease = self._lease_manager.get_lease(workspace.root)
 
             if dry_run:
                 # Probe lease non-destructively
@@ -106,10 +94,12 @@ class RecoveryService:
                 ]
                 stale_ids = [s.id for s in stale_sessions]
 
+                workspace.revalidate()
                 inspection = self._inspector.inspect(
-                    project_root=Path(project.repo_path),
+                    project_root=workspace.root,
                     project_id=project.id,
                 )
+                workspace.revalidate()
                 if inspection.status == RepositoryInspectionStatus.PROBE_ERROR:
                     raise GitProbeError(
                         inspection.diagnostic
@@ -150,10 +140,12 @@ class RecoveryService:
                 ]
                 stale_ids = [s.id for s in stale_sessions]
 
+                workspace.revalidate()
                 inspection = self._inspector.inspect(
-                    project_root=Path(project.repo_path),
+                    project_root=workspace.root,
                     project_id=project.id,
                 )
+                workspace.revalidate()
                 if inspection.status == RepositoryInspectionStatus.PROBE_ERROR:
                     raise GitProbeError(
                         inspection.diagnostic or "Git repository inspection failed during recovery."

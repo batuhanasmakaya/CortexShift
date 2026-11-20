@@ -5,6 +5,7 @@ deterministic double: these tests never touch a real coding agent, never open a 
 connection, and never consume model quota.
 """
 
+import asyncio
 import shutil
 import subprocess
 import time
@@ -19,7 +20,7 @@ from rich.console import Console
 from textual.pilot import Pilot
 from textual.screen import Screen
 from textual.widgets import Static
-from textual.worker import WorkerState
+from textual.worker import Worker, WorkerCancelled
 
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
@@ -58,12 +59,9 @@ TuiPilot = Pilot[TuiExitRequest | None]
 
 INSTALLED_PROVIDERS = {"claude": "/usr/local/bin/claude", "codex": "/usr/local/bin/codex"}
 
-# How the waits below pace themselves. The poll interval only decides how promptly a
-# satisfied condition is noticed; the timeout only decides how a genuine failure is
-# reported. Neither is a wait for a race to resolve -- every wait has a condition.
+# Poll UI predicates that have no worker handle. Both waits keep a deadline for failures.
 WORKER_POLL_SECONDS = 0.01
 WORKER_TIMEOUT_SECONDS = 15.0
-_WORKER_ACTIVE_STATES = (WorkerState.PENDING, WorkerState.RUNNING)
 
 
 @pytest.fixture
@@ -341,38 +339,50 @@ def screen_text(app: CortexShiftApp, size: tuple[int, int]) -> str:
     return buffer.getvalue()
 
 
+async def _wait_for_worker(worker: Worker[Any]) -> None:
+    try:
+        await worker.wait()
+    except WorkerCancelled:
+        if not worker.is_cancelled:
+            raise
+
+
 async def drain_workers(
-    app: CortexShiftApp, pilot: TuiPilot, *, timeout: float = WORKER_TIMEOUT_SECONDS
+    app: CortexShiftApp, *, group: str | None = None, timeout: float = WORKER_TIMEOUT_SECONDS
 ) -> None:
-    """Let every worker scheduled so far reach a terminal state.
+    """Await workers already scheduled, including cancellation before their coroutine starts.
 
-    Deliberately not `WorkerManager.wait_for_complete()`. The state, repository, and
-    provider refreshes are `exclusive` workers: one still in flight when the next starts
-    is cancelled *by design*, and the app's generation guard drops its result. Awaiting
-    such a worker raises `WorkerCancelled` for an outcome the application intends -- the
-    dashboard is fine, only the wait is wrong. Waiting for the work to finish, rather
-    than for a result no caller needed, states what the tests actually mean.
-
-    Workers started while draining are picked up by the next `settle` round, exactly as
-    they were before.
+    Textual can remove a cancelled-before-start worker from its manager while leaving its
+    handle marked RUNNING. Awaiting the handle observes actual task completion and lets
+    Textual update its state. Unexpected worker errors still fail the test.
     """
-    scheduled = list(app.workers)
-    deadline = time.monotonic() + timeout
-    while unfinished := [w for w in scheduled if w.state in _WORKER_ACTIVE_STATES]:
-        if time.monotonic() > deadline:
+    scheduled = [worker for worker in app.workers if group is None or worker.group == group]
+    if not scheduled:
+        return
+    waits = {asyncio.create_task(_wait_for_worker(worker)): worker for worker in scheduled}
+    try:
+        done, pending = await asyncio.wait(
+            waits, timeout=timeout, return_when=asyncio.FIRST_EXCEPTION
+        )
+        await asyncio.gather(*done)
+        if pending:
             raise AssertionError(
                 f"workers did not finish within {timeout:g}s: "
-                + ", ".join(f"{w.name}={w.state.name}" for w in unfinished)
+                + ", ".join(f"{waits[task].name}={waits[task].state.name}" for task in pending)
             )
-        await pilot.pause(WORKER_POLL_SECONDS)
+    finally:
+        for task in waits:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*waits, return_exceptions=True)
 
 
 async def settle(app: CortexShiftApp, pilot: TuiPilot, rounds: int = 3) -> None:
-    """Let pending workers finish and the resulting UI updates apply."""
+    """Flush UI messages and await the finite worker batches they schedule."""
     for _ in range(rounds):
-        await pilot.pause()
-        await drain_workers(app, pilot)
-        await pilot.pause()
+        await pilot.pause(0)
+        await drain_workers(app)
+    await pilot.pause(0)
 
 
 async def wait_until(

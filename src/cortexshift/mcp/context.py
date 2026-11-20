@@ -1,13 +1,14 @@
 """Execution context resolution and validation for CortexShift MCP server."""
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
-from cortexshift.application.locator import ProjectLocator
-from cortexshift.domain.errors import McpContextError
+from cortexshift.application.workspace import WorkspaceIdentity, open_workspace
+from cortexshift.domain.errors import CortexShiftError, McpContextError, ProjectNotInitializedError
 from cortexshift.domain.mcp_binding import (
     ENV_MCP_READ_ONLY,
     ENV_PROJECT_ROOT,
@@ -35,6 +36,7 @@ class McpExecutionContext(BaseModel):
 
     project_root: Path
     project_id: str
+    workspace: WorkspaceIdentity | None = Field(default=None, exclude=True, repr=False)
     task_id: str | None = None
     session_id: str | None = None
     provider_id: ProviderId | None = None
@@ -50,6 +52,8 @@ def resolve_mcp_context(
     project_root_override: Path | None = None,
     store_override: SQLiteStateStore | None = None,
     env_override: dict[str, str] | None = None,
+    *,
+    auto_migrate: bool = True,
 ) -> tuple[McpExecutionContext, SQLiteStateStore]:
     """Resolve and validate the canonical McpExecutionContext.
 
@@ -67,38 +71,35 @@ def resolve_mcp_context(
     """
     env = os.environ if env_override is None else env_override
 
-    # 1. Resolve project root
-    explicit_root_str = env.get(ENV_PROJECT_ROOT)
-    candidate_root: Path | None = None
-    if project_root_override is not None:
-        candidate_root = project_root_override.resolve()
-    elif explicit_root_str:
-        candidate_root = Path(explicit_root_str).resolve()
-    else:
-        candidate_root = ProjectLocator.find_project_root()
-
-    if candidate_root is None or not ProjectLocator.is_initialized(candidate_root):
-        loc = candidate_root or Path.cwd()
-        raise McpContextError(f"No initialized CortexShift project found at or above '{loc}'.")
-
-    project_root = candidate_root.resolve()
-
-    # 2. Connect store and fetch project
-    store = (
-        store_override
-        if store_override is not None
-        else SQLiteStateStore(ProjectLocator.get_database_path(project_root))
-    )
-
-    project = store.get_default_project()
-    if project is None:
-        raise McpContextError(f"No project record found in database at {project_root}.")
-
-    if Path(project.repo_path).resolve() != project_root:
-        raise McpContextError(
-            f"Project root mismatch: record specifies '{project.repo_path}', "
-            f"but current root is '{project_root}'."
+    explicit_root = project_root_override or env.get(ENV_PROJECT_ROOT) or None
+    try:
+        workspace, store = open_workspace(
+            explicit_root,
+            exact_root=explicit_root is not None,
+            auto_migrate=auto_migrate,
+            store_override=store_override,
         )
+    except ProjectNotInitializedError as exc:
+        raise McpContextError(
+            f"No initialized CortexShift project found at or above '{explicit_root or Path.cwd()}'."
+        ) from exc
+    except (CortexShiftError, OSError, RuntimeError) as exc:
+        raise McpContextError(str(exc)) from exc
+
+    try:
+        return _bind_context(workspace, store, env), store
+    except BaseException:
+        if store_override is None:
+            store.close()
+        raise
+
+
+def _bind_context(
+    workspace: WorkspaceIdentity,
+    store: SQLiteStateStore,
+    env: Mapping[str, str],
+) -> McpExecutionContext:
+    project = workspace.project
 
     # 3. Read-only override
     explicit_read_only = env.get(ENV_MCP_READ_ONLY, "0").strip().lower() in ("1", "true", "yes")
@@ -135,7 +136,8 @@ def resolve_mcp_context(
             raise McpContextError(f"Task '{task.id}' does not belong to project '{project.id}'.")
 
         context = McpExecutionContext(
-            project_root=project_root,
+            project_root=workspace.root,
+            workspace=workspace,
             project_id=project.id,
             task_id=session.task_id,
             session_id=session.id,
@@ -153,7 +155,8 @@ def resolve_mcp_context(
                 resolved_task_id = task.id
 
         context = McpExecutionContext(
-            project_root=project_root,
+            project_root=workspace.root,
+            workspace=workspace,
             project_id=project.id,
             task_id=resolved_task_id,
             session_id=None,
@@ -162,4 +165,4 @@ def resolve_mcp_context(
             read_only=True,
         )
 
-    return context, store
+    return context

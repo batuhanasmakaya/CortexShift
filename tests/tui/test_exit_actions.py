@@ -18,6 +18,7 @@ from tests.tui.conftest import (
     seed_session,
     settle,
     wait_for_screen,
+    wait_until,
 )
 
 
@@ -189,10 +190,10 @@ async def test_resume_carries_the_selected_native_session(project: Path) -> None
 async def test_cancelling_the_palette_returns_no_request(project: Path) -> None:
     app = build_app(project)
     async with app.run_test() as pilot:
-        await settle(app, pilot)
+        base = app.screen
         await open_provider_palette(app, pilot)
         await pilot.press("escape")
-        await settle(app, pilot)
+        await wait_until(pilot, lambda: app.screen is base, description="the palette closes")
         assert app.is_running
         assert_no_exit_request(app)
 

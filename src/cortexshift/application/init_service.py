@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.locator import ProjectLocator
-from cortexshift.domain.errors import ProjectConflictError
+from cortexshift.application.workspace import open_project_state, project_database_path
 from cortexshift.domain.project import Project
 
 
@@ -48,35 +48,24 @@ class ProjectInitializationService:
         resolved_path = raw_path.resolve()
         resolved_path.mkdir(parents=True, exist_ok=True)
 
-        db_path = self.locator.get_database_path(resolved_path)
+        db_path = project_database_path(resolved_path, self.locator)
+        if db_path.is_file():
+            workspace, store = open_project_state(
+                resolved_path, locator=self.locator, auto_migrate=True, allow_empty_database=True
+            )
+        else:
+            workspace, store = None, SQLiteStateStore(db_path)
 
-        # Check for existing initialization
-        if self.locator.is_initialized(resolved_path):
-            with SQLiteStateStore(db_path, auto_migrate=True) as store:
-                existing_project = store.get_default_project()
-                if existing_project is not None:
-                    # Validate path consistency to guard against copied state
-                    if Path(existing_project.repo_path).resolve() != resolved_path:
-                        msg = (
-                            f"Database at {db_path} has recorded repository path "
-                            f"'{existing_project.repo_path}', which does not match "
-                            f"'{resolved_path}'."
-                        )
-                        raise ProjectConflictError(msg)
-                    return ProjectInitResult(
-                        project=existing_project,
-                        state_path=str(db_path),
-                        already_initialized=True,
-                    )
+        with store:
+            if workspace is not None:
+                return ProjectInitResult(
+                    project=workspace.project,
+                    state_path=str(db_path),
+                    already_initialized=True,
+                )
 
-        # Fresh initialization
-        project_name = name.strip() if name and name.strip() else resolved_path.name
-        project = Project(
-            name=project_name,
-            repo_path=str(resolved_path),
-        )
-
-        with SQLiteStateStore(db_path, auto_migrate=True) as store:
+            project_name = name.strip() if name and name.strip() else resolved_path.name
+            project = Project(name=project_name, repo_path=str(resolved_path))
             store.save_project(project)
 
         return ProjectInitResult(

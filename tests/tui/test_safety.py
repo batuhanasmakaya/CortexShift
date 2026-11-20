@@ -15,6 +15,7 @@ from cortexshift.application.task_workspace import TaskWorkspaceService
 from cortexshift.domain.errors import DatabaseStateError, WorkspaceLockedError
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.session import SessionStatus
+from cortexshift.tui.app import STATE_WORKER_GROUP
 from cortexshift.tui.modals import ConfirmModal
 from cortexshift.tui.models import WorkspaceActivity
 from tests.tui.conftest import (
@@ -90,7 +91,7 @@ async def test_the_dashboard_stays_useful_while_a_provider_owns_the_workspace(
     project = held_lease
     app = build_app(project)
     async with app.run_test() as pilot:
-        await settle(app, pilot)
+        await drain_workers(app)
 
         # Reads work.
         assert state(app).project.name == "Luna"
@@ -270,7 +271,7 @@ async def test_dashboard_actions_never_reach_another_project(tmp_path: Path) -> 
 
     app = build_app(project_a)
     async with app.run_test() as pilot:
-        await settle(app, pilot)
+        await drain_workers(app, group=STATE_WORKER_GROUP)
         assert state(app).project.name == "Alpha"
 
         # Every dashboard action is bound to the resolved root, with no path parameter.
@@ -375,7 +376,7 @@ async def test_a_persistently_failing_state_refresh_is_reported_once(project: Pa
         # Let many more ticks fail the same way; the report must not repeat.
         for _ in range(12):
             await pilot.pause(0.05)
-        await drain_workers(app, pilot)
+        await drain_workers(app)
 
         assert len(failures()) == 1, f"the same failure was reported {len(failures())} times"
         assert app.is_running

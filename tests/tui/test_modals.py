@@ -8,6 +8,7 @@ from textual.widgets import DataTable, Input, OptionList
 from cortexshift.application.checkpoint_service import CheckpointService
 from cortexshift.application.task_workspace import TaskWorkspaceService
 from cortexshift.domain.checkpoint import CheckpointKind, CheckpointTestProvenance
+from cortexshift.tui.app import STATE_WORKER_GROUP
 from cortexshift.tui.modals import (
     AddRemainingModal,
     CheckpointModal,
@@ -20,6 +21,7 @@ from tests.tui.conftest import (
     assert_base_screen,
     assert_screen,
     build_app,
+    drain_workers,
     settle,
     state,
     widget_text,
@@ -237,7 +239,8 @@ async def test_task_mutations_without_an_active_task_are_refused_cleanly(
 ) -> None:
     app = build_app(bare_project)
     async with app.run_test() as pilot:
-        await settle(app, pilot)
+        await drain_workers(app, group=STATE_WORKER_GROUP)
+        assert state(app).active_task is None
 
         for key in ("w", "m", "n", "i", "c"):
             await pilot.press(key)

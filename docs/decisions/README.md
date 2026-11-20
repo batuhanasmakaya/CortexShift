@@ -11,3 +11,4 @@
 - [ADR-0009: MCP Shared State & Agent Self-Reporting](ADR-0009-mcp-shared-state.md) — Accepted
 - [ADR-0010: Interactive Terminal Control Center (TUI)](ADR-0010-terminal-control-center.md) — Accepted
 - [ADR-0011: Release and distribution](ADR-0011-release-and-distribution.md) — Accepted
+- [ADR-0012 · Verified workspace identity](ADR-0012-verified-workspace-identity.md) — Accepted

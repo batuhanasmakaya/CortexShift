@@ -1,7 +1,6 @@
 """Exact native resume without creating a handoff or repository snapshot."""
 
 import sys
-from pathlib import Path
 
 from cortexshift.adapters.providers.antigravity import (
     ANTIGRAVITY_MCP_MISSING_NOTICE,
@@ -10,6 +9,7 @@ from cortexshift.adapters.providers.antigravity import (
 from cortexshift.application.native_session import select_native_session
 from cortexshift.application.run_service import DryRunResult, RunService
 from cortexshift.application.session_launcher import ProviderSessionLauncher
+from cortexshift.application.workspace import WorkspaceStart
 from cortexshift.domain.errors import NativeResumeError, TerminalRequiredError, WorkspaceLockedError
 from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY
 from cortexshift.domain.session import Session
@@ -35,13 +35,14 @@ class ResumeService(RunService):
         self,
         provider_name: str,
         session_id: str | None = None,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
         *,
         dry_run: bool = False,
     ) -> Session | ResumeDryRunResult:
-        _, project, task, adapter, executable, store = self._resolve_context(
+        workspace, task, adapter, executable, store = self._resolve_context(
             provider_name, start_dir
         )
+        project = workspace.project
         try:
             if not isinstance(adapter, ProviderNativeSessionAdapter):
                 raise NativeResumeError("This provider does not support exact native resume.")
@@ -64,9 +65,8 @@ class ResumeService(RunService):
 
             source = select()
             assert source.native_session_id is not None
-            spec = adapter.build_exact_resume(
-                Path(project.repo_path), executable, source.native_session_id
-            )
+            spec = adapter.build_exact_resume(workspace.root, executable, source.native_session_id)
+            workspace.validate_launch_root(spec.cwd)
             if dry_run:
                 return ResumeDryRunResult(
                     provider_id=adapter.provider_id,
@@ -87,7 +87,8 @@ class ResumeService(RunService):
                     "Interactive resume requires a terminal (TTY). "
                     f"Use cortexshift resume {provider_name} --dry-run to preview."
                 )
-            lease = self._lease_manager.get_lease(Path(project.repo_path))
+            workspace.revalidate()
+            lease = self._lease_manager.get_lease(workspace.root)
             if not lease.acquire():
                 raise WorkspaceLockedError(lock_path=lease.lock_path)
             try:
@@ -95,12 +96,14 @@ class ResumeService(RunService):
                 source = select()
                 assert source.native_session_id is not None
                 spec = adapter.build_exact_resume(
-                    Path(project.repo_path), executable, source.native_session_id
+                    workspace.root, executable, source.native_session_id
                 )
+                workspace.validate_launch_root(spec.cwd)
                 launcher = ProviderSessionLauncher(
                     self._runner,
                     store,
                     checkpoint_service=self._checkpoint_service,
+                    workspace=workspace,
                 )
                 invocation = launcher.start_session(
                     task.id,
@@ -110,7 +113,7 @@ class ResumeService(RunService):
                 )
                 if str(adapter.provider_id) == str(
                     PROVIDER_ANTIGRAVITY
-                ) and not is_antigravity_mcp_configured(Path(project.repo_path)):
+                ) and not is_antigravity_mcp_configured(workspace.root):
                     sys.stderr.write(f"\n{ANTIGRAVITY_MCP_MISSING_NOTICE}\n\n")
 
                 return launcher.run(

@@ -32,7 +32,6 @@ from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.checkpoint_service import CheckpointService
 from cortexshift.application.doctor import DoctorService
 from cortexshift.application.handoff_service import HandoffService
-from cortexshift.application.locator import ProjectLocator
 from cortexshift.application.native_session import is_native_resumable, native_capabilities
 from cortexshift.application.recovery_service import RecoveryReport, RecoveryService
 from cortexshift.application.repository_service import RepositoryService
@@ -41,8 +40,8 @@ from cortexshift.application.session_service import SessionService
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.switch_service import SwitchService
 from cortexshift.application.task_workspace import TaskWorkspaceService
+from cortexshift.application.workspace import WorkspaceIdentity, WorkspaceStart, resolve_workspace
 from cortexshift.domain.checkpoint import CheckpointKind, CheckpointRecord, CheckpointTestProvenance
-from cortexshift.domain.errors import ProjectNotInitializedError
 from cortexshift.domain.git import RepositoryInspectionStatus
 from cortexshift.domain.handoff import HandoffRecord
 from cortexshift.domain.identifiers import utc_now
@@ -106,7 +105,7 @@ class TuiFacade:
 
     def __init__(
         self,
-        project_root: Path,
+        project_root: Path | WorkspaceIdentity,
         *,
         status_service: ProjectStatusService | None = None,
         task_workspace: TaskWorkspaceService | None = None,
@@ -123,7 +122,12 @@ class TuiFacade:
         clock: Callable[[], float] = time.monotonic,
         provider_cache_seconds: float = PROVIDER_CACHE_SECONDS,
     ) -> None:
-        self._root = Path(project_root).resolve()
+        self.workspace = (
+            project_root
+            if isinstance(project_root, WorkspaceIdentity)
+            else resolve_workspace(project_root, exact_root=True)
+        )
+        self._root = self.workspace.root
         self._status = status_service or ProjectStatusService()
         self._task_workspace = task_workspace or TaskWorkspaceService()
         self._sessions = session_service or SessionService()
@@ -148,7 +152,7 @@ class TuiFacade:
     @classmethod
     def resolve(
         cls,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
         **kwargs: object,
     ) -> "TuiFacade":
         """Build a facade bound to the nearest initialized project root.
@@ -156,11 +160,11 @@ class TuiFacade:
         Raises:
             ProjectNotInitializedError: If no initialized project root is found.
         """
-        start_path = Path(start_dir) if start_dir is not None else None
-        project_root = ProjectLocator.find_project_root(start_path)
-        if project_root is None:
-            raise ProjectNotInitializedError()
-        return cls(project_root, **kwargs)  # type: ignore[arg-type]
+        workspace = (
+            start_dir if isinstance(start_dir, WorkspaceIdentity) else resolve_workspace(start_dir)
+        )
+        workspace.revalidate()
+        return cls(workspace, **kwargs)  # type: ignore[arg-type]
 
     # ------------------------------------------------------------------
     # Lightweight state (SQLite-backed only; never spawns a subprocess)
@@ -172,7 +176,7 @@ class TuiFacade:
         Deliberately performs no Git inspection and no provider probing so the dashboard's
         lightweight refresh timer stays cheap enough to run continuously.
         """
-        status = self._status.get_status(self._root)
+        status = self._status.get_status(self.workspace)
         project = TuiProjectModel(
             project_id=status.project_id,
             name=status.name,
@@ -182,25 +186,25 @@ class TuiFacade:
             cortexshift_version=__version__,
         )
 
-        tasks = self._task_workspace.list_tasks(self._root)
+        tasks = self._task_workspace.list_tasks(self.workspace)
         active_task_id = status.active_task.id if status.active_task else None
         active_task = next((t for t in tasks if t.id == active_task_id), None)
 
         sessions = tuple(
             self._session_row(session)
-            for session in self._sessions.list_sessions(self._root, limit=DEFAULT_SESSION_LIMIT)
+            for session in self._sessions.list_sessions(self.workspace, limit=DEFAULT_SESSION_LIMIT)
         )
         checkpoints = tuple(
             self._checkpoint_row(record)
             for record in self._checkpoints.list_checkpoints(
                 task_id=active_task_id,
                 limit=DEFAULT_CHECKPOINT_LIMIT,
-                start_dir=self._root,
+                start_dir=self.workspace,
             )
         )
         handoffs = tuple(
             self._handoff_row(record)
-            for record in self._handoffs.list_handoffs(self._root, limit=DEFAULT_HANDOFF_LIMIT)
+            for record in self._handoffs.list_handoffs(self.workspace, limit=DEFAULT_HANDOFF_LIMIT)
         )
 
         return TuiStateSnapshot(
@@ -225,7 +229,7 @@ class TuiFacade:
 
     def inspect_repository(self) -> TuiRepositoryModel:
         """Run a live, strictly read-only Git inspection of the bound project."""
-        inspection = self._repository.inspect_repository(self._root)
+        inspection = self._repository.inspect_repository(self.workspace)
         snapshot = inspection.snapshot
         if snapshot is None:
             return TuiRepositoryModel(
@@ -305,6 +309,7 @@ class TuiFacade:
             sdk_version = "unavailable"
             sdk_available = False
 
+        self.workspace.revalidate()
         return TuiMcpStatus(
             sdk_available=sdk_available,
             sdk_version=sdk_version,
@@ -323,6 +328,7 @@ class TuiFacade:
         Preserves unrelated servers and refuses to overwrite a conflicting entry unless
         the operator explicitly forces it.
         """
+        self.workspace.revalidate()
         return setup_antigravity_mcp(self._root, dry_run=dry_run, force=force)
 
     # ------------------------------------------------------------------
@@ -337,6 +343,7 @@ class TuiFacade:
         so the dashboard never holds the lease.
         """
         try:
+            self.workspace.revalidate()
             lease = self._lease_manager.get_lease(self._root)
             if lease.acquire():
                 lease.release()
@@ -351,23 +358,23 @@ class TuiFacade:
 
     def set_current_work(self, current_work: str | None) -> Task:
         """Set the active Task's in-flight work description."""
-        return self._task_workspace.set_current_work(current_work, self._root)
+        return self._task_workspace.set_current_work(current_work, self.workspace)
 
     def mark_completed(self, items: list[str]) -> Task:
         """Mark items completed on the active Task and drop them from remaining."""
-        return self._task_workspace.mark_completed(items, self._root)
+        return self._task_workspace.mark_completed(items, self.workspace)
 
     def add_remaining(self, items: list[str]) -> Task:
         """Append newly discovered remaining items to the active Task."""
-        return self._task_workspace.add_remaining(items, self._root)
+        return self._task_workspace.add_remaining(items, self.workspace)
 
     def record_issues(self, items: list[str]) -> Task:
         """Record known issues on the active Task."""
-        return self._task_workspace.record_issues(items, self._root)
+        return self._task_workspace.record_issues(items, self.workspace)
 
     def activate_task(self, task_id: str) -> Task:
         """Activate an eligible Task using canonical activation rules."""
-        return self._task_workspace.activate_task(task_id, self._root)
+        return self._task_workspace.activate_task(task_id, self.workspace)
 
     def start_task(
         self,
@@ -382,7 +389,7 @@ class TuiFacade:
             objective=objective,
             requirements=requirements,
             constraints=constraints,
-            start_dir=self._root,
+            start_dir=self.workspace,
         )
 
     # ------------------------------------------------------------------
@@ -409,16 +416,16 @@ class TuiFacade:
             test_summary=test_summary,
             test_provenance=provenance,
             note=note,
-            start_dir=self._root,
+            start_dir=self.workspace,
         )
 
     def get_checkpoint(self, checkpoint_id: str) -> CheckpointRecord:
         """Retrieve one immutable checkpoint by its full canonical identifier."""
-        return self._checkpoints.get_checkpoint(checkpoint_id, start_dir=self._root)
+        return self._checkpoints.get_checkpoint(checkpoint_id, start_dir=self.workspace)
 
     def preview_recovery(self) -> TuiRecoveryPreview:
         """Preview what a recovery run would reconcile, mutating nothing."""
-        report = self._recovery.recover(start_dir=self._root, dry_run=True)
+        report = self._recovery.recover(start_dir=self.workspace, dry_run=True)
         return self._recovery_preview(report)
 
     def recover(self) -> RecoveryReport:
@@ -427,7 +434,7 @@ class TuiFacade:
         Recovery requires the exclusive workspace lease; if another agent owns the
         workspace the service raises and the dashboard reports it without mutating state.
         """
-        return self._recovery.recover(start_dir=self._root, dry_run=False)
+        return self._recovery.recover(start_dir=self.workspace, dry_run=False)
 
     def preview_handoff(self, target_provider: str, note: str | None = None) -> TuiHandoffPreview:
         """Render the canonical handoff for a target provider without side effects.
@@ -438,7 +445,7 @@ class TuiFacade:
         result = self._switch.preview(
             target_provider_name=target_provider,
             note=note,
-            start_dir=self._root,
+            start_dir=self.workspace,
         )
         return TuiHandoffPreview(
             target_provider_id=result.target_provider_id,
@@ -463,13 +470,13 @@ class TuiFacade:
         result = self._switch.dry_run(
             target_provider_name=target_provider,
             note=note,
-            start_dir=self._root,
+            start_dir=self.workspace,
             new_session=new_session,
             resume_session_id=resume_session_id,
         )
 
         checkpoint_enrichment = "No checkpoint recorded for the active task."
-        latest = self._checkpoints.get_latest_checkpoint(start_dir=self._root)
+        latest = self._checkpoints.get_latest_checkpoint(start_dir=self.workspace)
         if latest is not None:
             decisions = len(latest.payload.decisions)
             tests = "reported (unverified)" if latest.payload.test_status.known else "unknown"
@@ -512,8 +519,10 @@ class TuiFacade:
         Selection reuses the canonical `is_native_resumable` rule; the dashboard never
         guesses provider-native identity.
         """
-        snapshot_sessions = self._sessions.list_sessions(self._root, limit=DEFAULT_SESSION_LIMIT)
-        active = self._task_workspace.get_active_task(self._root)
+        snapshot_sessions = self._sessions.list_sessions(
+            self.workspace, limit=DEFAULT_SESSION_LIMIT
+        )
+        active = self._task_workspace.get_active_task(self.workspace)
         if active is None:
             return ()
         adapter = self._runtime_registry.get(provider_id)

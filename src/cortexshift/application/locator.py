@@ -42,7 +42,11 @@ class ProjectLocator:
 
         # Check start_path and all parent directories
         for candidate in [resolved_start, *resolved_start.parents]:
-            if cls.is_initialized(candidate):
+            db_path = cls.get_database_path(candidate)
+            state_paths = (db_path.parent, db_path)
+            if cls.is_initialized(candidate) or any(
+                entry.is_symlink() or entry.is_junction() for entry in state_paths
+            ):
                 return candidate
 
         return None

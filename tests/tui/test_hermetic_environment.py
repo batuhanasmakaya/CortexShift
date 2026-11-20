@@ -22,9 +22,10 @@ from typing import cast
 import pytest
 from textual.screen import Screen
 from textual.widgets import Button, OptionList, Static
-from textual.worker import Worker, WorkerCancelled, WorkerState
+from textual.worker import Worker, WorkerCancelled, WorkerFailed, WorkerState
 
 from cortexshift.application.status_service import ProjectStatusService
+from cortexshift.application.workspace import WorkspaceStart
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.status import ProjectStatus
@@ -208,7 +209,7 @@ class SupersededOnceStatusService(ProjectStatusService):
         self.calls = 0
         self._lock = threading.Lock()
 
-    def get_status(self, start_dir: Path | str | None = None) -> ProjectStatus:
+    def get_status(self, start_dir: WorkspaceStart = None) -> ProjectStatus:
         with self._lock:
             self.calls += 1
             first = self.calls == 1
@@ -297,7 +298,7 @@ async def test_awaiting_a_superseded_worker_is_what_used_to_fail(project: Path) 
         # The dashboard itself never faltered: it is still running and still refreshing.
         assert app.is_running
         probed_at = utc_now()
-        await drain_workers(app, pilot)
+        await drain_workers(app)
         await wait_for_state(
             app,
             pilot,
@@ -305,6 +306,41 @@ async def test_awaiting_a_superseded_worker_is_what_used_to_fail(project: Path) 
             since=probed_at,
             description="kept refreshing after the supersession",
         )
+
+
+@pytest.mark.asyncio
+async def test_wait_handles_a_worker_cancelled_before_its_coroutine_starts(project: Path) -> None:
+    app = build_app(project)
+
+    async def should_not_run() -> None:
+        pytest.fail("the cancelled worker ran")
+
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        worker: Worker[None] = app.run_worker(should_not_run)
+        # Textual marks the handle RUNNING before the coroutine gets a turn.
+        # Cancel synchronously so its wrapper cannot publish a terminal state.
+        initial_state = worker.state
+        assert initial_state is WorkerState.RUNNING
+        worker.cancel()
+        await drain_workers(app)
+        assert worker.state is WorkerState.CANCELLED
+        assert app.is_running
+
+
+@pytest.mark.asyncio
+async def test_wait_surfaces_unexpected_worker_failure(project: Path) -> None:
+    app = build_app(project)
+
+    async def fail() -> None:
+        raise RuntimeError("unexpected worker result")
+
+    async with app.run_test() as pilot:
+        await settle(app, pilot)
+        worker: Worker[None] = app.run_worker(fail, exit_on_error=False)
+        with pytest.raises(WorkerFailed, match="unexpected worker result"):
+            await drain_workers(app)
+        assert worker.state is WorkerState.ERROR
 
 
 @pytest.mark.asyncio
