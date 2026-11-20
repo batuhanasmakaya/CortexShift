@@ -17,11 +17,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cortexshift.application.handoff_renderer import RenderedHandoffContext
 from cortexshift.application.resume_service import ResumeService
 from cortexshift.application.run_service import RunService
 from cortexshift.application.switch_service import SwitchService
 from cortexshift.application.workspace import WorkspaceIdentity, resolve_workspace
 from cortexshift.domain.errors import ProjectConflictError, TerminalRequiredError
+from cortexshift.domain.handoff import HandoffRecord
 from cortexshift.domain.session import Session
 from cortexshift.tui.actions import TuiExitAction, TuiExitRequest
 from cortexshift.tui.app import CortexShiftApp, build_app
@@ -179,8 +181,19 @@ class TuiCoordinator:
             resume_session_id=request.selected_session_id,
             note=request.note,
             start_dir=workspace,
+            on_prepared=self._announce_handoff,
         )
         return switch_result.target_session
+
+    def _announce_handoff(self, record: HandoffRecord, rendered: RenderedHandoffContext) -> None:
+        """Expose the historical fallback after the dashboard releases the terminal."""
+        if rendered.omissions:
+            labels = ", ".join(
+                f"{item.section.replace('_', ' ')} ({item.omitted_items})"
+                for item in rendered.omissions
+            )
+            self._announce(f"Handoff excerpt omitted {labels}.")
+        self._announce(f"Full historical handoff: cortexshift handoff show {record.id} --json")
 
 
 def resolve_project_root(start_dir: Path | str | None = None) -> Path:

@@ -11,6 +11,7 @@ from cortexshift.adapters.providers.claude import ClaudeHandoffAdapter
 from cortexshift.adapters.providers.codex import CodexHandoffAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
+from cortexshift.application.recovery_service import RecoveryService
 from cortexshift.application.switch_service import ProviderHandoffRegistry, SwitchService
 from cortexshift.domain.errors import (
     GitProbeError,
@@ -33,7 +34,13 @@ from cortexshift.domain.session import SessionExitReason, SessionStatus
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
 from cortexshift.ports.repository import RepositoryInspector
-from tests.factories import FakeCodexBootstrap, make_inspection, seed_project, seed_session
+from tests.factories import (
+    FakeCodexBootstrap,
+    antigravity_result_event,
+    make_inspection,
+    seed_project,
+    seed_session,
+)
 
 
 class FakeProcessRunner(InteractiveProcessRunner):
@@ -81,6 +88,7 @@ class FakeHeadlessRunner(HeadlessProviderRunner):
     def __init__(self, result: HeadlessResult) -> None:
         self.result = result
         self.invocations: list[list[str]] = []
+        self.input_text: str | None = None
 
     def run_headless(
         self,
@@ -88,8 +96,11 @@ class FakeHeadlessRunner(HeadlessProviderRunner):
         cwd: Path | str,
         timeout: float = 300.0,
         env: dict[str, str] | None = None,
+        *,
+        input_text: str | None = None,
     ) -> HeadlessResult:
         self.invocations.append(argv)
+        self.input_text = input_text
         return self.result
 
 
@@ -282,7 +293,7 @@ def test_switch_delivers_context_and_creates_target_session(
     assert argv[0] == "/bin/codex"
     assert "-c" in argv
     assert argv[-2:] == ["resume", "test-codex-native-id"]
-    context = codex_bootstrap.invocations[-1][-1]
+    context = codex_bootstrap.input_texts[-1]
     assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in context
     assert task.objective in context
     assert "Wire token refresh" in context
@@ -347,7 +358,7 @@ def test_outgoing_provider_is_never_required(
     assert "claude" not in resolved
     assert result.handoff.status == HandoffStatus.DELIVERED
     assert result.handoff.source_provider_id == PROVIDER_CLAUDE
-    assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in codex_bootstrap.invocations[-1][-1]
+    assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in codex_bootstrap.input_texts[-1]
 
 
 def test_switch_makes_no_outgoing_model_call(tmp_path: Path) -> None:
@@ -405,7 +416,7 @@ def test_git_missing_continues_with_explicit_marker(
     assert result.handoff.status == HandoffStatus.DELIVERED
     assert result.handoff.git_snapshot_id is None
     assert result.handoff.payload.git_state.available is False
-    assert "not inside a Git repository" in codex_bootstrap.invocations[-1][-1]
+    assert "not inside a Git repository" in codex_bootstrap.input_texts[-1]
 
     with _store(tmp_path) as store:
         assert store.list_snapshots(project_id=result.handoff.project_id) == []
@@ -448,7 +459,7 @@ def test_files_touched_reaches_the_receiving_agent(
 
     _service(inspector=inspector, process_runner=runner).switch("codex", start_dir=tmp_path)
 
-    context = codex_bootstrap.invocations[-1][-1]
+    context = codex_bootstrap.input_texts[-1]
     for path in ("src/staged.py", "src/modified.py", "notes.md"):
         assert path in context
 
@@ -466,7 +477,7 @@ def test_operator_note_included_with_provenance(
     )
 
     assert result.handoff.payload.operator_note == "Mind the flaky integration test"
-    context = codex_bootstrap.invocations[-1][-1]
+    context = codex_bootstrap.input_texts[-1]
     assert "## OPERATOR NOTE" in context
     assert "Mind the flaky integration test" in context
 
@@ -491,7 +502,7 @@ def test_command_injection_stays_inert(tmp_path: Path, codex_bootstrap: FakeCode
     assert argv[0] == "/bin/codex"
     assert "-c" in argv
     assert argv[-2:] == ["resume", "test-codex-native-id"]
-    assert "$(touch" in codex_bootstrap.invocations[-1][-1]
+    assert "$(touch" in codex_bootstrap.input_texts[-1]
     assert not marker.exists()
 
 
@@ -516,12 +527,10 @@ def test_antigravity_switch_bootstraps_then_resumes(tmp_path: Path) -> None:
     headless = FakeHeadlessRunner(
         HeadlessResult(
             exit_code=0,
-            stdout=json.dumps(
-                {
-                    "conversation_id": "test-conversation-123",
-                    "status": "SUCCESS",
-                    "response": "Secret plan text",
-                }
+            stdout=antigravity_result_event(
+                conversation_id="test-conversation-123",
+                status="SUCCESS",
+                response="Secret plan text",
             ),
             stderr="",
         )
@@ -534,7 +543,10 @@ def test_antigravity_switch_bootstraps_then_resumes(tmp_path: Path) -> None:
 
     bootstrap_argv = headless.invocations[0]
     assert "--mode=plan" in bootstrap_argv
-    assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in bootstrap_argv[bootstrap_argv.index("-p") + 1]
+    assert headless.input_text is not None
+    assert (
+        "CORTEXSHIFT HANDOFF PROTOCOL v1" in json.loads(headless.input_text)["message"]["content"]
+    )
 
     assert result.bootstrap_performed is True
     assert result.target_session.native_session_id == "test-conversation-123"
@@ -572,7 +584,9 @@ def test_antigravity_switch_bootstraps_then_resumes(tmp_path: Path) -> None:
         ),
         (
             HeadlessResult(
-                exit_code=0, stdout='{"conversation_id": "c", "status": "X"}', stderr=""
+                exit_code=0,
+                stdout=antigravity_result_event(conversation_id="c", status="X"),
+                stderr="",
             ),
             HandoffFailureCode.BOOTSTRAP_FAILED,
         ),
@@ -772,3 +786,63 @@ def test_dry_run_reports_truncation_for_huge_context(tmp_path: Path) -> None:
     assert result.context_truncated is True
     assert result.context_characters <= result.context_max_characters
     assert result.context_omissions
+
+
+def test_unfit_objective_preserves_task_and_starts_no_delivery(
+    tmp_path: Path, codex_bootstrap: FakeCodexBootstrap
+) -> None:
+    _, task = seed_project(tmp_path, objective="🎉" * 30_000)
+    source = seed_session(tmp_path, task.id)
+    runner = FakeProcessRunner()
+    service = _service(process_runner=runner)
+
+    for operation in (service.preview, service.dry_run, service.switch):
+        with pytest.raises(HandoffDeliveryError) as exc:
+            operation("codex", start_dir=tmp_path)
+        assert exc.value.failure_code == HandoffFailureCode.CONTEXT_TOO_LARGE
+
+    assert not runner.invocations
+    assert not codex_bootstrap.invocations
+    with _store(tmp_path) as store:
+        assert store.get_task(task.id) == task
+        assert store.list_sessions(task_id=task.id) == [source]
+        assert not store.list_handoffs()
+
+
+def test_claude_launch_without_retrieval_does_not_claim_delivery(tmp_path: Path) -> None:
+    _, task = seed_project(tmp_path)
+    seed_session(tmp_path, task.id, provider_id=PROVIDER_CODEX)
+    result = _service().switch("claude", start_dir=tmp_path)
+    assert result.target_session.status == SessionStatus.COMPLETED
+    assert result.handoff.status == HandoffStatus.PREPARED
+    assert result.handoff.delivered_at is None
+    assert result.handoff.target_session_id == result.target_session.id
+
+
+def test_recover_after_interrupted_claude_delivery_retains_unconfirmed_handoff(
+    tmp_path: Path,
+) -> None:
+    class InterruptedRunner(FakeProcessRunner):
+        def run_interactive(
+            self, argv: list[str], cwd: Path | str, env: dict[str, str] | None = None
+        ) -> int:
+            raise SystemExit(97)
+
+    _, task = seed_project(tmp_path)
+    source = seed_session(tmp_path, task.id, provider_id=PROVIDER_CODEX)
+    with pytest.raises(SystemExit) as exc:
+        _service(process_runner=InterruptedRunner()).switch("claude", start_dir=tmp_path)
+    assert exc.value.code == 97
+
+    RecoveryService(inspector=FakeInspector()).recover(start_dir=tmp_path)
+    with _store(tmp_path) as store:
+        (handoff,) = store.list_handoffs()
+        assert handoff.status == HandoffStatus.PREPARED
+        assert handoff.delivered_at is None
+        assert handoff.target_session_id is not None
+        interrupted = store.get_session(handoff.target_session_id)
+        assert interrupted is not None and interrupted.status == SessionStatus.INTERRUPTED
+        assert interrupted.ended_at is None
+        assert interrupted.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
+        assert store.get_task(task.id) == task
+        assert store.get_session(source.id) == source

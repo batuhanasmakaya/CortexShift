@@ -20,6 +20,7 @@ from cortexshift.ports.handoff_delivery import (
     HandoffDeliveryPreparation,
     HandoffDeliveryStrategy,
     ProviderHandoffAdapter,
+    validate_delivery_context,
 )
 from cortexshift.ports.headless_runner import (
     DEFAULT_HEADLESS_TIMEOUT_SECONDS,
@@ -329,6 +330,8 @@ The same native Codex session will be resumed immediately in the interactive TUI
 class CodexHandoffAdapter(ProviderHandoffAdapter):
     """Capture native identity through one read-only JSONL turn, then open the TUI."""
 
+    context_overhead_bytes = len(CODEX_BOOTSTRAP_PREFIX.encode("utf-8"))
+
     def __init__(
         self,
         runtime_adapter: CodexRuntimeAdapter | None = None,
@@ -376,15 +379,20 @@ class CodexHandoffAdapter(ProviderHandoffAdapter):
     ) -> HandoffDeliveryPreparation:
         if native_session_id is not None and not valid_native_id(native_session_id):
             raise NativeResumeError("Invalid native session identifier.")
+        validate_delivery_context(rendered_context, self.context_overhead_bytes)
         # Sandbox is an exec parent option, JSON is also supported on exec resume.
         argv = [executable_path, "exec", "--sandbox", "read-only"]
         if native_session_id is not None:
             argv.extend(["resume", "--json", native_session_id])
         else:
             argv.append("--json")
-        argv.append(CODEX_BOOTSTRAP_PREFIX + rendered_context)
+        argv.append("-")
         result = self._headless.run_headless(
-            argv, project_root, timeout=self._timeout, env={"CORTEXSHIFT_MCP_READ_ONLY": "1"}
+            argv,
+            project_root,
+            timeout=self._timeout,
+            env={"CORTEXSHIFT_MCP_READ_ONLY": "1"},
+            input_text=CODEX_BOOTSTRAP_PREFIX + rendered_context,
         )
         if result.timed_out:
             raise HandoffDeliveryError("bootstrap_timeout", "Codex handoff bootstrap timed out.")
@@ -396,7 +404,7 @@ class CodexHandoffAdapter(ProviderHandoffAdapter):
         captured: str | None = None
         completed = False
         try:
-            for line in result.stdout.splitlines():
+            for line in result.stdout.split("\n"):
                 if not line.strip():
                     continue
                 event = json.loads(line)

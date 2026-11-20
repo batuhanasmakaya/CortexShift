@@ -5,6 +5,7 @@ from typing import Any
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.checkpoint_service import save_managed_checkpoint
+from cortexshift.application.handoff_service import serve_bound_handoff
 from cortexshift.application.mcp_invocation import require_active_invocation
 from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.task_service import TaskService
@@ -210,6 +211,11 @@ class McpApplicationFacade:
             latest_checkpoint=checkpoint_summary,
             repository=repo_summary,
         )
+
+    def get_handoff_context(self) -> str:
+        """Serve the switch handoff bound to the exact live provider invocation."""
+        self._ensure_can_mutate()
+        return serve_bound_handoff(self._store, self._require_active_invocation)
 
     def get_current_task(self) -> dict[str, Any]:
         """Return the complete canonical bound Task."""

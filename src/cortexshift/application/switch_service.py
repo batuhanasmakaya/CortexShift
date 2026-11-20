@@ -53,13 +53,14 @@ from cortexshift.domain.errors import (
     UnknownProviderError,
     WorkspaceLockedError,
 )
-from cortexshift.domain.git import RepositoryInspection, RepositoryInspectionStatus
+from cortexshift.domain.git import GitSnapshot, RepositoryInspection, RepositoryInspectionStatus
 from cortexshift.domain.handoff import (
     HANDOFF_PROTOCOL_VERSION,
     HandoffFailureCode,
     HandoffPayload,
     HandoffRecord,
     HandoffStatus,
+    generate_handoff_id,
 )
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.launch import LaunchSpecification
@@ -128,6 +129,8 @@ class SwitchDryRunResult(BaseModel):
 
     context_characters: int
     context_max_characters: int
+    context_bytes: int
+    context_max_bytes: int
     context_truncated: bool
     context_omissions: list[dict[str, Any]] = []
 
@@ -151,6 +154,8 @@ class HandoffPreviewResult(BaseModel):
     rendered_context: str
     context_characters: int
     context_max_characters: int
+    context_bytes: int
+    context_max_bytes: int
     context_truncated: bool
     context_omissions: list[dict[str, Any]] = []
 
@@ -356,7 +361,9 @@ class SwitchService:
                 latest_checkpoint=latest_checkpoint,
                 task_decisions=task_decisions,
             )
-            rendered = self._renderer.render(payload, handoff_id=None)
+            rendered = self._renderer.render(
+                payload, overhead_bytes=context.adapter.context_overhead_bytes
+            )
 
             return HandoffPreviewResult(
                 project_id=context.project.id,
@@ -368,6 +375,8 @@ class SwitchService:
                 rendered_context=rendered.text,
                 context_characters=rendered.character_count,
                 context_max_characters=rendered.max_characters,
+                context_bytes=rendered.byte_count,
+                context_max_bytes=rendered.max_bytes,
                 context_truncated=rendered.truncated,
                 context_omissions=[o.model_dump(mode="json") for o in rendered.omissions],
             )
@@ -405,7 +414,9 @@ class SwitchService:
                 latest_checkpoint=latest_checkpoint,
                 task_decisions=task_decisions,
             )
-            rendered = self._renderer.render(payload, handoff_id=None)
+            rendered = self._renderer.render(
+                payload, overhead_bytes=context.adapter.context_overhead_bytes
+            )
             snapshot = inspection.snapshot
 
             return SwitchDryRunResult(
@@ -435,6 +446,8 @@ class SwitchService:
                 bootstrap_model_turn_required=context.adapter.bootstrap_model_turn_required,
                 context_characters=rendered.character_count,
                 context_max_characters=rendered.max_characters,
+                context_bytes=rendered.byte_count,
+                context_max_bytes=rendered.max_bytes,
                 context_truncated=rendered.truncated,
                 context_omissions=[o.model_dump(mode="json") for o in rendered.omissions],
             )
@@ -483,7 +496,8 @@ class SwitchService:
                 self._select_target(context, new_session, resume_session_id)
                 inspection = self._inspect(context)
                 context.workspace.revalidate()
-                snapshot_id = self._persist_snapshot(inspection, store)
+                snapshot = self._handoff_snapshot(inspection)
+                snapshot_id = snapshot.id if snapshot else None
 
                 latest_checkpoint = store.get_latest_checkpoint(context.task.id)
                 task_decisions = self._aggregate_task_decisions(context)
@@ -499,7 +513,14 @@ class SwitchService:
                     task_decisions=task_decisions,
                 )
 
+                handoff_id = generate_handoff_id()
+                rendered = self._renderer.render(
+                    payload,
+                    handoff_id=handoff_id,
+                    overhead_bytes=context.adapter.context_overhead_bytes,
+                )
                 handoff = HandoffRecord(
+                    id=handoff_id,
                     protocol_version=HANDOFF_PROTOCOL_VERSION,
                     project_id=context.project.id,
                     task_id=context.task.id,
@@ -512,11 +533,13 @@ class SwitchService:
                     payload=payload,
                     metadata={
                         "delivery_strategy": context.adapter.delivery_strategy.value,
+                        "context_max_bytes": rendered.max_bytes,
                     },
                 )
-                store.save_handoff(handoff)
-
-                rendered = self._renderer.render(payload, handoff_id=handoff.id)
+                with store.write_transaction():
+                    if snapshot is not None:
+                        store.save_snapshot(snapshot)
+                    store.save_handoff(handoff)
                 if on_prepared:
                     on_prepared(handoff, rendered)
 
@@ -526,18 +549,9 @@ class SwitchService:
         finally:
             store.close()
 
-    def _persist_snapshot(
-        self,
-        inspection: RepositoryInspection,
-        store: SQLiteStateStore,
-    ) -> str | None:
-        """Persist the Git snapshot when Git is ready, honestly handling other states.
-
-        A known `git_not_installed` or `not_git_repository` state continues the handoff
-        with an explicit canonical marker and no snapshot row. An unexpected probe error
-        fails the switch instead of producing a package whose repository observation may
-        be unreliable. Fake snapshot rows are never created.
-        """
+    @staticmethod
+    def _handoff_snapshot(inspection: RepositoryInspection) -> GitSnapshot | None:
+        """Select the live observation eligible for persistence after rendering."""
         if inspection.status == RepositoryInspectionStatus.PROBE_ERROR:
             raise GitProbeError(
                 inspection.diagnostic
@@ -545,11 +559,7 @@ class SwitchService:
                 "from an unreliable repository observation."
             )
 
-        if inspection.status != RepositoryInspectionStatus.READY or inspection.snapshot is None:
-            return None
-
-        store.save_snapshot(inspection.snapshot)
-        return inspection.snapshot.id
+        return inspection.snapshot if inspection.is_ready else None
 
     def _deliver(
         self,
@@ -567,15 +577,21 @@ class SwitchService:
             workspace=context.workspace,
         )
 
-        target_session = launcher.start_session(
-            task_id=context.task.id,
-            provider_id=context.adapter.provider_id,
-            metadata={"handoff_id": handoff.id},
-            resumed_from_session_id=context.prior_target.id if context.prior_target else None,
-            native_session_id=(
-                context.prior_target.native_session_id if context.prior_target else None
-            ),
-        )
+        # Persist both bindings before any provider work can request the handoff.
+        with store.write_transaction():
+            target_session = launcher.start_session(
+                task_id=context.task.id,
+                provider_id=context.adapter.provider_id,
+                metadata={"handoff_id": handoff.id},
+                resumed_from_session_id=context.prior_target.id if context.prior_target else None,
+                native_session_id=(
+                    context.prior_target.native_session_id if context.prior_target else None
+                ),
+            )
+
+            store.update_handoff_delivery(
+                handoff.id, status=HandoffStatus.PREPARED, target_session_id=target_session.id
+            )
 
         try:
             preparation = context.adapter.prepare_delivery(
@@ -611,16 +627,13 @@ class SwitchService:
                 target_session, preparation.native_session_id
             )
 
-        delivered = handoff.mark_delivered(
-            target_session_id=target_session.id,
-            delivered_at=utc_now(),
-        )
-        store.update_handoff_delivery(
-            delivered.id,
-            status=HandoffStatus.DELIVERED,
-            target_session_id=target_session.id,
-            delivered_at=delivered.delivered_at,
-        )
+        if preparation.bootstrap_performed:
+            store.update_handoff_delivery(
+                handoff.id,
+                status=HandoffStatus.DELIVERED,
+                target_session_id=target_session.id,
+                delivered_at=utc_now(),
+            )
 
         if str(context.adapter.provider_id) == str(
             PROVIDER_ANTIGRAVITY
@@ -639,14 +652,16 @@ class SwitchService:
         except ProjectConflictError:
             raise
         except Exception:
-            # The interactive process never started, so context was not actually delivered.
+            # The switch requires an interactive destination even after a bootstrap receipt.
             self._fail_handoff(
-                store, delivered, HandoffFailureCode.SPAWN_FAILED.value, target_session.id
+                store, handoff, HandoffFailureCode.SPAWN_FAILED.value, target_session.id
             )
             raise
 
+        recorded_handoff = store.get_handoff(handoff.id)
+        assert recorded_handoff is not None
         return SwitchResult(
-            handoff=delivered,
+            handoff=recorded_handoff,
             target_session=target_session,
             bootstrap_performed=preparation.bootstrap_performed,
         )

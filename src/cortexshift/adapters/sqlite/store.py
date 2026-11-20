@@ -589,7 +589,7 @@ class SQLiteStateStore(
     def save_session(self, session: Session) -> None:
         """Persist or update an agent execution Session."""
         try:
-            with self._write():
+            with self._write(join_transaction=True):
                 self._conn.execute(
                     """
                     INSERT INTO sessions (
@@ -716,7 +716,7 @@ class SQLiteStateStore(
         prompts and provider responses are never persisted.
         """
         try:
-            with self._write():
+            with self._write(join_transaction=True):
                 self._conn.execute(
                     """
                     INSERT INTO handoffs (
@@ -776,7 +776,7 @@ class SQLiteStateStore(
     ) -> None:
         """Update delivery metadata of an existing handoff record."""
         try:
-            with self._write():
+            with self._write(join_transaction=True):
                 self._conn.execute(
                     """
                     UPDATE handoffs SET

@@ -405,9 +405,9 @@ SwitchService ──────────┼── Live Git Inspection
 - **Advisory completed work.** Recorded completed items inform `COMPLETED` and `DO NOT REDO` conservatively; the receiving agent is told to verify, never to skip verification, and never to restart.
 - **Live capture under the lease.** Switch checks the provider guard before collecting repository state. The lease remains held through target runtime. External and untracked work may still change the repository.
 - **Git optionality with honest markers.** `git_not_installed` and `not_git_repository` continue the handoff with an explicit marker and no snapshot row; fake `GitSnapshot` rows are never created. An unexpected `probe_error` fails the switch safely instead of shipping an unreliable observation.
-- **Bounded transport, complete storage.** Rendering is capped at 48,000 characters using deterministic character and list budgets — no tokenizer, no summarizer, no model. Mandatory context is never dropped; omissions are always reported with exact counts; the persisted payload is never truncated and remains retrievable via `cortexshift handoff show ID --json`.
+- **Bounded transport, complete storage.** The rendered handoff, including any fixed headless preamble, fits in 48,000 UTF-8 bytes. Essential context is required in full. Optional entries are selected whole, with section-specific counts for omissions. The historical payload remains accessible via `cortexshift handoff show ID --json`. See [ADR-0015](decisions/ADR-0015-bounded-handoff-delivery.md).
 - **Rendered prompts are never persisted.** They are transport representations, re-derived from canonical state on demand.
-- **Delivery ≠ session outcome.** `HandoffStatus` (`prepared`/`delivered`/`failed`) describes whether context arrived; the target Session remains the source of truth for how the receiving coding session ended. Failure codes are safe machine classifications that never embed raw provider output.
+- **Delivery and Session lifecycle.** `HandoffStatus` records transport evidence. The target Session records process lifecycle. A bootstrap receipt or MCP retrieval does not verify model use. Failure codes carry no provider output.
 - **Switch never mutates task progress.** Not even a clean exit 0 marks work complete; CortexShift does not infer business progress from process status.
 - **Manual switching only.** No quota parsing, no automatic provider selection, no automatic termination or auto-switching. The user runs `cortexshift switch TARGET` explicitly.
 - **Historical handoff semantics.** A stored handoff is an immutable record of what was true at capture time. Live repository inspection always outranks it, exactly as with `GitSnapshot`.
@@ -416,11 +416,14 @@ SwitchService ──────────┼── Live Git Inspection
 
 | Provider | Strategy | Bootstrap model turn |
 | :--- | :--- | :--- |
-| Claude Code | `direct_initial_prompt` — `claude --session-id UUID <context>` or `claude --resume ID <context>` | No |
-| Codex | `read_only_bootstrap_then_resume` — `exec --sandbox read-only --json <context>` (or exact `exec resume`), then `resume ID` | Yes — one read-only turn |
-| Antigravity | `plan_bootstrap_then_resume` | Yes — one read-only planning turn |
+| Claude Code | `mcp_handoff_retrieval`. A short prompt requests the handoff bound to the live interactive invocation. | None |
+| Codex | `read_only_bootstrap_then_resume`. UTF-8 stdin with `codex exec --sandbox read-only --json -` or its exact-resume variant. | One read-only turn |
+| Antigravity | `plan_bootstrap_then_resume`. One UTF-8 stream-JSON user event on headless stdin, followed by exact interactive resume. | One planning turn |
 
-Antigravity uses two documented native capabilities in sequence: a read-only headless plan turn (`agy --mode=plan -p <context> --output-format json`) that ingests the context, followed by an interactive resume of that same conversation (`agy --conversation <id>`). Only `conversation_id` and `status` are parsed; the response is discarded. Permission-bypass flags are never used, and CortexShift never automates TUI keystrokes — so the user may need to approve continuation in the resumed UI, which the CLI states plainly.
+All interactive launches inherit terminal stdio. Headless transports keep rendered
+context off disk and outside the process argument vector. The Claude MCP receipt
+reuses invocation authorization and records only delivery metadata.
+
 
 See [ADR-0006](decisions/ADR-0006-canonical-agent-handoff.md) and the [Canonical Handoff Protocol](handoff-protocol.md) for the full contract.
 

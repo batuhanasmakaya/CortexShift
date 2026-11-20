@@ -3,6 +3,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 from cortexshift.adapters.headless_runner import SubprocessHeadlessProviderRunner
 from cortexshift.ports.headless_runner import (
     DEFAULT_HEADLESS_TIMEOUT_SECONDS,
@@ -101,3 +103,23 @@ def test_runs_in_the_given_working_directory(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
     assert Path(result.stdout.strip()).resolve() == tmp_path.resolve()
+
+
+@pytest.mark.parametrize(
+    "input_text", ["", 'spaces $ ; " and 🎉\n\r\n' * 1400], ids=["empty", "large"]
+)
+def test_utf8_stdin_is_exact_and_independent_of_command_line(
+    tmp_path: Path, input_text: str
+) -> None:
+    result = SubprocessHeadlessProviderRunner().run_headless(
+        argv=[
+            sys.executable,
+            "-c",
+            "import sys; assert not sys.stdin.isatty(); "
+            "sys.stdout.buffer.write(sys.stdin.buffer.read())",
+        ],
+        cwd=tmp_path,
+        input_text=input_text,
+    )
+    assert result.exit_code == 0
+    assert result.stdout == input_text

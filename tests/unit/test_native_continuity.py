@@ -45,7 +45,13 @@ from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
 from cortexshift.ports.headless_runner import HeadlessResult
 from tests.cli_runner import AnsiFreeCliRunner, unwrapped
-from tests.factories import FakeCodexBootstrap, patch_which, seed_project, seed_session
+from tests.factories import (
+    FakeCodexBootstrap,
+    antigravity_result_event,
+    patch_which,
+    seed_project,
+    seed_session,
+)
 from tests.unit.test_switch_service import FakeHeadlessRunner, FakeInspector, FakeProcessRunner
 
 
@@ -326,7 +332,7 @@ def test_bootstrap_mismatched_id_never_resumes_another_conversation(
     stdout = (
         '{"type":"thread.started","thread_id":"different"}\n{"type":"turn.completed"}'
         if provider == "codex"
-        else '{"conversation_id":"different","status":"SUCCESS"}'
+        else antigravity_result_event(conversation_id="different", status="SUCCESS")
     )
     fake = FakeHeadlessRunner(HeadlessResult(exit_code=0, stdout=stdout, stderr=""))
     adapter = (

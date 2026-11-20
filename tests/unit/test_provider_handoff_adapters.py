@@ -10,16 +10,17 @@ from cortexshift.adapters.providers.antigravity import (
     ANTIGRAVITY_BOOTSTRAP_PREFIX,
     AntigravityHandoffAdapter,
 )
-from cortexshift.adapters.providers.claude import ClaudeHandoffAdapter
-from cortexshift.adapters.providers.codex import CodexHandoffAdapter
+from cortexshift.adapters.providers.claude import CLAUDE_HANDOFF_PROMPT, ClaudeHandoffAdapter
+from cortexshift.adapters.providers.codex import CODEX_BOOTSTRAP_PREFIX, CodexHandoffAdapter
 from cortexshift.domain.errors import HandoffDeliveryError
-from cortexshift.domain.handoff import HandoffFailureCode
+from cortexshift.domain.handoff import MAX_HANDOFF_BYTES, HandoffFailureCode
 from cortexshift.domain.provider import (
     PROVIDER_ANTIGRAVITY,
     PROVIDER_CLAUDE,
 )
 from cortexshift.ports.handoff_delivery import HandoffDeliveryStrategy, ProviderHandoffAdapter
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
+from tests.factories import antigravity_result_event
 
 CONTEXT = "CORTEXSHIFT HANDOFF PROTOCOL v1\n\nSome canonical context."
 
@@ -37,21 +38,22 @@ class FakeHeadlessRunner(HeadlessProviderRunner):
         cwd: Path | str,
         timeout: float = 300.0,
         env: dict[str, str] | None = None,
+        *,
+        input_text: str | None = None,
     ) -> HeadlessResult:
-        self.invocations.append({"argv": argv, "cwd": cwd, "timeout": timeout, "env": env})
+        self.invocations.append(
+            {"argv": argv, "cwd": cwd, "timeout": timeout, "env": env, "input_text": input_text}
+        )
         return self.result
 
 
 def _success_result(conversation_id: str = "test-conversation-123") -> HeadlessResult:
     return HeadlessResult(
         exit_code=0,
-        stdout=json.dumps(
-            {
-                "conversation_id": conversation_id,
-                "status": "SUCCESS",
-                "response": "A long continuation plan that must never be persisted.",
-                "usage": {"input_tokens": 100},
-            }
+        stdout=antigravity_result_event(
+            conversation_id=conversation_id,
+            status="SUCCESS",
+            response="A long continuation plan that must never be persisted.",
         ),
         stderr="",
     )
@@ -66,16 +68,16 @@ def _success_result(conversation_id: str = "test-conversation-123") -> HeadlessR
         (ClaudeHandoffAdapter(), PROVIDER_CLAUDE, "claude"),
     ],
 )
-def test_direct_adapters_pass_context_as_single_argument(
+def test_claude_requests_bound_mcp_context(
     adapter: ProviderHandoffAdapter,
     provider_id: str,
     executable: str,
     tmp_path: Path,
 ) -> None:
-    """Verify Claude and Codex receive the handoff as one positional argv element."""
+    """Claude receives a fixed request and inherits the native interactive terminal."""
     assert adapter.provider_id == provider_id
     assert adapter.executable == executable
-    assert adapter.delivery_strategy == HandoffDeliveryStrategy.DIRECT_INITIAL_PROMPT
+    assert adapter.delivery_strategy == HandoffDeliveryStrategy.MCP_HANDOFF_RETRIEVAL
     assert adapter.bootstrap_model_turn_required is False
 
     preparation = adapter.prepare_delivery(
@@ -87,7 +89,7 @@ def test_direct_adapters_pass_context_as_single_argument(
     assert preparation.launch_spec.argv[0] == f"/bin/{executable}"
     assert "--mcp-config" in preparation.launch_spec.argv
     assert "--session-id" in preparation.launch_spec.argv
-    assert preparation.launch_spec.argv[-1] == CONTEXT
+    assert preparation.launch_spec.argv[-1] == CLAUDE_HANDOFF_PROMPT
     assert preparation.launch_spec.cwd == tmp_path
     assert preparation.launch_spec.interactive is True
     assert preparation.launch_spec.prompt_supplied is True
@@ -120,8 +122,8 @@ def test_direct_adapters_never_use_headless_or_exec_subcommands(
         assert forbidden not in argv
 
 
-def test_direct_adapters_keep_shell_metacharacters_inert(tmp_path: Path) -> None:
-    """Verify injection-shaped context stays a single inert argument."""
+def test_claude_does_not_put_shell_metacharacters_in_argv(tmp_path: Path) -> None:
+    """Verify task text never becomes a process argument."""
     hostile = 'Objective: $(touch hacked); rm -rf / && echo "quoted"\nnewline'
     argv = (
         ClaudeHandoffAdapter()
@@ -136,14 +138,15 @@ def test_direct_adapters_keep_shell_metacharacters_inert(tmp_path: Path) -> None
     assert argv[0] == "/bin/claude"
     assert "--mcp-config" in argv
     assert "--session-id" in argv
-    assert argv[-1] == hostile
+    assert hostile not in argv
+    assert argv[-1] == CLAUDE_HANDOFF_PROMPT
 
 
 # --- Antigravity read-only bootstrap + conversation resume ---
 
 
 def test_antigravity_bootstrap_argv_semantics(tmp_path: Path) -> None:
-    """Verify the bootstrap runs read-only plan mode with JSON output, prompt as one arg."""
+    """Verify plan mode sends one JSONL user event through stdin."""
     runner = FakeHeadlessRunner(_success_result())
     adapter = AntigravityHandoffAdapter(headless_runner=runner)
 
@@ -161,14 +164,15 @@ def test_antigravity_bootstrap_argv_semantics(tmp_path: Path) -> None:
     assert argv[0] == "/bin/agy"
     assert "--mode=plan" in argv
     assert "--output-format" in argv
-    assert argv[argv.index("--output-format") + 1] == "json"
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
 
-    prompt_index = argv.index("-p") + 1
-    prompt = argv[prompt_index]
+    frame = json.loads(runner.invocations[0]["input_text"])
+    assert frame["event"] == "user"
+    prompt = frame["message"]["content"]
     assert prompt.startswith(ANTIGRAVITY_BOOTSTRAP_PREFIX.split("\n")[0])
     assert CONTEXT in prompt
-    # The whole handoff must remain exactly one subprocess argument.
-    assert sum(1 for arg in argv if CONTEXT in arg) == 1
+    assert all(CONTEXT not in arg for arg in argv)
     assert runner.invocations[0]["cwd"] == tmp_path
 
 
@@ -259,7 +263,9 @@ def test_antigravity_discards_bootstrap_response(tmp_path: Path) -> None:
         ),
         (
             HeadlessResult(
-                exit_code=0, stdout='{"conversation_id": "c1", "status": "ERROR"}', stderr=""
+                exit_code=0,
+                stdout=antigravity_result_event(conversation_id="c1", status="ERROR"),
+                stderr="",
             ),
             HandoffFailureCode.BOOTSTRAP_FAILED,
         ),
@@ -297,7 +303,7 @@ def test_antigravity_empty_conversation_id_rejected(tmp_path: Path) -> None:
     runner = FakeHeadlessRunner(
         HeadlessResult(
             exit_code=0,
-            stdout=json.dumps({"conversation_id": "   ", "status": "SUCCESS"}),
+            stdout=antigravity_result_event(conversation_id="   ", status="SUCCESS"),
             stderr="",
         )
     )
@@ -316,3 +322,77 @@ def test_all_handoff_adapters_satisfy_the_port() -> None:
     """Verify every delivery adapter structurally implements ProviderHandoffAdapter."""
     for adapter in (ClaudeHandoffAdapter(), CodexHandoffAdapter(), AntigravityHandoffAdapter()):
         assert isinstance(adapter, ProviderHandoffAdapter)
+
+
+def test_large_claude_handoff_is_never_an_argv_argument(tmp_path: Path) -> None:
+    context = 'Objective: spaces $ ` ; " and 🎉\n' * 1000
+    preparation = ClaudeHandoffAdapter().prepare_delivery(
+        executable_path=r"C:\Program Files\Claude\claude.exe",
+        project_root=tmp_path,
+        rendered_context=context,
+    )
+    assert sum(len(arg.encode("utf-8")) for arg in preparation.launch_spec.argv) < 4096
+    assert preparation.launch_spec.interactive
+
+
+@pytest.mark.parametrize("context", ["", " \n\t", "🎉" * 48_000])
+def test_empty_or_oversize_context_stops_before_any_provider_work(
+    tmp_path: Path, context: str
+) -> None:
+    runner = FakeHeadlessRunner(_success_result())
+    for adapter in (
+        ClaudeHandoffAdapter(),
+        CodexHandoffAdapter(headless_runner=runner),
+        AntigravityHandoffAdapter(headless_runner=runner),
+    ):
+        with pytest.raises(HandoffDeliveryError) as exc:
+            adapter.prepare_delivery("fake", tmp_path, context)
+        expected = (
+            HandoffFailureCode.CONTEXT_TOO_LARGE
+            if context.strip()
+            else HandoffFailureCode.CONTEXT_EMPTY
+        )
+        assert exc.value.failure_code == expected
+    assert not runner.invocations
+
+
+@pytest.mark.parametrize("provider", ["codex", "antigravity"])
+def test_large_bootstrap_uses_stdin_and_preserves_exact_native_resume(
+    tmp_path: Path, provider: str
+) -> None:
+    native_id = "thread-fixture"
+    if provider == "codex":
+        runner = FakeHeadlessRunner(
+            HeadlessResult(
+                exit_code=0,
+                stdout='{"type":"thread.started","thread_id":"thread-fixture"}\n'
+                '{"type":"turn.completed"}\n',
+                stderr="",
+            )
+        )
+        adapter: ProviderHandoffAdapter = CodexHandoffAdapter(headless_runner=runner)
+        prefix = CODEX_BOOTSTRAP_PREFIX
+    else:
+        runner = FakeHeadlessRunner(_success_result(native_id))
+        adapter = AntigravityHandoffAdapter(headless_runner=runner)
+        prefix = ANTIGRAVITY_BOOTSTRAP_PREFIX + "\n"
+
+    text = 'Task: "quoted" ; ` $ 🎉\n' * 1400
+    text += "a" * (MAX_HANDOFF_BYTES - adapter.context_overhead_bytes - len(text.encode("utf-8")))
+    assert len((prefix + text).encode("utf-8")) == MAX_HANDOFF_BYTES
+    executable = rf"C:\Program Files\Native Agents\{provider}.exe"
+    prepared = adapter.prepare_delivery(executable, tmp_path, text, native_session_id=native_id)
+    assert prepared.native_session_id == native_id
+    assert prepared.launch_spec.interactive
+    assert prepared.launch_spec.argv[0] == executable
+    assert native_id in prepared.launch_spec.argv
+    invocation = runner.invocations[0]
+    argv = invocation["argv"]
+    assert argv[0] == executable
+    assert native_id in argv
+    assert sum(len(arg) for arg in argv) < 4096
+    if provider == "codex":
+        assert argv[-1] == "-"
+        assert invocation["input_text"] == prefix + text
+    else:
+        assert json.loads(invocation["input_text"])["message"]["content"] == prefix + text

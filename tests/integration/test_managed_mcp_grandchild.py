@@ -55,6 +55,7 @@ READ_TOOLS = {
     "get_repository_status",
 }
 WRITE_TOOLS = {
+    "get_handoff_context",
     "set_current_work",
     "mark_completed",
     "add_remaining",

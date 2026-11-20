@@ -33,7 +33,7 @@ from cortexshift.domain.session import SessionStatus
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
 from tests.cli_runner import AnsiFreeCliRunner
-from tests.factories import FakeCodexBootstrap, patch_which, seed_session
+from tests.factories import FakeCodexBootstrap, antigravity_result_event, patch_which, seed_session
 
 runner = AnsiFreeCliRunner()
 
@@ -69,17 +69,17 @@ class RecordingHeadlessRunner(HeadlessProviderRunner):
         cwd: Path | str,
         timeout: float = 300.0,
         env: dict[str, str] | None = None,
+        *,
+        input_text: str | None = None,
     ) -> HeadlessResult:
-        self.invocations.append({"argv": list(argv), "cwd": str(cwd)})
+        assert input_text is not None
+        self.invocations.append({"argv": list(argv), "cwd": str(cwd), "input_text": input_text})
         return HeadlessResult(
             exit_code=0,
-            stdout=json.dumps(
-                {
-                    "conversation_id": BOOTSTRAP_CONVERSATION_ID,
-                    "status": "SUCCESS",
-                    "response": BOOTSTRAP_SECRET_RESPONSE,
-                    "usage": {"input_tokens": 4321},
-                }
+            stdout=antigravity_result_event(
+                conversation_id=BOOTSTRAP_CONVERSATION_ID,
+                status="SUCCESS",
+                response=BOOTSTRAP_SECRET_RESPONSE,
             ),
             stderr="",
         )
@@ -221,7 +221,7 @@ def test_flagship_claude_to_codex_to_antigravity(
     assert codex_call["argv"][-2:] == ["resume", "test-codex-native-id"]
     assert codex_call["cwd"] == str(repo)
 
-    context = codex_bootstrap.invocations[-1][-1]
+    context = codex_bootstrap.input_texts[-1]
     assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in context
     assert task_id in context
     assert "Add OAuth2 PKCE support to the auth layer." in context
@@ -251,8 +251,10 @@ def test_flagship_claude_to_codex_to_antigravity(
     bootstrap_argv = headless_runner.invocations[0]["argv"]
     assert bootstrap_argv[0] == "/fake/bin/agy"
     assert "--mode=plan" in bootstrap_argv
-    assert bootstrap_argv[bootstrap_argv.index("--output-format") + 1] == "json"
-    bootstrap_prompt = bootstrap_argv[bootstrap_argv.index("-p") + 1]
+    assert bootstrap_argv[bootstrap_argv.index("--output-format") + 1] == "stream-json"
+    bootstrap_prompt = json.loads(headless_runner.invocations[0]["input_text"])["message"][
+        "content"
+    ]
     assert "Remain read-only." in bootstrap_prompt
     assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in bootstrap_prompt
     assert "tokens.py" in bootstrap_prompt
@@ -494,7 +496,7 @@ def test_outgoing_provider_missing_does_not_block_handoff(
     assert "claude" not in resolved
     assert "codex" in resolved
 
-    context = codex_bootstrap.invocations[-1][-1]
+    context = codex_bootstrap.input_texts[-1]
     assert "Finish the auth refactor after Claude's quota ran out." in context
     assert "Finish the token exchange" in context
     assert "auth.py" in context
@@ -549,8 +551,9 @@ def test_context_budget_bounds_transport_but_not_canonical_payload(
     assert runner.invoke(app, ["run", "claude"]).exit_code == 0
     assert runner.invoke(app, ["switch", "codex"]).exit_code == 0
 
-    context = codex_bootstrap.invocations[-1][-1]
-    assert len(context.removeprefix(CODEX_BOOTSTRAP_PREFIX)) <= 48_000
+    context = codex_bootstrap.input_texts[-1]
+    assert context.startswith(CODEX_BOOTSTRAP_PREFIX)
+    assert len(context.encode("utf-8")) <= 48_000
     assert "omitted from injected context." in context
     assert "cortexshift handoff show handoff_" in context
     # Mandatory context survives.
@@ -604,10 +607,13 @@ def test_switch_argv_stays_inert_under_hostile_task_content(
     assert codex_argv[0] == "/fake/bin/codex"
     assert "-c" in codex_argv
     assert codex_argv[-2:] == ["resume", "test-codex-native-id"]
-    assert "$(touch" in codex_bootstrap.invocations[-1][-1]
+    assert "$(touch" in codex_bootstrap.input_texts[-1]
 
     bootstrap_argv = headless_runner.invocations[0]["argv"]
-    assert sum(1 for arg in bootstrap_argv if "$(touch" in arg) == 1
+    assert all("$(touch" not in arg for arg in bootstrap_argv)
+    assert (
+        "$(touch" in json.loads(headless_runner.invocations[0]["input_text"])["message"]["content"]
+    )
 
     assert not marker.exists()
     assert not (repo / "hacked").exists()

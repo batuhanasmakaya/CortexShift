@@ -42,6 +42,8 @@ class HeadlessProviderRunner(Protocol):
         cwd: Path | str,
         timeout: float = DEFAULT_HEADLESS_TIMEOUT_SECONDS,
         env: dict[str, str] | None = None,
+        *,
+        input_text: str | None = None,
     ) -> HeadlessResult:
         """Execute a provider process headlessly, capturing stdout and stderr.
 
@@ -50,6 +52,7 @@ class HeadlessProviderRunner(Protocol):
             cwd: Canonical working directory (the project root).
             timeout: Finite upper bound appropriate for a single model turn.
             env: Optional environment overlay.
+            input_text: UTF-8 input to send before closing stdin. None uses DEVNULL.
 
         Returns:
             A HeadlessResult describing the outcome. Implementations must not raise

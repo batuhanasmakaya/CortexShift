@@ -514,8 +514,8 @@ def render_switch_preview(preview: TuiSwitchPreview) -> Text:
         ),
         (
             "Context size",
-            f"{preview.context_characters} / {preview.context_max_characters} characters"
-            + (" (truncated)" if preview.context_truncated else ""),
+            f"{preview.context_bytes} / {preview.context_max_bytes} UTF-8 bytes"
+            + (" (excerpt)" if preview.context_truncated else ""),
         ),
     ]
     for index, (label, value) in enumerate(rows):
@@ -583,8 +583,8 @@ def render_handoff_preview(preview: TuiHandoffPreview) -> Text:
         )
     )
     body.append(
-        f"Context     {preview.context_characters} / {preview.context_max_characters} characters"
-        + (" (truncated)\n" if preview.context_truncated else "\n")
+        f"Context     {preview.context_bytes} / {preview.context_max_bytes} UTF-8 bytes"
+        + (" (excerpt)\n" if preview.context_truncated else "\n")
     )
     body.append(
         "\nPreview only — nothing was persisted and no model quota was used.\n\n",

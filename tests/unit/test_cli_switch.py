@@ -264,7 +264,7 @@ def test_switch_note_reaches_the_receiving_agent(
     assert result.exit_code == 0
     assert "Session completed." in result.stdout
     assert len(captured) == 1
-    context = codex_bootstrap.invocations[-1][-1]
+    context = codex_bootstrap.input_texts[-1]
     assert "## OPERATOR NOTE" in context
     assert "Mind the flaky integration test" in context
 
@@ -294,7 +294,7 @@ def test_switch_reports_failed_target_session(
     assert result.exit_code == 3
     assert "Session failed." in result.stdout
     # Delivery succeeded even though the session did not.
-    assert "was delivered" in unwrapped(result.stdout)
+    assert "completed read-only bootstrap turn" in unwrapped(result.stdout)
 
     with SQLiteStateStore(
         switchable_project / ".cortexshift" / "state.sqlite3", auto_migrate=False

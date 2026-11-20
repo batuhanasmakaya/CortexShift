@@ -19,13 +19,14 @@ from cortexshift.application.switch_service import ProviderHandoffRegistry, Swit
 from cortexshift.domain.errors import HandoffDeliveryError, NativeResumeError
 from cortexshift.domain.session import Session
 from cortexshift.ports.headless_runner import HeadlessResult
-from tests.factories import seed_project
+from tests.factories import antigravity_result_event, seed_project
 from tests.unit.test_switch_service import FakeProcessRunner
 
 
 class NativeBootstrap:
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.input_texts: list[str] = []
         self.counts = {"codex": 0, "agy": 0}
         self.fail = False
 
@@ -35,8 +36,12 @@ class NativeBootstrap:
         cwd: Path | str,
         timeout: float = 300.0,
         env: dict[str, str] | None = None,
+        *,
+        input_text: str | None = None,
     ) -> HeadlessResult:
+        assert input_text is not None
         self.calls.append(argv)
+        self.input_texts.append(input_text)
         if self.fail:
             return HeadlessResult(exit_code=1, stdout="PRIVATE-FAILURE", stderr="PRIVATE-FAILURE")
         provider = Path(argv[0]).name
@@ -56,8 +61,8 @@ class NativeBootstrap:
                 ]
             )
         else:
-            output = json.dumps(
-                {"conversation_id": native_id, "status": "SUCCESS", "response": "PRIVATE-RESPONSE"}
+            output = antigravity_result_event(
+                conversation_id=native_id, status="SUCCESS", response="PRIVATE-RESPONSE"
             )
         return HeadlessResult(exit_code=0, stdout=output, stderr="")
 
@@ -138,9 +143,10 @@ def test_flagship_a_b_c_a_b_c_and_restart(tmp_path: Path, native_workflow) -> No
     assert "--mcp-config" in claude_return
     assert "--resume" in claude_return
     assert claude_return[claude_return.index("--resume") + 1] == first.native_session_id
-    prompts = [claude_return[-1]]
-    for call in bootstrap.calls:
-        prompt = call[-1] if "exec" in call else call[call.index("-p") + 1]
+    assert "get_handoff_context" in claude_return[-1]
+    prompts = []
+    for call, stdin in zip(bootstrap.calls, bootstrap.input_texts, strict=True):
+        prompt = stdin if "exec" in call else json.loads(stdin)["message"]["content"]
         prompts.append(prompt)
         if "exec" in call:
             assert call[1:4] == ["exec", "--sandbox", "read-only"]

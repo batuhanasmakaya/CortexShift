@@ -7,10 +7,10 @@ CONTRACTS = {
     "claude": [(("--help",), ("--session-id", "--resume", "--mcp-config"))],
     "codex": [
         (("--help",), ("resume", "exec", "--config")),
-        (("exec", "--help"), ("--sandbox", "--json")),
-        (("exec", "resume", "--help"), ("--json",)),
+        (("exec", "--help"), ("--sandbox", "--json", "stdin")),
+        (("exec", "resume", "--help"), ("--json", "stdin")),
     ],
-    "agy": [(("--help",), ("--mode", "--output-format", "--conversation", "-p"))],
+    "agy": [(("--help",), ("--mode", "--input-format", "--output-format", "--conversation"))],
 }
 
 

@@ -83,6 +83,7 @@ from cortexshift.mcp.context import (
     resolve_mcp_context,
 )
 from cortexshift.mcp.server import run_mcp_server
+from cortexshift.ports.handoff_delivery import HandoffDeliveryStrategy
 from cortexshift.tui.coordinator import TuiCoordinator
 
 # The status glyphs the reports below render. Probed rather than assumed, so the check
@@ -1501,6 +1502,9 @@ def _render_handoff_summary(handoff: HandoffRecord) -> None:
     grid.add_column(style="default", justify="left")
     grid.add_row("Protocol", f"CortexShift Handoff Protocol v{handoff.protocol_version}")
     grid.add_row("Status", handoff.status.value)
+    if handoff.metadata.get("delivery_strategy") == HandoffDeliveryStrategy.MCP_HANDOFF_RETRIEVAL:
+        detail = "Served over MCP" if handoff.delivered_at else "Retrieval unconfirmed"
+        grid.add_row("MCP context", detail)
     grid.add_row("From", f"{_provider_label(str(handoff.source_provider_id))}")
     grid.add_row("Source Session", handoff.source_session_id)
     grid.add_row("To", f"{_provider_label(str(handoff.target_provider_id))}")
@@ -1639,8 +1643,8 @@ def handoff_preview_command(
     )
     grid.add_row(
         "Context size",
-        f"{result.context_characters} / {result.context_max_characters} characters"
-        + (" (truncated)" if result.context_truncated else ""),
+        f"{result.context_bytes} / {result.context_max_bytes} UTF-8 bytes"
+        + (" (excerpt)" if result.context_truncated else ""),
     )
     console.print(grid)
 
@@ -1770,7 +1774,7 @@ def switch_command(
         typer.Option("--json", help="Output machine-readable JSON (only valid with --dry-run)."),
     ] = False,
 ) -> None:
-    """Hand the active task to another coding agent and launch it with full context.
+    """Switch the active task to another coding agent with a fresh handoff.
 
     CortexShift builds the handoff deterministically from durable local state, so the
     outgoing agent does not need to be available, running, or even installed.
@@ -1837,7 +1841,7 @@ def switch_command(
         )
         grid.add_row(
             "Context size",
-            f"{preview.context_characters} / {preview.context_max_characters} characters",
+            f"{preview.context_bytes} / {preview.context_max_bytes} UTF-8 bytes",
         )
         grid.add_row("Truncated", "yes" if preview.context_truncated else "no")
         console.print(grid)
@@ -1854,12 +1858,16 @@ def switch_command(
         grid.add_row("From", _provider_label(str(handoff.source_provider_id)))
         grid.add_row("To", _provider_label(str(handoff.target_provider_id)))
         grid.add_row("Git Snapshot", handoff.git_snapshot_id or "— (Git state unavailable)")
-        if rendered.truncated:
-            omitted = sum(o.omitted_items for o in rendered.omissions)
-            grid.add_row("Context", f"{rendered.character_count} chars ({omitted} items omitted)")
-        else:
-            grid.add_row("Context", f"{rendered.character_count} chars")
+        grid.add_row("Context", f"{rendered.byte_count} / {rendered.max_bytes} UTF-8 bytes")
+        for omission in rendered.omissions:
+            label = omission.section.replace("_", " ").capitalize()
+            grid.add_row("Omitted", f"{label}: {omission.omitted_items} of {omission.total_items}")
         console.print(grid)
+        if rendered.omissions or (
+            handoff.metadata.get("delivery_strategy")
+            == HandoffDeliveryStrategy.MCP_HANDOFF_RETRIEVAL.value
+        ):
+            console.print(f"Full historical handoff: cortexshift handoff show {handoff.id} --json")
 
         adapter = service._registry.get(provider)
         if adapter is not None and adapter.bootstrap_model_turn_required:
@@ -1871,7 +1879,7 @@ def switch_command(
         adapter = service._registry.get(provider)
         if adapter is not None and adapter.bootstrap_model_turn_required:
             console.print(
-                "\nHandoff delivered in a read-only bootstrap turn.\n"
+                "\nThe provider reported a completed read-only bootstrap turn.\n"
                 "Opening the same conversation in the native TUI.\n"
                 "Review the prepared continuation plan and continue from there."
             )
@@ -1892,13 +1900,17 @@ def switch_command(
         return
 
     session = result.target_session
+    if result.handoff.status == HandoffStatus.PREPARED:
+        console.print(
+            f"Retrieval of handoff {result.handoff.id} is unconfirmed. "
+            f"Inspect it with cortexshift handoff show {result.handoff.id} --json."
+        )
     if session.status == SessionStatus.COMPLETED:
         console.print("\nSession completed.")
     elif session.status == SessionStatus.INTERRUPTED:
         console.print("\nSession interrupted.")
     else:
         console.print("\nSession failed.")
-        console.print(f"[dim]Handoff {result.handoff.id} was delivered.[/dim]")
         if session.exit_code:
             raise typer.Exit(code=session.exit_code)
         raise typer.Exit(code=1)

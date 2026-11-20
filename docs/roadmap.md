@@ -114,11 +114,11 @@ The first end-to-end multi-agent workflow: one Task, multiple coding agents, no 
   - **Outgoing-agent independence**: handoffs derive deterministically from the canonical Project, canonical Task, previous Session metadata, live Git inspection, and a Git snapshot captured at switch time. No outgoing model call is ever made, and the outgoing provider's executable is never resolved — covered by dedicated regression tests.
   - CortexShift Handoff Protocol v1 (`HANDOFF_PROTOCOL_VERSION`), versioned independently of the SQLite schema.
   - Domain refactor into `HandoffPayload` (canonical engineering context) and `HandoffRecord` (orchestration and delivery metadata), with `HandoffStatus` and safe `HandoffFailureCode` classifications.
-  - Deterministic `HandoffBuilder` (pure, no I/O, no model) and provider-neutral `HandoffRenderer` with a bounded 48,000-character transport budget, reported truncation counts, and an untruncated persisted payload.
+  - Deterministic `HandoffBuilder` (pure, no I/O, no model) and provider-neutral `HandoffRenderer` with a bounded transport representation, reported omissions, and complete historical storage. [ADR-0015](decisions/ADR-0015-bounded-handoff-delivery.md) defines the current 48,000 UTF-8 byte budget.
   - Honest unknown state: absent decisions and unverified test status are stated, never invented; a provider exiting 0 is never read as "tests pass".
   - Receiving-agent contract: CortexShift authority order plus explicit startup instructions (read `AGENTS.md`, inspect `git status`/`git diff`, verify recorded completed work, run relevant tests, continue rather than restart).
   - `HandoffStore` persistence port and SQLite schema migration v4 adding the `handoffs` table, with all Phase 1–4 state preserved.
-  - `ProviderHandoffAdapter` port isolating delivery variance: direct interactive initial prompt for Claude Code and Codex; read-only plan-mode bootstrap plus native conversation resume for Antigravity.
+  - `ProviderHandoffAdapter` port isolating delivery variance. Current delivery uses bound MCP retrieval for Claude Code and headless stdin bootstraps with exact native conversation resume for Codex and Antigravity.
   - `HeadlessProviderRunner` port and `SubprocessHeadlessProviderRunner` adapter for one bounded, shell-free, TTY-free provider turn.
   - `ProviderSessionLauncher` extracted from `RunService` so `run` and `switch` share one Session lifecycle without nesting advisory locks.
   - Zero-quota inspection: `cortexshift handoff preview <target>` and `cortexshift switch <target> --dry-run` persist nothing and launch nothing.
