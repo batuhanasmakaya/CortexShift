@@ -25,6 +25,7 @@ from textual.widgets import Button, OptionList, Static
 from textual.worker import Worker, WorkerCancelled, WorkerState
 
 from cortexshift.application.status_service import ProjectStatusService
+from cortexshift.application.workspace import WorkspaceStart
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE
 from cortexshift.domain.status import ProjectStatus
@@ -208,7 +209,7 @@ class SupersededOnceStatusService(ProjectStatusService):
         self.calls = 0
         self._lock = threading.Lock()
 
-    def get_status(self, start_dir: Path | str | None = None) -> ProjectStatus:
+    def get_status(self, start_dir: WorkspaceStart = None) -> ProjectStatus:
         with self._lock:
             self.calls += 1
             first = self.calls == 1

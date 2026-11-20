@@ -224,7 +224,9 @@ def test_write_tools_reject_unmanaged_or_read_only(tmp_path: Path) -> None:
     store_unm.close()
 
     # Managed but explicit read-only
-    facade_ro, store_ro, _, _ = _setup_test_env(tmp_path, managed=True, read_only=True)
+    facade_ro, store_ro, _, _ = _setup_test_env(
+        tmp_path / "managed-read-only", managed=True, read_only=True
+    )
     with pytest.raises(McpReadOnlyError):
         facade_ro.set_current_work("Hack")
     store_ro.close()

@@ -1,10 +1,9 @@
 """Application service for querying persisted canonical handoff history."""
 
-from pathlib import Path
-
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.locator import ProjectLocator
-from cortexshift.domain.errors import HandoffNotFoundError, ProjectNotInitializedError
+from cortexshift.application.workspace import WorkspaceStart, open_workspace
+from cortexshift.domain.errors import HandoffNotFoundError
 from cortexshift.domain.handoff import HandoffRecord
 
 
@@ -14,27 +13,14 @@ class HandoffService:
     def __init__(self, project_locator: type[ProjectLocator] = ProjectLocator) -> None:
         self._locator = project_locator
 
-    def _open(self, start_dir: Path | str | None) -> tuple[str, SQLiteStateStore]:
+    def _open(self, start_dir: WorkspaceStart) -> tuple[str, SQLiteStateStore]:
         """Resolve the initialized project and open its handoff store."""
-        start_path = Path(start_dir) if start_dir is not None else None
-        project_root = self._locator.find_project_root(start_path)
-        if project_root is None:
-            raise ProjectNotInitializedError()
-
-        db_path = self._locator.get_database_path(project_root)
-        store = SQLiteStateStore(db_path, auto_migrate=False)
-        try:
-            project = store.get_default_project()
-            if project is None:
-                raise ProjectNotInitializedError()
-            return project.id, store
-        except Exception:
-            store.close()
-            raise
+        workspace, store = open_workspace(start_dir, locator=self._locator)
+        return workspace.project.id, store
 
     def list_handoffs(
         self,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
         limit: int = 20,
         task_id: str | None = None,
     ) -> list[HandoffRecord]:
@@ -48,7 +34,7 @@ class HandoffService:
     def get_handoff(
         self,
         handoff_id: str,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
     ) -> HandoffRecord:
         """Retrieve a specific handoff record.
 

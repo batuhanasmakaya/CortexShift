@@ -19,11 +19,10 @@ from cortexshift.adapters.providers.codex import CodexRuntimeAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.checkpoint_service import CheckpointService
-from cortexshift.application.locator import ProjectLocator
 from cortexshift.application.session_launcher import ProviderSessionLauncher
+from cortexshift.application.workspace import WorkspaceIdentity, WorkspaceStart, open_workspace
 from cortexshift.domain.errors import (
     NoActiveTaskError,
-    ProjectNotInitializedError,
     ProviderNotFoundError,
     TerminalRequiredError,
     UnknownProviderError,
@@ -123,22 +122,12 @@ class RunService:
     def _resolve_context(
         self,
         provider_name: str,
-        start_dir: Path | str | None = None,
-    ) -> tuple[Path, Project, Task, ProviderRuntimeAdapter, str, SQLiteStateStore]:
+        start_dir: WorkspaceStart = None,
+    ) -> tuple[WorkspaceIdentity, Task, ProviderRuntimeAdapter, str, SQLiteStateStore]:
         """Resolve and validate project, active task, provider, and executable."""
-        start_path = Path(start_dir) if start_dir is not None else None
-        project_root = ProjectLocator.find_project_root(start_path)
-        if project_root is None:
-            raise ProjectNotInitializedError()
-
-        db_path = ProjectLocator.get_database_path(project_root)
-        store = SQLiteStateStore(db_path, auto_migrate=False)
-
+        workspace, store = open_workspace(start_dir)
+        project = workspace.project
         try:
-            project = store.get_default_project()
-            if project is None:
-                raise ProjectNotInitializedError()
-
             active_task_id = store.get_active_task_id(project.id)
             if not active_task_id:
                 raise NoActiveTaskError()
@@ -155,7 +144,7 @@ class RunService:
             if not resolved_executable:
                 raise ProviderNotFoundError(f"{adapter.display_name} was not found in PATH.")
 
-            return project_root, project, task, adapter, resolved_executable, store
+            return workspace, task, adapter, resolved_executable, store
         except Exception:
             store.close()
             raise
@@ -164,18 +153,21 @@ class RunService:
         self,
         provider_name: str,
         prompt: str | None = None,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
     ) -> DryRunResult:
         """Perform a dry-run preview of provider launch without side effects."""
-        project_root, project, task, adapter, resolved_executable, store = self._resolve_context(
+        workspace, task, adapter, resolved_executable, store = self._resolve_context(
             provider_name, start_dir
         )
+        project = workspace.project
         try:
             launch_spec = adapter.build_launch_spec(
-                project_root=Path(project.repo_path),
+                project_root=workspace.root,
                 executable_path=resolved_executable,
                 prompt=prompt,
             )
+
+            workspace.validate_launch_root(launch_spec.cwd)
 
             return DryRunResult(
                 provider_id=adapter.provider_id,
@@ -197,7 +189,7 @@ class RunService:
         self,
         provider_name: str,
         prompt: str | None = None,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
         on_launch: Callable[[LaunchSpecification, Session, Task, Project], None] | None = None,
     ) -> Session:
         """Launch an interactive provider session and manage its lifecycle.
@@ -211,10 +203,11 @@ class RunService:
         Returns:
             The finalized Session entity.
         """
-        project_root, project, task, adapter, resolved_executable, store = self._resolve_context(
+        workspace, task, adapter, resolved_executable, store = self._resolve_context(
             provider_name, start_dir
         )
 
+        project = workspace.project
         try:
             # 1. Check TTY requirement
             if not self._is_tty():
@@ -226,13 +219,14 @@ class RunService:
 
             # 2. Build launch specification (validates prompt capability before lease)
             launch_spec = adapter.build_launch_spec(
-                project_root=Path(project.repo_path),
+                project_root=workspace.root,
                 executable_path=resolved_executable,
                 prompt=prompt,
             )
 
             # 3. Acquire workspace lease
-            lease = self._lease_manager.get_lease(Path(project.repo_path))
+            workspace.validate_launch_root(launch_spec.cwd)
+            lease = self._lease_manager.get_lease(workspace.root)
             if not lease.acquire():
                 raise WorkspaceLockedError(lock_path=lease.lock_path)
 
@@ -241,6 +235,7 @@ class RunService:
                 process_runner=self._runner,
                 store=store,
                 checkpoint_service=self._checkpoint_service,
+                workspace=workspace,
             )
             try:
                 session = launcher.start_session(
@@ -255,7 +250,7 @@ class RunService:
 
                 if str(adapter.provider_id) == str(
                     PROVIDER_ANTIGRAVITY
-                ) and not is_antigravity_mcp_configured(Path(project.repo_path)):
+                ) and not is_antigravity_mcp_configured(workspace.root):
                     sys.stderr.write(f"\n{ANTIGRAVITY_MCP_MISSING_NOTICE}\n\n")
 
                 return launcher.run(

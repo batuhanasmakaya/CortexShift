@@ -18,7 +18,6 @@ import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -37,17 +36,17 @@ from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.checkpoint_service import CheckpointService
 from cortexshift.application.handoff_builder import HandoffBuilder, aggregate_task_decisions
 from cortexshift.application.handoff_renderer import HandoffRenderer, RenderedHandoffContext
-from cortexshift.application.locator import ProjectLocator
 from cortexshift.application.native_session import native_capabilities, select_native_session
 from cortexshift.application.run_service import ProviderRuntimeRegistry
 from cortexshift.application.session_launcher import ProviderSessionLauncher
 from cortexshift.application.source_session import select_source_session
+from cortexshift.application.workspace import WorkspaceIdentity, WorkspaceStart, open_workspace
 from cortexshift.domain.errors import (
     GitProbeError,
     HandoffDeliveryError,
     NativeResumeError,
     NoActiveTaskError,
-    ProjectNotInitializedError,
+    ProjectConflictError,
     ProviderNotFoundError,
     SameProviderSwitchError,
     TerminalRequiredError,
@@ -178,14 +177,17 @@ class SwitchResult(BaseModel):
 class _SwitchContext:
     """Resolved, validated inputs for a handoff operation."""
 
-    project_root: Path
-    project: Project
+    workspace: WorkspaceIdentity
     task: Task
     source_session: Session
     adapter: ProviderHandoffAdapter
     executable_path: str
     store: SQLiteStateStore
     prior_target: Session | None = None
+
+    @property
+    def project(self) -> Project:
+        return self.workspace.project
 
 
 class SwitchService:
@@ -227,7 +229,7 @@ class SwitchService:
         self,
         target_provider_name: str,
         from_session_id: str | None,
-        start_dir: Path | str | None,
+        start_dir: WorkspaceStart,
         require_executable: bool = True,
     ) -> _SwitchContext:
         """Resolve and validate project, active task, source session, and target provider.
@@ -235,19 +237,9 @@ class SwitchService:
         The source provider's executable is deliberately never probed: a handoff must not
         depend on the outgoing agent still being installed or usable.
         """
-        start_path = Path(start_dir) if start_dir is not None else None
-        project_root = ProjectLocator.find_project_root(start_path)
-        if project_root is None:
-            raise ProjectNotInitializedError()
-
-        db_path = ProjectLocator.get_database_path(project_root)
-        store = SQLiteStateStore(db_path, auto_migrate=False)
-
+        workspace, store = open_workspace(start_dir)
+        project = workspace.project
         try:
-            project = store.get_default_project()
-            if project is None:
-                raise ProjectNotInitializedError()
-
             active_task_id = store.get_active_task_id(project.id)
             if not active_task_id:
                 raise NoActiveTaskError()
@@ -275,8 +267,7 @@ class SwitchService:
                 executable_path = resolved
 
             return _SwitchContext(
-                project_root=project_root,
-                project=project,
+                workspace=workspace,
                 task=task,
                 source_session=source_session,
                 adapter=adapter,
@@ -311,8 +302,9 @@ class SwitchService:
 
     def _inspect(self, context: _SwitchContext) -> RepositoryInspection:
         """Inspect the live repository for the project being handed off."""
+        context.workspace.revalidate()
         return self._inspector.inspect(
-            project_root=context.project_root,
+            project_root=context.workspace.root,
             project_id=context.project.id,
         )
 
@@ -335,7 +327,7 @@ class SwitchService:
         target_provider_name: str,
         from_session_id: str | None = None,
         note: str | None = None,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
     ) -> HandoffPreviewResult:
         """Build and render the canonical handoff without persisting or launching anything.
 
@@ -387,7 +379,7 @@ class SwitchService:
         target_provider_name: str,
         from_session_id: str | None = None,
         note: str | None = None,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
         new_session: bool = False,
         resume_session_id: str | None = None,
     ) -> SwitchDryRunResult:
@@ -456,7 +448,7 @@ class SwitchService:
         target_provider_name: str,
         from_session_id: str | None = None,
         note: str | None = None,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
         new_session: bool = False,
         resume_session_id: str | None = None,
         on_prepared: Callable[[HandoffRecord, RenderedHandoffContext], None] | None = None,
@@ -482,13 +474,15 @@ class SwitchService:
                     f"cortexshift switch {target_provider_name} --dry-run"
                 )
 
-            lease = self._lease_manager.get_lease(Path(context.project.repo_path))
+            context.workspace.revalidate()
+            lease = self._lease_manager.get_lease(context.workspace.root)
             if not lease.acquire():
                 raise WorkspaceLockedError(lock_path=lease.lock_path)
 
             try:
                 self._select_target(context, new_session, resume_session_id)
                 inspection = self._inspect(context)
+                context.workspace.revalidate()
                 snapshot_id = self._persist_snapshot(inspection, store)
 
                 latest_checkpoint = store.get_latest_checkpoint(context.task.id)
@@ -570,6 +564,7 @@ class SwitchService:
             process_runner=self._runner,
             store=store,
             checkpoint_service=self._checkpoint_service,
+            workspace=context.workspace,
         )
 
         target_session = launcher.start_session(
@@ -585,18 +580,20 @@ class SwitchService:
         try:
             preparation = context.adapter.prepare_delivery(
                 executable_path=context.executable_path,
-                project_root=Path(context.project.repo_path),
+                project_root=context.workspace.root,
                 rendered_context=rendered.text,
                 native_session_id=(
                     context.prior_target.native_session_id if context.prior_target else None
                 ),
             )
         except HandoffDeliveryError as err:
+            context.workspace.revalidate()
             target_session = launcher.fail_session(target_session, SessionExitReason.SPAWN_FAILED)
             self._fail_handoff(store, handoff, err.failure_code, target_session.id)
             raise
 
         except BaseException as err:
+            context.workspace.revalidate()
             launcher.fail_session(target_session, SessionExitReason.SPAWN_FAILED)
             self._fail_handoff(
                 store, handoff, HandoffFailureCode.BOOTSTRAP_FAILED.value, target_session.id
@@ -608,6 +605,7 @@ class SwitchService:
                 "Provider handoff preparation failed; no fallback was attempted.",
             ) from None
 
+        context.workspace.revalidate()
         if preparation.native_session_id:
             target_session = launcher.attach_native_session_id(
                 target_session, preparation.native_session_id
@@ -626,7 +624,7 @@ class SwitchService:
 
         if str(context.adapter.provider_id) == str(
             PROVIDER_ANTIGRAVITY
-        ) and not is_antigravity_mcp_configured(Path(context.project.repo_path)):
+        ) and not is_antigravity_mcp_configured(context.workspace.root):
             sys.stderr.write(f"\n{ANTIGRAVITY_MCP_MISSING_NOTICE}\n\n")
 
         try:
@@ -638,6 +636,8 @@ class SwitchService:
                     context.adapter if isinstance(context.adapter, ManagedMcpBinder) else None
                 ),
             )
+        except ProjectConflictError:
+            raise
         except Exception:
             # The interactive process never started, so context was not actually delivered.
             self._fail_handoff(

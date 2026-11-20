@@ -1,13 +1,12 @@
 """Application service managing checkpoint creation, querying, and automatic session-end capture."""
 
 import logging
-from pathlib import Path
 from typing import Any
 
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.checkpoint_builder import CheckpointBuilder
-from cortexshift.application.locator import ProjectLocator
+from cortexshift.application.workspace import WorkspaceIdentity, WorkspaceStart, open_workspace
 from cortexshift.domain.checkpoint import (
     CheckpointKind,
     CheckpointRecord,
@@ -17,12 +16,11 @@ from cortexshift.domain.errors import (
     CheckpointNotFoundError,
     GitProbeError,
     NoActiveTaskError,
-    ProjectNotInitializedError,
+    ProjectConflictError,
     SessionNotFoundError,
     SessionTaskMismatchError,
 )
 from cortexshift.domain.git import RepositoryInspectionStatus
-from cortexshift.domain.project import Project
 from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
 from cortexshift.ports.repository import RepositoryInspector
@@ -41,22 +39,12 @@ class CheckpointService:
 
     def _resolve_context(
         self,
-        start_dir: Path | str | None = None,
-    ) -> tuple[Path, Project, Task, SQLiteStateStore]:
+        start_dir: WorkspaceStart = None,
+    ) -> tuple[WorkspaceIdentity, Task, SQLiteStateStore]:
         """Resolve project, active task, and state store."""
-        start_path = Path(start_dir) if start_dir is not None else None
-        project_root = ProjectLocator.find_project_root(start_path)
-        if project_root is None:
-            raise ProjectNotInitializedError()
-
-        db_path = ProjectLocator.get_database_path(project_root)
-        store = SQLiteStateStore(db_path, auto_migrate=False)
-
+        workspace, store = open_workspace(start_dir)
+        project = workspace.project
         try:
-            project = store.get_default_project()
-            if project is None:
-                raise ProjectNotInitializedError()
-
             active_task_id = store.get_active_task_id(project.id)
             if not active_task_id:
                 raise NoActiveTaskError()
@@ -65,7 +53,7 @@ class CheckpointService:
             if task is None:
                 raise NoActiveTaskError()
 
-            return project_root, project, task, store
+            return workspace, task, store
         except Exception:
             store.close()
             raise
@@ -78,7 +66,7 @@ class CheckpointService:
         test_summary: str | None = None,
         test_provenance: CheckpointTestProvenance = CheckpointTestProvenance.REPORTED,
         note: str | None = None,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
         metadata: dict[str, Any] | None = None,
     ) -> CheckpointRecord:
         """Create and persist a canonical Checkpoint without requiring the workspace lease.
@@ -86,7 +74,8 @@ class CheckpointService:
         Manual checkpoints may be called from within a running provider session.
         Inspection is non-atomic and advisory.
         """
-        project_root, project, task, store = self._resolve_context(start_dir)
+        workspace, task, store = self._resolve_context(start_dir)
+        project = workspace.project
         try:
             # 1. Resolve session if requested or find latest for active task
             session: Session | None = None
@@ -107,11 +96,13 @@ class CheckpointService:
                     session = sessions[0]
 
             # 2. Live Git inspection
+            workspace.revalidate()
             inspection = self._inspector.inspect(
-                project_root=Path(project.repo_path),
+                project_root=workspace.root,
                 project_id=project.id,
             )
 
+            workspace.revalidate()
             if inspection.status == RepositoryInspectionStatus.PROBE_ERROR:
                 raise GitProbeError(
                     inspection.diagnostic
@@ -151,16 +142,11 @@ class CheckpointService:
     def get_checkpoint(
         self,
         checkpoint_id: str,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
     ) -> CheckpointRecord:
         """Retrieve a Checkpoint by its unique identifier."""
-        start_path = Path(start_dir) if start_dir is not None else None
-        project_root = ProjectLocator.find_project_root(start_path)
-        if project_root is None:
-            raise ProjectNotInitializedError()
-
-        db_path = ProjectLocator.get_database_path(project_root)
-        with SQLiteStateStore(db_path, auto_migrate=False) as store:
+        _, store = open_workspace(start_dir)
+        with store:
             checkpoint = store.get_checkpoint(checkpoint_id)
             if checkpoint is None:
                 raise CheckpointNotFoundError(checkpoint_id)
@@ -170,20 +156,12 @@ class CheckpointService:
         self,
         task_id: str | None = None,
         limit: int | None = 20,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
     ) -> list[CheckpointRecord]:
         """List checkpoints for the active task or project, newest first."""
-        start_path = Path(start_dir) if start_dir is not None else None
-        project_root = ProjectLocator.find_project_root(start_path)
-        if project_root is None:
-            raise ProjectNotInitializedError()
-
-        db_path = ProjectLocator.get_database_path(project_root)
-        with SQLiteStateStore(db_path, auto_migrate=False) as store:
-            project = store.get_default_project()
-            if project is None:
-                raise ProjectNotInitializedError()
-
+        workspace, store = open_workspace(start_dir)
+        project = workspace.project
+        with store:
             resolved_task_id = task_id
             if resolved_task_id is None:
                 resolved_task_id = store.get_active_task_id(project.id)
@@ -197,7 +175,7 @@ class CheckpointService:
     def get_latest_checkpoint(
         self,
         task_id: str | None = None,
-        start_dir: Path | str | None = None,
+        start_dir: WorkspaceStart = None,
     ) -> CheckpointRecord | None:
         """Retrieve the newest checkpoint for the active task."""
         results = self.list_checkpoints(task_id=task_id, limit=1, start_dir=start_dir)
@@ -207,6 +185,7 @@ class CheckpointService:
         self,
         session: Session,
         store: SQLiteStateStore,
+        workspace: WorkspaceIdentity | None = None,
     ) -> CheckpointRecord | None:
         """Safely capture an automatic SESSION_END checkpoint when a provider process finishes.
 
@@ -218,15 +197,21 @@ class CheckpointService:
             if task is None:
                 return None
 
-            project = store.get_project(task.project_id)
-            if project is None:
+            if workspace is None:
+                workspace, _ = open_workspace(
+                    store.db_path.parent.parent, exact_root=True, store_override=store
+                )
+            project = workspace.project
+            if project.id != task.project_id:
                 return None
 
+            workspace.revalidate()
             inspection = self._inspector.inspect(
-                project_root=Path(project.repo_path),
+                project_root=workspace.root,
                 project_id=project.id,
             )
 
+            workspace.revalidate()
             if inspection.status == RepositoryInspectionStatus.PROBE_ERROR:
                 # Safe warning: record capture warning in session metadata without rewriting status
                 logger.warning(
@@ -258,6 +243,9 @@ class CheckpointService:
 
             store.save_checkpoint(record)
             return record
+        except ProjectConflictError as exc:
+            logger.warning("Session-end checkpoint skipped: %s", exc)
+            return None
         except Exception as exc:
             logger.warning(
                 "Failed to capture session-end checkpoint for session %s: %s",

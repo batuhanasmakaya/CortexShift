@@ -11,6 +11,7 @@ from textual.worker import WorkerState
 from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.task_workspace import TaskWorkspaceService
+from cortexshift.application.workspace import WorkspaceStart
 from cortexshift.domain.git import RepositoryInspection, RepositoryInspectionStatus
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE
@@ -53,7 +54,7 @@ class SlowRepositoryService(RepositoryService):
             self.gates.append(gate)
         return gate
 
-    def inspect_repository(self, start_path: Path | None = None) -> RepositoryInspection:
+    def inspect_repository(self, start_path: WorkspaceStart = None) -> RepositoryInspection:
         """Block until the matching gate is released, then return that inspection."""
         with self._lock:
             index = len(self.branches) - len(self.gates)
@@ -162,7 +163,7 @@ async def test_lightweight_refresh_never_runs_git(project: Path) -> None:
         def __init__(self) -> None:
             pass
 
-        def inspect_repository(self, start_path: Path | None = None) -> RepositoryInspection:
+        def inspect_repository(self, start_path: WorkspaceStart = None) -> RepositoryInspection:
             inspections["count"] += 1
             return make_inspection(project_root=str(start_path or project))
 
@@ -189,7 +190,7 @@ async def test_git_is_refreshed_on_repository_screen_entry(project: Path) -> Non
         def __init__(self) -> None:
             pass
 
-        def inspect_repository(self, start_path: Path | None = None) -> RepositoryInspection:
+        def inspect_repository(self, start_path: WorkspaceStart = None) -> RepositoryInspection:
             inspections["count"] += 1
             return make_inspection(project_root=str(start_path or project))
 
@@ -299,7 +300,7 @@ class AlwaysSlowStatusService(ProjectStatusService):
         self.calls = 0
         self._lock = threading.Lock()
 
-    def get_status(self, start_dir: Path | str | None = None) -> ProjectStatus:
+    def get_status(self, start_dir: WorkspaceStart = None) -> ProjectStatus:
         with self._lock:
             self.calls += 1
         time.sleep(self._delay)

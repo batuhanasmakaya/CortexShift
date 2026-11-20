@@ -157,6 +157,6 @@ def test_resolve_mcp_context_project_root_mismatch(tmp_path: Path) -> None:
     env = {
         ENV_PROJECT_ROOT: str(other_dir),
     }
-    with pytest.raises(McpContextError, match="Project root mismatch"):
+    with pytest.raises(McpContextError, match="Workspace identity mismatch"):
         resolve_mcp_context(project_root_override=other_dir, env_override=env, store_override=store)
     store.close()

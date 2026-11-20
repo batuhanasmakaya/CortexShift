@@ -20,9 +20,10 @@ which records were first persisted -- the chronology the timestamps were reachin
 
 import json
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePath, PureWindowsPath
+from typing import Any, Literal
 
 from cortexshift.adapters.sqlite.migrations import get_current_schema_version, run_migrations
 from cortexshift.domain.checkpoint import (
@@ -53,6 +54,14 @@ from cortexshift.ports.session_store import SessionStore
 from cortexshift.ports.state_store import StateStore
 
 
+def _database_uri(path: PurePath) -> str:
+    uri = path.as_uri()
+    if isinstance(path, PureWindowsPath) and path.drive.startswith("\\\\"):
+        # Put the UNC host in the path. SQLite rejects non-local URI authorities.
+        return "file:////" + uri.removeprefix("file://")
+    return uri
+
+
 def _parse_utc_datetime(iso_str: str) -> datetime:
     """Parse an ISO 8601 string and ensure it has timezone-aware UTC tzinfo."""
     dt = datetime.fromisoformat(iso_str)
@@ -70,36 +79,85 @@ class SQLiteStateStore(
 ):
     """SQLite-backed StateStore managing project-local canonical state."""
 
-    def __init__(self, db_path: Path | str, auto_migrate: bool = True) -> None:
-        """Initialize the SQLite state store at the given database path.
-
-        Args:
-            db_path: Absolute or relative path to the sqlite3 database file.
-            auto_migrate: Whether to run pending schema migrations automatically on initialization.
-        """
+    def __init__(
+        self,
+        db_path: Path | str,
+        auto_migrate: bool = True,
+        *,
+        _mode: Literal["ro", "rw", "rwc"] = "rwc",
+        _immutable: bool = False,
+        _validate: Callable[["SQLiteStateStore"], None] | None = None,
+    ) -> None:
+        """Open state, validating an existing workspace before configuring or migrating it."""
         self.db_path = Path(db_path).resolve()
-        # Ensure parent directory exists
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if _mode == "rwc":
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        uri = f"{_database_uri(self.db_path)}?mode={_mode}"
+        if _immutable:
+            uri += "&immutable=1"
 
         try:
-            self._conn = sqlite3.connect(
-                database=str(self.db_path),
-                timeout=5.0,
-                check_same_thread=False,
-            )
-            self._conn.row_factory = sqlite3.Row
-            self._configure_connection()
+            self._conn = sqlite3.connect(uri, uri=True, timeout=5.0, check_same_thread=False)
         except sqlite3.Error as err:
             msg = f"Failed to open SQLite database at {self.db_path}: {err}"
             raise DatabaseStateError(msg) from err
 
-        if auto_migrate:
-            try:
+        try:
+            self._conn.row_factory = sqlite3.Row
+            if _validate is not None:
+                _validate(self)
+            if _mode != "ro":
+                self._configure_connection()
+            if auto_migrate:
                 self.migrate()
-            except BaseException:
-                # A failed constructor has no context-manager exit to release the connection.
-                self.close()
+        except BaseException:
+            # A failed constructor has no context-manager exit to release the connection.
+            self.close()
+            raise
+
+    @classmethod
+    def open_existing(
+        cls,
+        db_path: Path,
+        validate: Callable[["SQLiteStateStore"], None],
+        *,
+        auto_migrate: bool = False,
+    ) -> "SQLiteStateStore":
+        """Verify state read-only before opening a connection that can change it."""
+
+        # On a quiescent database an immutable probe avoids even WAL/SHM creation.
+        # When there is a journal, use SQLite's locking and include committed WAL frames.
+        def quiescent_stamp() -> tuple[int, int, int, int, int] | None:
+            stat = db_path.stat()
+            if any(
+                db_path.with_name(db_path.name + suffix).exists()
+                for suffix in ("-wal", "-shm", "-journal")
+            ):
+                return None
+            return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+        try:
+            stamp = quiescent_stamp()
+            if stamp is not None:
+                with cls(db_path, auto_migrate=False, _mode="ro", _immutable=True) as probe:
+                    validate(probe)
+        except (DatabaseStateError, OSError):
+            # An unlocked probe can encounter a concurrent writer. Retry with SQLite locking.
+            stamp = None
+        except Exception:
+            # Treat a stable mismatch as final so it never opens the database for writing.
+            if stamp is not None and stamp == quiescent_stamp():
                 raise
+            stamp = None
+
+        if stamp is None or stamp != quiescent_stamp():
+            with cls(db_path, auto_migrate=False, _mode="ro") as probe:
+                validate(probe)
+
+        # Verify again on the connection that will be used by the application. No journal
+        # configuration or migration runs if the record changed since the read-only check.
+        return cls(db_path, auto_migrate=auto_migrate, _mode="rw", _validate=validate)
 
     def _configure_connection(self) -> None:
         """Configure SQLite pragmas for safety and performance."""
@@ -188,10 +246,18 @@ class SQLiteStateStore(
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             raise StateCorruptionError(f"Failed to load project '{project_id}': {err}") from err
 
-    def get_default_project(self) -> Project | None:
+    def get_default_project(self, *, allow_empty_database: bool = False) -> Project | None:
         """Retrieve the canonical project associated with this project-local store."""
         try:
             cursor = self._conn.cursor()
+            if (
+                allow_empty_database
+                and not cursor.execute(
+                    "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'projects'"
+                ).fetchone()
+                and self.get_schema_version() == 0
+            ):
+                return None
             cursor.execute(
                 "SELECT id, name, repo_path, created_at, metadata FROM projects LIMIT 1;"
             )

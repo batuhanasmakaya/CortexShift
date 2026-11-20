@@ -17,8 +17,7 @@ Two rules shape its runtime behaviour:
 
 import traceback
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, replace
 from typing import ClassVar, cast
 
 from rich.text import Text
@@ -31,6 +30,7 @@ from textual.widgets import ContentSwitcher, DataTable, Footer, Header, OptionLi
 from textual.widgets.option_list import Option
 from textual.worker import WorkerState
 
+from cortexshift.application.workspace import WorkspaceStart
 from cortexshift.domain.checkpoint import CheckpointRecord
 from cortexshift.domain.errors import CortexShiftError
 from cortexshift.domain.task import Task
@@ -985,7 +985,7 @@ class CortexShiftApp(App[TuiExitRequest | None]):
         this request from `App.run()`; only then does the coordinator call the run,
         resume, or switch service.
         """
-        self.exit(request)
+        self.exit(replace(request, workspace=self.facade.workspace))
 
     # ------------------------------------------------------------------
     # Help, status line, responsive layout
@@ -1037,7 +1037,7 @@ class CortexShiftApp(App[TuiExitRequest | None]):
 
 
 def build_app(
-    project_root: Path | str | None = None,
+    project_root: WorkspaceStart = None,
     *,
     facade: TuiFacade | None = None,
     state_refresh_seconds: float = STATE_REFRESH_SECONDS,

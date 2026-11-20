@@ -6,6 +6,7 @@ from cortexshift.adapters.git.inspector import GitRepositoryInspector
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.application.checkpoint_builder import CheckpointBuilder
 from cortexshift.application.repository_service import RepositoryService
+from cortexshift.application.workspace import open_workspace
 from cortexshift.domain.checkpoint import (
     CHECKPOINT_TRIGGER_DECISION,
     CHECKPOINT_TRIGGER_KEY,
@@ -16,6 +17,7 @@ from cortexshift.domain.checkpoint import (
 from cortexshift.domain.errors import (
     McpReadOnlyError,
     NoActiveTaskError,
+    ProjectConflictError,
     TaskNotFoundError,
 )
 from cortexshift.domain.git import RepositoryInspectionStatus
@@ -60,6 +62,11 @@ class McpApplicationFacade:
         repository_service: RepositoryService | None = None,
     ) -> None:
         self._context = context
+        self._workspace, _ = open_workspace(
+            context.workspace or context.project_root, exact_root=True, store_override=store
+        )
+        if self._workspace.project.id != context.project_id:
+            raise ProjectConflictError("Workspace identity mismatch in the MCP project binding.")
         self._store = store
         self._repo_service = repository_service or RepositoryService(
             inspector=GitRepositoryInspector(),
@@ -71,8 +78,10 @@ class McpApplicationFacade:
             raise McpReadOnlyError(
                 "State mutation is not permitted in read-only or unmanaged MCP mode."
             )
+        self._workspace.revalidate()
 
     def _get_bound_task(self) -> Task:
+        self._workspace.revalidate()
         if not self._context.task_id:
             raise NoActiveTaskError("No bound task found for this MCP session.")
         task = self._store.get_task(self._context.task_id)
@@ -148,7 +157,7 @@ class McpApplicationFacade:
 
         # Live repository inspection (bounded paths)
         repo_summary: RepositoryStatusSummary | None = None
-        inspection = self._repo_service.inspect_repository(self._context.project_root)
+        inspection = self._repo_service.inspect_repository(self._workspace)
         if inspection.snapshot:
             snap = inspection.snapshot
             all_changed = [
@@ -205,7 +214,7 @@ class McpApplicationFacade:
 
     def get_repository_status(self) -> dict[str, Any]:
         """Perform live, read-only repository inspection."""
-        inspection = self._repo_service.inspect_repository(self._context.project_root)
+        inspection = self._repo_service.inspect_repository(self._workspace)
         if inspection.snapshot is None:
             return {
                 "available": False,
@@ -486,7 +495,8 @@ class McpApplicationFacade:
         )
 
         # Live Git inspection
-        inspection = self._repo_service.inspect_repository(self._context.project_root)
+        inspection = self._repo_service.inspect_repository(self._workspace)
+        self._workspace.revalidate()
         snapshot_id: str | None = None
         if (
             inspection.status == RepositoryInspectionStatus.READY

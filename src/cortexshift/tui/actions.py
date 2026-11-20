@@ -10,8 +10,10 @@ This module deliberately depends on nothing from Textual so the contract can be
 constructed, asserted, and dispatched without a running application.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+
+from cortexshift.application.workspace import WorkspaceIdentity
 
 
 class TuiExitAction(StrEnum):
@@ -35,6 +37,7 @@ class TuiExitRequest:
     selected_session_id: str | None = None
     force_new_session: bool = False
     note: str | None = None
+    workspace: WorkspaceIdentity | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         provider = self.provider.strip().lower()

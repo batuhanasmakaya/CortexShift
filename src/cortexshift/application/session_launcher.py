@@ -11,6 +11,8 @@ import contextlib
 from collections.abc import Callable
 from typing import Any
 
+from cortexshift.application.workspace import WorkspaceIdentity
+from cortexshift.domain.errors import ProjectConflictError
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.mcp_binding import McpSessionBinding
@@ -29,10 +31,12 @@ class ProviderSessionLauncher:
         process_runner: InteractiveProcessRunner,
         store: SessionStore,
         checkpoint_service: Any | None = None,
+        workspace: WorkspaceIdentity | None = None,
     ) -> None:
         self._runner = process_runner
         self._store = store
         self._checkpoint_service = checkpoint_service
+        self._workspace = workspace
 
     def start_session(
         self,
@@ -43,6 +47,8 @@ class ProviderSessionLauncher:
         resumed_from_session_id: str | None = None,
     ) -> Session:
         """Create and persist a running Session immediately before provider work begins."""
+        if self._workspace is not None:
+            self._workspace.revalidate()
         session = Session(
             task_id=task_id,
             provider_id=provider_id,
@@ -98,10 +104,11 @@ class ProviderSessionLauncher:
         quota exhaustion or rate limiting from an exit code. Spawn failures map to
         `spawn_failed` and re-raise so the caller can classify the operation as failed.
         """
+        root = self._workspace.root if self._workspace is not None else launch_spec.cwd
         try:
             binding = McpSessionBinding.from_session(
                 session=session,
-                project_root=launch_spec.cwd,
+                project_root=root,
             )
             if mcp_binder is not None:
                 launch_spec = mcp_binder.bind_managed_mcp(launch_spec, binding)
@@ -114,6 +121,8 @@ class ProviderSessionLauncher:
             binding_env: dict[str, str] = dict(launch_spec.env)
             binding_env.update(binding.to_env())
 
+            if self._workspace is not None:
+                self._workspace.validate_launch_root(launch_spec.cwd)
             exit_code = self._runner.run_interactive(
                 argv=launch_spec.argv,
                 cwd=launch_spec.cwd,
@@ -157,7 +166,11 @@ class ProviderSessionLauncher:
                     "exit_reason": SessionExitReason.USER_INTERRUPTED,
                 }
             )
+        except ProjectConflictError:
+            raise
         except Exception:
+            if self._workspace is not None:
+                self._workspace.revalidate()
             session = session.model_copy(
                 update={
                     "status": SessionStatus.FAILED,
@@ -168,6 +181,8 @@ class ProviderSessionLauncher:
             self._store.save_session(session)
             raise
 
+        if self._workspace is not None:
+            self._workspace.revalidate()
         self._store.save_session(session)
 
         # Automatic session-end checkpoint capture for completed, failed, or interrupted runs
@@ -178,6 +193,7 @@ class ProviderSessionLauncher:
                 self._checkpoint_service.capture_session_end_checkpoint(
                     session=session,
                     store=self._store,
+                    workspace=self._workspace,
                 )
 
         return session

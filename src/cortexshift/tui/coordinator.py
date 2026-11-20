@@ -20,7 +20,8 @@ from pathlib import Path
 from cortexshift.application.resume_service import ResumeService
 from cortexshift.application.run_service import RunService
 from cortexshift.application.switch_service import SwitchService
-from cortexshift.domain.errors import ProjectNotInitializedError, TerminalRequiredError
+from cortexshift.application.workspace import WorkspaceIdentity, resolve_workspace
+from cortexshift.domain.errors import ProjectConflictError, TerminalRequiredError
 from cortexshift.domain.session import Session
 from cortexshift.tui.actions import TuiExitAction, TuiExitRequest
 from cortexshift.tui.app import CortexShiftApp, build_app
@@ -97,7 +98,12 @@ class TuiCoordinator:
         """
         result = TuiSession()
 
-        request = self._run_dashboard(project_root)
+        workspace = (
+            resolve_workspace(project_root)
+            if project_root is not None or self._dashboard_runner is None
+            else None
+        )
+        request = self._run_dashboard(workspace)
         result.events.append("dashboard_finished")
         result.request = request
 
@@ -107,11 +113,11 @@ class TuiCoordinator:
         self._announce(f"{request.description} — CortexShift released the terminal.")
         result.events.append("provider_launch_started")
         result.launched = True
-        result.session = self.launch_provider(request)
+        result.session = self.launch_provider(request, workspace=workspace)
         result.events.append("provider_launch_finished")
         return result
 
-    def _run_dashboard(self, project_root: Path | str | None) -> TuiExitRequest | None:
+    def _run_dashboard(self, workspace: WorkspaceIdentity | None) -> TuiExitRequest | None:
         """Run the Textual application to completion and return its exit request.
 
         The project is resolved before the terminal is checked: someone standing in the
@@ -120,31 +126,49 @@ class TuiCoordinator:
         if self._dashboard_runner is not None:
             return self._dashboard_runner()
 
-        resolved = resolve_project_root(project_root)
-
         if not self._is_tty():
             raise TerminalRequiredError(TTY_REQUIRED_MESSAGE)
 
-        app = self._app_factory() if self._app_factory else build_app(resolved)
+        app = self._app_factory() if self._app_factory else build_app(workspace)
         return app.run()
 
     # ------------------------------------------------------------------
 
-    def launch_provider(self, request: TuiExitRequest) -> Session | None:
+    def launch_provider(
+        self, request: TuiExitRequest, *, workspace: WorkspaceIdentity | None = None
+    ) -> Session | None:
         """Invoke the existing provider service for a dashboard exit request.
 
         Only ever called after the Textual application has finished. The provider owns
         the terminal from here; CortexShift does not wrap, capture, or emulate it.
         """
+        if workspace is not None and request.workspace is not None:
+            workspace.revalidate()
+            request.workspace.revalidate()
+            if (
+                not workspace.root.samefile(request.workspace.root)
+                or workspace.project.id != request.workspace.project.id
+            ):
+                raise ProjectConflictError(
+                    "Workspace identity mismatch between the dashboard and its provider request."
+                )
+        workspace = request.workspace or workspace
+        if workspace is None:
+            raise ProjectConflictError(
+                "Workspace identity mismatch. The dashboard returned no verified workspace."
+            )
+        workspace.revalidate()
+
         if request.action is TuiExitAction.RUN:
             service = self._run_service or RunService()
-            return service.run(provider_name=request.provider)
+            return service.run(provider_name=request.provider, start_dir=workspace)
 
         if request.action is TuiExitAction.RESUME:
             service_resume = self._resume_service or ResumeService()
             outcome = service_resume.resume(
                 provider_name=request.provider,
                 session_id=request.selected_session_id,
+                start_dir=workspace,
             )
             return outcome if isinstance(outcome, Session) else None
 
@@ -154,6 +178,7 @@ class TuiCoordinator:
             new_session=request.force_new_session,
             resume_session_id=request.selected_session_id,
             note=request.note,
+            start_dir=workspace,
         )
         return switch_result.target_session
 
@@ -164,10 +189,4 @@ def resolve_project_root(start_dir: Path | str | None = None) -> Path:
     Raises:
         ProjectNotInitializedError: If no initialized project root is found.
     """
-    from cortexshift.application.locator import ProjectLocator
-
-    start_path = Path(start_dir) if start_dir is not None else None
-    project_root = ProjectLocator.find_project_root(start_path)
-    if project_root is None:
-        raise ProjectNotInitializedError()
-    return project_root
+    return resolve_workspace(start_dir).root

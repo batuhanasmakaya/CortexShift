@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.domain.errors import ProjectNotInitializedError, TerminalRequiredError
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX, ProviderId
@@ -76,12 +77,18 @@ def build_coordinator(
     )
 
 
-def test_switch_is_invoked_only_after_the_dashboard_returns() -> None:
+@pytest.fixture
+def workspace_root(tmp_path: Path) -> Path:
+    ProjectInitializationService().initialize(tmp_path)
+    return tmp_path
+
+
+def test_switch_is_invoked_only_after_the_dashboard_returns(workspace_root: Path) -> None:
     timeline: list[str] = []
     services = RecordingProviderServices(timeline)
     request = TuiExitRequest(action=TuiExitAction.SWITCH, provider="codex")
 
-    result = build_coordinator(timeline, request, services).start()
+    result = build_coordinator(timeline, request, services).start(workspace_root)
 
     assert timeline == ["dashboard_started", "dashboard_returned", "provider_started"]
     assert timeline.index("dashboard_returned") < timeline.index("provider_started")
@@ -91,35 +98,35 @@ def test_switch_is_invoked_only_after_the_dashboard_returns() -> None:
     assert result.session is not None
 
 
-def test_run_is_invoked_only_after_the_dashboard_returns() -> None:
+def test_run_is_invoked_only_after_the_dashboard_returns(workspace_root: Path) -> None:
     timeline: list[str] = []
     services = RecordingProviderServices(timeline)
     request = TuiExitRequest(action=TuiExitAction.RUN, provider="claude")
 
-    build_coordinator(timeline, request, services).start()
+    build_coordinator(timeline, request, services).start(workspace_root)
 
     assert timeline.index("dashboard_returned") < timeline.index("provider_started")
     assert services.calls[0][0] == "run"
 
 
-def test_resume_forwards_the_selected_session() -> None:
+def test_resume_forwards_the_selected_session(workspace_root: Path) -> None:
     timeline: list[str] = []
     services = RecordingProviderServices(timeline)
     request = TuiExitRequest(
         action=TuiExitAction.RESUME, provider="codex", selected_session_id="sess_abc"
     )
 
-    build_coordinator(timeline, request, services).start()
+    build_coordinator(timeline, request, services).start(workspace_root)
 
     assert services.calls[0][0] == "resume"
     assert services.calls[0][1]["session_id"] == "sess_abc"
 
 
-def test_no_provider_runs_when_the_dashboard_returns_nothing() -> None:
+def test_no_provider_runs_when_the_dashboard_returns_nothing(workspace_root: Path) -> None:
     timeline: list[str] = []
     services = RecordingProviderServices(timeline)
 
-    result = build_coordinator(timeline, None, services).start()
+    result = build_coordinator(timeline, None, services).start(workspace_root)
 
     assert timeline == ["dashboard_started", "dashboard_returned"]
     assert services.calls == []
@@ -128,12 +135,12 @@ def test_no_provider_runs_when_the_dashboard_returns_nothing() -> None:
     assert result.exit_code == 0
 
 
-def test_events_record_the_handoff_ordering() -> None:
+def test_events_record_the_handoff_ordering(workspace_root: Path) -> None:
     timeline: list[str] = []
     services = RecordingProviderServices(timeline)
     request = TuiExitRequest(action=TuiExitAction.SWITCH, provider="codex")
 
-    result = build_coordinator(timeline, request, services).start()
+    result = build_coordinator(timeline, request, services).start(workspace_root)
 
     assert result.events == [
         "dashboard_finished",
@@ -145,7 +152,7 @@ def test_events_record_the_handoff_ordering() -> None:
     )
 
 
-def test_switch_forwards_new_session_and_note() -> None:
+def test_switch_forwards_new_session_and_note(workspace_root: Path) -> None:
     timeline: list[str] = []
     services = RecordingProviderServices(timeline)
     request = TuiExitRequest(
@@ -155,7 +162,7 @@ def test_switch_forwards_new_session_and_note() -> None:
         note="Quota exhausted",
     )
 
-    build_coordinator(timeline, request, services).start()
+    build_coordinator(timeline, request, services).start(workspace_root)
 
     _, kwargs = services.calls[0]
     assert kwargs["new_session"] is True
@@ -163,7 +170,7 @@ def test_switch_forwards_new_session_and_note() -> None:
     assert kwargs["resume_session_id"] is None
 
 
-def test_a_failed_provider_session_surfaces_as_a_non_zero_exit_code() -> None:
+def test_a_failed_provider_session_surfaces_as_a_non_zero_exit_code(workspace_root: Path) -> None:
     timeline: list[str] = []
 
     class FailingServices(RecordingProviderServices):
@@ -180,12 +187,12 @@ def test_a_failed_provider_session_surfaces_as_a_non_zero_exit_code() -> None:
     services = FailingServices(timeline)
     request = TuiExitRequest(action=TuiExitAction.RUN, provider="claude")
 
-    result = build_coordinator(timeline, request, services).start()
+    result = build_coordinator(timeline, request, services).start(workspace_root)
 
     assert result.exit_code == 42
 
 
-def test_an_interrupted_session_is_not_an_error() -> None:
+def test_an_interrupted_session_is_not_an_error(workspace_root: Path) -> None:
     timeline: list[str] = []
 
     class InterruptedServices(RecordingProviderServices):
@@ -201,13 +208,11 @@ def test_an_interrupted_session_is_not_an_error() -> None:
     services = InterruptedServices(timeline)
     request = TuiExitRequest(action=TuiExitAction.RUN, provider="claude")
 
-    assert build_coordinator(timeline, request, services).start().exit_code == 0
+    assert build_coordinator(timeline, request, services).start(workspace_root).exit_code == 0
 
 
 def test_the_dashboard_refuses_to_start_without_a_terminal(tmp_path: Path) -> None:
     """The real dashboard requires a TTY; headless tests bypass it deliberately."""
-    from cortexshift.application.init_service import ProjectInitializationService
-
     ProjectInitializationService().initialize(tmp_path, name="Headless")
     coordinator = TuiCoordinator(is_tty=lambda: False)
 

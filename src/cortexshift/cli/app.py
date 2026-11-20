@@ -25,7 +25,7 @@ from cortexshift.application.doctor import DoctorService, UnknownProviderError
 from cortexshift.application.handoff_renderer import RenderedHandoffContext
 from cortexshift.application.handoff_service import HandoffService
 from cortexshift.application.init_service import ProjectInitializationService
-from cortexshift.application.locator import DATABASE_FILE_NAME, STATE_DIR_NAME, ProjectLocator
+from cortexshift.application.locator import DATABASE_FILE_NAME, STATE_DIR_NAME
 from cortexshift.application.native_session import is_native_resumable, native_capabilities
 from cortexshift.application.recovery_service import RecoveryReport, RecoveryService
 from cortexshift.application.repository_service import RepositoryService
@@ -35,6 +35,7 @@ from cortexshift.application.session_service import SessionService
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.switch_service import SwitchService
 from cortexshift.application.task_service import TaskService
+from cortexshift.application.workspace import open_workspace, resolve_workspace
 from cortexshift.domain.checkpoint import CheckpointKind, CheckpointRecord
 from cortexshift.domain.doctor import AuthenticationStatus, DoctorReport
 from cortexshift.domain.errors import (
@@ -78,8 +79,7 @@ from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.status import ProjectStatus
 from cortexshift.domain.task import Task, TaskStatus
 from cortexshift.mcp.context import (
-    ENV_MCP_READ_ONLY,
-    ENV_SESSION_ID,
+    ENV_PROJECT_ROOT,
     resolve_mcp_context,
 )
 from cortexshift.mcp.server import run_mcp_server
@@ -189,6 +189,9 @@ def _handle_error(err: Exception) -> None:
     if isinstance(err, ProjectNotInitializedError):
         err_console.print("\nCortexShift is not initialized here.\n\nRun:\n  cortexshift init\n")
         raise typer.Exit(code=1)
+    if isinstance(err, ProjectConflictError):
+        err_console.print(f"[red]Error:[/red] {escape(str(err))}")
+        raise typer.Exit(code=1)
     if isinstance(err, NoActiveTaskError):
         err_console.print(
             "\nNo active task.\n\n"
@@ -222,7 +225,6 @@ def _handle_error(err: Exception) -> None:
             TaskNotFoundError,
             TaskNotActivatableError,
             TaskAlreadyCompletedError,
-            ProjectConflictError,
             UnsupportedSchemaVersionError,
             StateCorruptionError,
             DatabaseStateError,
@@ -246,18 +248,8 @@ def _handle_error(err: Exception) -> None:
 
 def _get_project_and_store() -> tuple[Project, SQLiteStateStore]:
     """Discover initialized project root and return canonical Project and SQLiteStateStore."""
-    project_root = ProjectLocator.find_project_root()
-    if project_root is None:
-        raise ProjectNotInitializedError()
-
-    db_path = ProjectLocator.get_database_path(project_root)
-    store = SQLiteStateStore(db_path, auto_migrate=False)
-    project = store.get_default_project()
-    if project is None:
-        store.close()
-        raise ProjectNotInitializedError()
-
-    return project, store
+    workspace, store = open_workspace()
+    return workspace.project, store
 
 
 @app.callback(invoke_without_command=True)
@@ -2240,7 +2232,8 @@ def mcp_serve_command() -> None:
     """
     try:
         context, store = resolve_mcp_context()
-        run_mcp_server(context=context, store=store)
+        with store:
+            run_mcp_server(context=context, store=store)
     except Exception as err:
         sys.stderr.write(f"CortexShift MCP server failed to start: {err}\n")
         raise typer.Exit(code=1) from err
@@ -2257,34 +2250,37 @@ def mcp_status_command(
     ] = False,
 ) -> None:
     """Show MCP SDK status, capabilities, and provider integration modes."""
-    project_root = ProjectLocator.find_project_root()
+    project_root: Path | None = None
     project_info: dict[str, Any] | None = None
     managed_session_info: dict[str, Any] | None = None
 
-    if project_root is not None:
-        db_path = ProjectLocator.get_database_path(project_root)
-        try:
-            with SQLiteStateStore(db_path, auto_migrate=False) as store:
-                proj = store.get_default_project()
-                if proj:
-                    project_info = {
-                        "id": proj.id,
-                        "name": proj.name,
-                        "root": str(project_root),
-                        "active_task_id": store.get_active_task_id(proj.id),
-                    }
-                    sess_id = os.environ.get(ENV_SESSION_ID)
-                    if sess_id:
-                        sess = store.get_session(sess_id)
-                        if sess:
-                            managed_session_info = {
-                                "id": sess.id,
-                                "provider_id": str(sess.provider_id),
-                                "task_id": sess.task_id,
-                                "status": sess.status.value,
-                            }
-        except Exception:
-            pass
+    read_only = True
+    try:
+        context, store = resolve_mcp_context(auto_migrate=False)
+        with store:
+            project_root = context.project_root
+            project = context.workspace.project if context.workspace else None
+            assert project is not None
+            project_info = {
+                "id": project.id,
+                "name": project.name,
+                "root": str(project_root),
+                "active_task_id": store.get_active_task_id(project.id),
+            }
+            if context.session_id and (session := store.get_session(context.session_id)):
+                managed_session_info = {
+                    "id": session.id,
+                    "provider_id": str(session.provider_id),
+                    "task_id": session.task_id,
+                    "status": session.status.value,
+                }
+            read_only = not context.can_mutate()
+    except McpContextError as err:
+        if not isinstance(err.__cause__, ProjectNotInitializedError) or os.environ.get(
+            ENV_PROJECT_ROOT
+        ):
+            _handle_error(err)
+            return
 
     antigravity_configured = is_antigravity_mcp_configured(project_root) if project_root else False
 
@@ -2322,9 +2318,7 @@ def mcp_status_command(
         "session_binding": {
             "managed": managed_session_info is not None,
             "session": managed_session_info,
-            "read_only": (
-                os.environ.get(ENV_MCP_READ_ONLY, "0").strip().lower() in ("1", "true", "yes")
-            ),
+            "read_only": read_only,
         },
         "providers": {
             "claude": {
@@ -2407,13 +2401,10 @@ def mcp_setup_antigravity_command(
     ] = False,
 ) -> None:
     """Safely configure project-local .agents/mcp_config.json for Antigravity."""
-    project_root = ProjectLocator.find_project_root()
-    if project_root is None:
-        _handle_error(ProjectNotInitializedError())
-        return
-
     try:
-        result = setup_antigravity_mcp(project_root, dry_run=dry_run, force=force)
+        workspace = resolve_workspace()
+        workspace.revalidate()
+        result = setup_antigravity_mcp(workspace.root, dry_run=dry_run, force=force)
     except Exception as err:
         _handle_error(err)
         return

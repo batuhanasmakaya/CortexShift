@@ -55,6 +55,10 @@ CortexShift does not bundle Git or any provider CLI. Install and authenticate
 native providers yourself. Git is recommended for repository-aware handoffs,
 but project initialization also works without Git.
 
+If a workspace is moved or copied with its `.cortexshift` directory, CortexShift
+checks the recorded project path before using that state. A mismatch stops the
+command and shows both locations so you can confirm which workspace to use.
+
 ## Installation and updates
 
 [pipx](https://pipx.pypa.io/stable/) gives a global command with isolated Python
