@@ -6,7 +6,7 @@ import sqlite3
 import sys
 from collections.abc import Callable
 from contextlib import closing
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import Mock
 
 import pytest
@@ -507,6 +507,54 @@ def test_windows_sqlite_uris_keep_the_drive_or_unc_path() -> None:
     assert _database_uri(PureWindowsPath("//host/share/Work Folder/state.sqlite3")) == (
         "file:////host/share/Work%20Folder/state.sqlite3"
     )
+
+
+@pytest.mark.parametrize(
+    ("path", "uri"),
+    [
+        (
+            PurePosixPath("/tmp/café ?mode=rwc#x&100%/state.sqlite3"),
+            "file:///tmp/caf%C3%A9%20%3Fmode%3Drwc%23x%26100%25/state.sqlite3",
+        ),
+        (
+            PureWindowsPath("D:/café #100% &x=1/state.sqlite3"),
+            "file:///D:/caf%C3%A9%20%23100%25%20%26x%3D1/state.sqlite3",
+        ),
+        (
+            PureWindowsPath("//server/share/café #100% &x=1/state.sqlite3"),
+            "file:////server/share/caf%C3%A9%20%23100%25%20%26x%3D1/state.sqlite3",
+        ),
+    ],
+)
+def test_sqlite_uri_escapes_path_data(path: PurePosixPath | PureWindowsPath, uri: str) -> None:
+    assert _database_uri(path) == uri
+
+
+def test_sqlite_uri_rejects_relative_paths() -> None:
+    for path in (PurePosixPath("state.sqlite3"), PureWindowsPath("C:state.sqlite3")):
+        with pytest.raises(ValueError, match="relative"):
+            _database_uri(path)
+
+
+def test_verified_open_keeps_reserved_characters_in_database_path(tmp_path: Path) -> None:
+    root = tmp_path / "café #100% &mode=rwc"
+    if os.name != "nt":
+        root /= "literal?mode=rwc"
+    task = initialize(root)
+    db_path = ProjectLocator.get_database_path(root)
+    validated_paths: list[Path] = []
+
+    def verify(store: SQLiteStateStore) -> None:
+        assert store.get_task(task.id) == task
+        if not validated_paths:
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                store._conn.execute("CREATE TABLE unexpected (id INTEGER)")
+        validated_paths.append(store.db_path)
+
+    with SQLiteStateStore.open_existing(db_path.resolve(), verify) as store:
+        assert store.db_path == db_path.resolve()
+        assert store.get_task(task.id) == task
+        assert validated_paths == [db_path.resolve(), db_path.resolve()]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows may block moving an open SQLite database")

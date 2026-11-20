@@ -19,11 +19,13 @@ which records were first persisted -- the chronology the timestamps were reachin
 """
 
 import json
+import os
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import Any, Literal
+from urllib.parse import quote, quote_from_bytes
 
 from cortexshift.adapters.sqlite.migrations import get_current_schema_version, run_migrations
 from cortexshift.domain.checkpoint import (
@@ -55,11 +57,20 @@ from cortexshift.ports.state_store import StateStore
 
 
 def _database_uri(path: PurePath) -> str:
-    uri = path.as_uri()
-    if isinstance(path, PureWindowsPath) and path.drive.startswith("\\\\"):
-        # Put the UNC host in the path. SQLite rejects non-local URI authorities.
-        return "file:////" + uri.removeprefix("file://")
-    return uri
+    """Encode a SQLite file URI while preserving the path's own platform semantics."""
+    if not path.is_absolute():
+        raise ValueError("A relative path cannot be expressed as a file URI.")
+
+    if isinstance(path, PureWindowsPath):
+        windows_path = path.as_posix()
+        if path.drive.startswith("\\\\"):
+            # Keep the UNC server in the path. SQLite rejects non-local URI authorities.
+            return "file://" + quote(windows_path, errors="surrogatepass")
+        return (
+            "file:///" + path.drive + quote(windows_path[len(path.drive) :], errors="surrogatepass")
+        )
+
+    return "file://" + quote_from_bytes(os.fsencode(path))
 
 
 def _parse_utc_datetime(iso_str: str) -> datetime:

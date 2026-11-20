@@ -24,6 +24,7 @@ from tests.tui.conftest import (
     active_task,
     assert_section,
     build_app,
+    drain_workers,
     repository,
     settle,
     state,
@@ -196,17 +197,22 @@ async def test_git_is_refreshed_on_repository_screen_entry(project: Path) -> Non
 
     app = build_app(project, repository_service=CountingRepositoryService())
     async with app.run_test() as pilot:
-        await settle(app, pilot)
-        baseline = inspections["count"]
+        await drain_workers(app, group="cortexshift-repository")
+        startup_inspection = repository(app)
+        assert inspections["count"] == 1
 
         await pilot.press("3")
-        await settle(app, pilot)
-        assert inspections["count"] == baseline + 1
+        await wait_until(
+            pilot,
+            lambda: app._repository is not startup_inspection,
+            description="the repository screen publishes a fresh inspection",
+        )
+        assert inspections["count"] == 2
 
         # Moving to a non-repository screen does not re-inspect.
         await pilot.press("4")
-        await settle(app, pilot)
-        assert inspections["count"] == baseline + 1
+        await drain_workers(app, group="cortexshift-repository")
+        assert inspections["count"] == 2
 
 
 @pytest.mark.asyncio

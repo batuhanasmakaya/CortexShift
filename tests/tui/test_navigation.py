@@ -1,16 +1,22 @@
 """Keyboard navigation, layout responsiveness, and help."""
 
+import asyncio
+import threading
 from pathlib import Path
 
 import pytest
 
+from cortexshift.tui.app import STATE_WORKER_GROUP
+from cortexshift.tui.models import TuiStateSnapshot
 from cortexshift.tui.screens import SECTION_ORDER, TuiSection
 from cortexshift.tui.screens.help import HelpScreen
 from tests.tui.conftest import (
+    WORKER_TIMEOUT_SECONDS,
     assert_base_screen,
     assert_screen,
     assert_section,
     build_app,
+    drain_workers,
     settle,
     state,
 )
@@ -46,13 +52,32 @@ async def test_number_keys_navigate_every_primary_section(project: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_every_section_is_mounted_and_addressable(project: Path) -> None:
+async def test_every_section_is_mounted_and_addressable(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     app = build_app(project)
-    async with app.run_test() as pilot:
-        await settle(app, pilot)
-        for section in SECTION_ORDER:
-            view = app.section_view(section)
-            assert view.section is section
+    load_state = app.facade.load_state
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+
+    def read_state() -> TuiStateSnapshot:
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(WORKER_TIMEOUT_SECONDS), "the test did not release the state read"
+        return load_state()
+
+    monkeypatch.setattr(app.facade, "load_state", read_state)
+    async with app.run_test():
+        try:
+            await asyncio.wait_for(started.wait(), timeout=WORKER_TIMEOUT_SECONDS)
+            assert app._snapshot is None
+            for section in SECTION_ORDER:
+                view = app.section_view(section)
+                assert view.section is section
+        finally:
+            release.set()
+        await drain_workers(app, group=STATE_WORKER_GROUP)
+        assert state(app).project.name == "Luna"
 
 
 @pytest.mark.asyncio
