@@ -335,7 +335,15 @@ def test_large_claude_handoff_is_never_an_argv_argument(tmp_path: Path) -> None:
     assert preparation.launch_spec.interactive
 
 
-@pytest.mark.parametrize("context", ["", " \n\t", "🎉" * 48_000])
+# Pytest exports each test ID in PYTEST_CURRENT_TEST, which is size-limited on Windows.
+@pytest.mark.parametrize(
+    "context",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(" \n\t", id="whitespace"),
+        pytest.param("🎉" * 48_000, id="oversize-unicode"),
+    ],
+)
 def test_empty_or_oversize_context_stops_before_any_provider_work(
     tmp_path: Path, context: str
 ) -> None:
