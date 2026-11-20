@@ -16,6 +16,7 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
+from cortexshift.application.recovery_service import TaskRecovery
 from cortexshift.domain.checkpoint import CheckpointRecord
 from cortexshift.domain.git import RepositoryInspectionStatus
 from cortexshift.domain.handoff import HandoffRecord
@@ -381,9 +382,11 @@ class TuiStateSnapshot:
 class TuiRecoveryPreview:
     """Non-mutating preview of what a recovery run would reconcile."""
 
-    task_id: str
-    task_title: str
-    stale_session_ids: tuple[str, ...] = ()
+    tasks: tuple[TaskRecovery, ...] = ()
+    live_count: int = 0
+    uncertain_count: int = 0
+    examined_count: int = 0
+    already_reconciled_count: int = 0
     dirty: bool = False
     files_touched: tuple[str, ...] = ()
     repository_status: str = "unknown"
@@ -391,7 +394,7 @@ class TuiRecoveryPreview:
     @property
     def stale_count(self) -> int:
         """Number of unfinalized sessions that would be reconciled."""
-        return len(self.stale_session_ids)
+        return sum(len(task.session_ids) for task in self.tasks)
 
 
 @dataclass(frozen=True, slots=True)

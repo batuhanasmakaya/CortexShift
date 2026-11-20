@@ -15,10 +15,15 @@ LOCK_FILE_NAME = "agent.lock"
 PROVIDER_LOCK_FILE_NAME = "provider.lock"
 
 
+def provider_guard_supported() -> bool:
+    """Whether managed subprocesses inherit the retained provider guard."""
+    return sys.platform != "win32"
+
+
 @contextmanager
 def hold_provider_guard(project_root: Path) -> Iterator[tuple[int, ...]]:
     """Pass the POSIX guard into an owned process without changing its process group."""
-    if sys.platform == "win32":
+    if not provider_guard_supported():
         yield ()
         return
 

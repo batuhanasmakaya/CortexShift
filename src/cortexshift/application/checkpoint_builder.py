@@ -154,11 +154,7 @@ class CheckpointBuilder:
                 provenance=provenance,
             )
         else:
-            test_status = CheckpointTestStatus(
-                known=False,
-                summary="No independently verified test results recorded.",
-                provenance=CheckpointTestProvenance.UNKNOWN,
-            )
+            test_status = CheckpointTestStatus()
 
         # Build task snapshot
         status_val = task.status.value if isinstance(task.status, TaskStatus) else str(task.status)

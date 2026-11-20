@@ -50,6 +50,8 @@ class RecordingProcessRunner(InteractiveProcessRunner):
 
 
 class FakeBootstrap(HeadlessProviderRunner):
+    received_context: str | None = None
+
     def run_headless(
         self,
         argv: list[str],
@@ -59,6 +61,7 @@ class FakeBootstrap(HeadlessProviderRunner):
         *,
         input_text: str | None = None,
     ) -> HeadlessResult:
+        self.received_context = input_text
         if "codex" in argv[0]:
             output = "\n".join(
                 [
@@ -232,9 +235,12 @@ def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.Monkey
         "Enforce pure stdout wire protocol",
     ]
     assert payload.decisions_known is True
-    # Handoff test status still reflects the latest checkpoint, now the session-end record.
     assert payload.source_checkpoint_kind == "session_end"
-    assert payload.test_status.known is False
+    assert payload.test_status.known is True
+    assert bootstrap.received_context is not None
+    assert "540 passed in 18s" in bootstrap.received_context
+    assert milestone_ids[0] in bootstrap.received_context
+    assert "reported / unverified" in bootstrap.received_context
 
     # Verify Codex launch specification includes -c MCP overrides
     assert len(process_runner.invocations) == 2

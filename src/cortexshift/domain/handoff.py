@@ -99,9 +99,8 @@ class HandoffGitState(BaseModel):
 class HandoffTestStatus(BaseModel):
     """Canonical TEST STATUS section.
 
-    CortexShift has no durable verified test record in Phase 5. A provider process
-    exiting with code 0 does not prove that project tests passed, so ``known`` stays
-    False and the summary states the unknown honestly.
+    ``known`` indicates evidence exists in historical state. The summary records
+    the evidence's provenance and uncertainty about verification of the current tree.
     """
 
     model_config = ConfigDict(frozen=True)

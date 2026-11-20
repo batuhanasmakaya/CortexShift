@@ -6,6 +6,9 @@
 
 ## Context
 
+Recovery eligibility, transaction boundaries, and test evidence selection are
+updated in [ADR-0016](ADR-0016-project-recovery-and-test-evidence.md).
+
 Coding sessions frequently terminate without an orderly exit — agents exhaust rate limits or quotas, processes crash or receive SIGKILL, terminals are closed, or CortexShift itself is interrupted. In these scenarios, an outgoing provider cannot summarize its progress, leaving the task in an ambiguous state.
 
 CortexShift requires a deterministic mechanism to reconstruct the latest reliable engineering state from durable local records and live Git inspection, without invoking any outgoing model calls, parsing provider transcripts, or guessing unobserved execution outcomes.

@@ -199,6 +199,7 @@ def seed_session(
     status: SessionStatus = SessionStatus.COMPLETED,
     exit_reason: SessionExitReason | None = SessionExitReason.NORMAL_COMPLETION,
     exit_code: int | None = 0,
+    provider_guarded: bool = False,
 ) -> Session:
     """Persist a historical CortexShift session record."""
     session = Session(
@@ -209,6 +210,7 @@ def seed_session(
         ended_at=utc_now() if status != SessionStatus.RUNNING else None,
         exit_reason=exit_reason,
         exit_code=exit_code,
+        metadata={"provider_guarded": True} if provider_guarded else {},
     )
     with SQLiteStateStore(root / ".cortexshift" / "state.sqlite3", auto_migrate=False) as store:
         store.save_session(session)

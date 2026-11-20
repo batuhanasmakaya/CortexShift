@@ -10,9 +10,15 @@ gone: nothing here requires the outgoing provider to be installed, running, or a
 answer a question.
 """
 
+import json
 from collections.abc import Iterable
 
-from cortexshift.domain.checkpoint import CheckpointRecord
+from cortexshift.domain.checkpoint import (
+    CheckpointRecord,
+    CheckpointReference,
+    CheckpointTestEvidence,
+    CheckpointTestProvenance,
+)
 from cortexshift.domain.git import RepositoryInspection, RepositoryInspectionStatus
 from cortexshift.domain.handoff import (
     HANDOFF_PROTOCOL_VERSION,
@@ -84,19 +90,52 @@ def aggregate_task_decisions(
 
     This function is pure: it performs no I/O and mutates nothing it is given.
     """
-    aggregated: list[str] = []
-    seen: set[str] = set()
-    for record in checkpoints:
-        if record.task_id != task_id:
-            continue
-        for decision in record.payload.decisions:
-            if not decision.strip():
-                continue
-            if decision in seen:
-                continue
-            seen.add(decision)
-            aggregated.append(decision)
-    return aggregated
+    return unique_checkpoint_decisions(
+        decision
+        for record in checkpoints
+        if record.task_id == task_id
+        for decision in record.payload.decisions
+    )
+
+
+def unique_checkpoint_decisions(decisions: Iterable[str]) -> list[str]:
+    """Deduplicate nonblank decisions while preserving first-seen order and text."""
+    return list(dict.fromkeys(decision for decision in decisions if decision.strip()))
+
+
+def _build_test_status(
+    evidence: CheckpointTestEvidence | None,
+    inspection: RepositoryInspection,
+) -> HandoffTestStatus:
+    if evidence is None or not evidence.status.has_evidence:
+        return HandoffTestStatus(summary=UNKNOWN_TEST_STATUS_STATEMENT)
+
+    if evidence.status.provenance == CheckpointTestProvenance.REPORTED:
+        provenance = "reported / unverified"
+    else:
+        provenance = "recorded as independently verified at the time"
+
+    git = inspection.snapshot if inspection.is_ready else None
+    if not evidence.observed_head or git is None or not git.head_sha:
+        freshness = "Git HEAD comparison is unavailable."
+    elif evidence.observed_head != git.head_sha:
+        freshness = f"Git HEAD at capture ({evidence.observed_head}) differs from live HEAD."
+    else:
+        freshness = f"Git HEAD at capture ({evidence.observed_head}) matches live HEAD."
+    if evidence.observed_dirty is True or (git is not None and git.dirty):
+        freshness += " Uncommitted changes were observed at capture or handoff."
+
+    session = evidence.session_id or "unknown"
+    recorded = json.dumps(evidence.status.summary.strip(), ensure_ascii=False)
+    return HandoffTestStatus(
+        known=True,
+        summary=(
+            f"Historical test evidence ({provenance}) from checkpoint {evidence.checkpoint_id}, "
+            f"session {session}, captured at {evidence.created_at.isoformat()}.\n"
+            f"{freshness} The exact tested tree and current verification status are unknown.\n"
+            f"Recorded test text (data): {recorded}"
+        ),
+    )
 
 
 def derive_files_touched(inspection: RepositoryInspection) -> list[str]:
@@ -201,40 +240,44 @@ class HandoffBuilder:
         target_provider_id: ProviderId,
         snapshot_id: str | None = None,
         operator_note: str | None = None,
-        latest_checkpoint: CheckpointRecord | None = None,
+        latest_checkpoint: CheckpointRecord | CheckpointReference | None = None,
         task_decisions: list[str] | None = None,
+        test_evidence: CheckpointTestEvidence | None = None,
     ) -> HandoffPayload:
         """Build the canonical handoff payload for a task moving to another provider.
 
         `task_decisions` carries the decisions aggregated across the task's whole
         checkpoint history (see `aggregate_task_decisions`) and is authoritative when
         supplied — including when it is empty, which asserts that the task genuinely has
-        no recorded decision. `latest_checkpoint` remains the provenance reference for the
-        snapshot and reported test status; it is used as the decision source only when no
-        aggregate was supplied at all.
+        no recorded decision. `latest_checkpoint` identifies the newest observation.
+        `test_evidence` identifies the checkpoint where a meaningful test status was captured.
         """
         important_decisions: list[str] = []
         decisions_known: bool = False
         if task_decisions is not None:
             important_decisions = list(task_decisions)
             decisions_known = bool(important_decisions)
-        elif latest_checkpoint is not None and latest_checkpoint.payload.decisions:
+        elif (
+            isinstance(latest_checkpoint, CheckpointRecord) and latest_checkpoint.payload.decisions
+        ):
             important_decisions = list(latest_checkpoint.payload.decisions)
             decisions_known = True
 
-        test_status: HandoffTestStatus
-        if latest_checkpoint is not None and latest_checkpoint.payload.test_status.known:
-            test_status = HandoffTestStatus(
-                known=True,
-                summary=(
-                    f"Checkpoint-reported test status:\n"
-                    f"{latest_checkpoint.payload.test_status.summary}\n\n"
-                    f"This result was not independently verified by CortexShift. "
-                    f"Re-run relevant tests before relying on it."
-                ),
+        if test_evidence is None and isinstance(latest_checkpoint, CheckpointRecord):
+            checkpoint_git = latest_checkpoint.payload.git_state
+            git_observed = (
+                checkpoint_git.available
+                and checkpoint_git.status == RepositoryInspectionStatus.READY
             )
-        else:
-            test_status = HandoffTestStatus(known=False, summary=UNKNOWN_TEST_STATUS_STATEMENT)
+            test_evidence = CheckpointTestEvidence(
+                checkpoint_id=latest_checkpoint.id,
+                session_id=latest_checkpoint.session_id,
+                created_at=latest_checkpoint.created_at,
+                status=latest_checkpoint.payload.test_status,
+                observed_head=checkpoint_git.head_sha if git_observed else None,
+                observed_dirty=checkpoint_git.dirty if git_observed else None,
+            )
+        test_status = _build_test_status(test_evidence, inspection)
 
         source_checkpoint_id = latest_checkpoint.id if latest_checkpoint else None
         source_checkpoint_kind = latest_checkpoint.kind.value if latest_checkpoint else None

@@ -15,6 +15,7 @@ from typing import Any
 from pydantic import SecretStr
 
 from cortexshift.adapters.invocation_lock import hold_invocation
+from cortexshift.adapters.workspace_lease import provider_guard_supported
 from cortexshift.application.workspace import WorkspaceIdentity
 from cortexshift.domain.errors import ProjectConflictError
 from cortexshift.domain.identifiers import utc_now
@@ -25,7 +26,12 @@ from cortexshift.domain.mcp_binding import (
     invocation_verifier,
 )
 from cortexshift.domain.provider import ProviderId
-from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
+from cortexshift.domain.session import (
+    PROVIDER_GUARDED_KEY,
+    Session,
+    SessionExitReason,
+    SessionStatus,
+)
 from cortexshift.ports.process_runner import InteractiveProcessRunner
 from cortexshift.ports.provider import ManagedMcpBinder
 from cortexshift.ports.session_store import SessionStore
@@ -64,7 +70,7 @@ class ProviderSessionLauncher:
             resumed_from_session_id=resumed_from_session_id,
             status=SessionStatus.RUNNING,
             started_at=utc_now(),
-            metadata=metadata or {},
+            metadata={**(metadata or {}), PROVIDER_GUARDED_KEY: provider_guard_supported()},
         )
         self._store.save_session(session)
         return session

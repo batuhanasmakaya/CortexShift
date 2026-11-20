@@ -29,9 +29,14 @@ def hold_invocation(root: Path, verifier: str) -> Iterator[None]:
             path.unlink()
 
 
+def probe_invocation_lock(root: Path, verifier: str) -> bool:
+    """Inspect a trusted verifier's lock, preserving I/O failures for recovery."""
+    return is_locked(_lock_path(root, verifier))
+
+
 def invocation_is_live(root: Path, verifier: str) -> bool:
     """Check under the SQLite write reservation so Windows probes cannot overlap."""
     try:
-        return is_locked(_lock_path(root, verifier))
+        return probe_invocation_lock(root, verifier)
     except OSError:
         return False

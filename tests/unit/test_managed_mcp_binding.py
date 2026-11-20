@@ -76,8 +76,15 @@ class InMemorySessionStore(SessionStore):
         project_id: str | None = None,
         task_id: str | None = None,
         limit: int | None = 20,
+        *,
+        statuses: tuple[SessionStatus, ...] | None = None,
     ) -> list[Session]:
-        found = [s for s in self.sessions.values() if task_id is None or s.task_id == task_id]
+        found = [
+            s
+            for s in self.sessions.values()
+            if (task_id is None or s.task_id == task_id)
+            and (statuses is None or s.status in statuses)
+        ]
         return found[:limit] if limit is not None else found
 
 

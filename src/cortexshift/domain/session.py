@@ -9,6 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from cortexshift.domain.identifiers import generate_id, utc_now
 from cortexshift.domain.provider import ProviderId
 
+# Durable launch provenance for recovery. The POSIX guard tracks work that
+# retains the inherited descriptor after the CortexShift launcher exits.
+PROVIDER_GUARDED_KEY = "provider_guarded"
+
 
 class SessionStatus(StrEnum):
     """Execution status of an individual agent session.
@@ -32,6 +36,13 @@ class SessionStatus(StrEnum):
     INTERRUPTED = "interrupted"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+
+
+UNFINALIZED_SESSION_STATUSES = (
+    SessionStatus.INITIALIZING,
+    SessionStatus.RUNNING,
+    SessionStatus.ACTIVE,
+)
 
 
 class SessionExitReason(StrEnum):

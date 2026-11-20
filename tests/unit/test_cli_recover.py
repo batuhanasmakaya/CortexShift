@@ -8,7 +8,12 @@ from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.cli.app import app
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE
-from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
+from cortexshift.domain.session import (
+    PROVIDER_GUARDED_KEY,
+    Session,
+    SessionExitReason,
+    SessionStatus,
+)
 from cortexshift.domain.task import Task
 from tests.cli_runner import AnsiFreeCliRunner
 
@@ -50,7 +55,10 @@ def test_recover_dry_run_and_real_recovery(tmp_path: Path, monkeypatch) -> None:
     # Create a stale running session
     with SQLiteStateStore(db_file) as store:
         stale_sess = Session(
-            task_id=task.id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING
+            task_id=task.id,
+            provider_id=PROVIDER_CLAUDE,
+            status=SessionStatus.RUNNING,
+            metadata={PROVIDER_GUARDED_KEY: True},
         )
         store.save_session(stale_sess)
 

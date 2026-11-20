@@ -333,7 +333,12 @@ class HandoffRenderer:
             ),
             _Section("git_details", "Git diff summaries", git_details, prefix="", empty=""),
             _Section(
-                "test_status", "test status entries", (payload.test_status.summary,), prefix=""
+                "test_status",
+                "historical test evidence entries"
+                if payload.test_status.known
+                else "test status entries",
+                (payload.test_status.summary,),
+                prefix="",
             ),
             _Section(
                 "operator_note",

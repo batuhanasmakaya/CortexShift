@@ -127,7 +127,7 @@ class HandoffsSection(SectionView):
         payload = record.payload
         git = payload.git_state
         test_line = (
-            Text(f"{payload.test_status.summary}  (Reported / unverified)", style="yellow")
+            Text(payload.test_status.summary, style="yellow")
             if payload.test_status.known
             else Text(payload.test_status.summary)
         )

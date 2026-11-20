@@ -14,3 +14,5 @@
 - [ADR-0012 · Verified workspace identity](ADR-0012-verified-workspace-identity.md) — Accepted
 - [ADR-0013 · Atomic Task writes](ADR-0013-atomic-task-writes.md) — Accepted
 - [ADR-0014 · Provider process ownership and MCP invocation authority](ADR-0014-provider-and-mcp-invocation-lifecycles.md) — Accepted
+- [ADR-0015 — Bounded handoff delivery](ADR-0015-bounded-handoff-delivery.md) — Accepted
+- [ADR-0016 — Project-wide recovery and historical test evidence](ADR-0016-project-recovery-and-test-evidence.md) — Accepted

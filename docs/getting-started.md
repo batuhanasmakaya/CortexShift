@@ -77,9 +77,11 @@ is available through `cortexshift resume claude` when an eligible ID exists.
 ## Recover and inspect
 
 After a hard crash, inspect `cortexshift recover --dry-run`, then run
-`cortexshift recover` when no provider holds the workspace lease. Recovery
-reconciles unfinalized records and checkpoints live state; it does not invent
-an end time or restore source files. Never delete `agent.lock` to bypass a lock.
+`cortexshift recover` when the workspace lease and retained provider guard are
+clear. Recovery examines unfinished Sessions across the project. It records a
+checkpoint per affected Task and leaves Sessions with uncertain ownership for
+operator inspection. Recovery preserves source files and keeps unobserved
+process end times empty. Keep `agent.lock` in place.
 
 ```bash
 cortexshift status

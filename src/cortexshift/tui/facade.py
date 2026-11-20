@@ -613,9 +613,11 @@ class TuiFacade:
     @staticmethod
     def _recovery_preview(report: RecoveryReport) -> TuiRecoveryPreview:
         return TuiRecoveryPreview(
-            task_id=report.task_id,
-            task_title=report.task_title,
-            stale_session_ids=tuple(report.stale_session_ids),
+            tasks=tuple(report.tasks),
+            live_count=len(report.live_session_ids),
+            uncertain_count=len(report.uncertain_session_ids),
+            examined_count=report.examined_count,
+            already_reconciled_count=report.already_reconciled_count,
             dirty=report.dirty,
             files_touched=tuple(report.files_touched),
             repository_status=report.repository_status.value,
