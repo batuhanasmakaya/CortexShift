@@ -1,6 +1,7 @@
 """Application service managing checkpoint creation, querying, and automatic session-end capture."""
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
@@ -21,12 +22,50 @@ from cortexshift.domain.errors import (
     SessionTaskMismatchError,
     TaskNotFoundError,
 )
-from cortexshift.domain.git import RepositoryInspectionStatus
+from cortexshift.domain.git import RepositoryInspection, RepositoryInspectionStatus
 from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
 from cortexshift.ports.repository import RepositoryInspector
 
 logger = logging.getLogger(__name__)
+
+
+def save_managed_checkpoint(
+    store: SQLiteStateStore,
+    workspace: WorkspaceIdentity,
+    inspection: RepositoryInspection,
+    authorize: Callable[[], tuple[Session, Task]],
+    *,
+    decisions: list[str] | None = None,
+    test_summary: str | None = None,
+    test_provenance: CheckpointTestProvenance = CheckpointTestProvenance.UNKNOWN,
+    note: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> CheckpointRecord:
+    """Persist an MCP checkpoint and its already-observed snapshot atomically."""
+    with store.write_transaction():
+        session, task = authorize()
+        snapshot = inspection.snapshot
+        snapshot_id = None
+        if inspection.status == RepositoryInspectionStatus.READY and snapshot is not None:
+            store.save_snapshot(snapshot)
+            snapshot_id = snapshot.id
+
+        record = CheckpointBuilder.build(
+            project=workspace.project,
+            task=task,
+            inspection=inspection,
+            kind=CheckpointKind.MANUAL,
+            snapshot_id=snapshot_id,
+            session=session,
+            decisions=decisions,
+            test_summary=test_summary,
+            test_provenance=test_provenance,
+            operator_note=note,
+            metadata=metadata,
+        )
+        store.save_checkpoint(record)
+        return record
 
 
 class CheckpointService:

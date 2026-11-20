@@ -28,7 +28,8 @@ from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
-from tests.factories import seed_project, seed_session
+from tests.factories import seed_project
+from tests.mcp_invocations import LiveMcpInvocations
 from tests.unit.test_switch_service import FakeInspector, FakeProcessRunner
 
 DECISION = "Real Codex E2E confirmed writable CortexShift MCP context."
@@ -40,6 +41,7 @@ def _managed_facade(
     project_id: str,
     task_id: str,
     session: Session,
+    live_mcp: LiveMcpInvocations,
 ) -> McpApplicationFacade:
     """Build a managed, writable MCP facade bound to one session, as a provider would."""
     context = McpExecutionContext(
@@ -51,7 +53,7 @@ def _managed_facade(
         managed_session=True,
         read_only=False,
     )
-    return McpApplicationFacade(context, store)
+    return McpApplicationFacade(live_mcp.authorize(context, store), store)
 
 
 def _preview_handoff(root: Path) -> HandoffPayload:
@@ -79,7 +81,9 @@ def _rendered_handoff(root: Path) -> str:
 
 def _seed(tmp_path: Path) -> tuple[Project, Task, Session]:
     project, task = seed_project(tmp_path)
-    session = seed_session(tmp_path, task.id, provider_id=PROVIDER_CLAUDE)
+    session = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING)
+    with _store(tmp_path) as store:
+        store.save_session(session)
     return project, task, session
 
 
@@ -90,11 +94,13 @@ def _store(tmp_path: Path) -> SQLiteStateStore:
 # --- The reported failure ---
 
 
-def test_decision_survives_a_later_ordinary_checkpoint(tmp_path: Path) -> None:
+def test_decision_survives_a_later_ordinary_checkpoint(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """Case A: record_decision then create_checkpoint(no decisions) -- handoff keeps it."""
     project, task, session = _seed(tmp_path)
     store = _store(tmp_path)
-    facade = _managed_facade(tmp_path, store, project.id, task.id, session)
+    facade = _managed_facade(tmp_path, store, project.id, task.id, session, live_mcp)
 
     decision_cp_id = facade.record_decision(DECISION).checkpoint_id
     later = facade.create_checkpoint(note="Real Codex managed MCP provenance retest.")
@@ -116,14 +122,17 @@ def test_decision_survives_a_later_ordinary_checkpoint(tmp_path: Path) -> None:
     verify.close()
 
 
-def test_decision_survives_the_automatic_session_end_checkpoint(tmp_path: Path) -> None:
+def test_decision_survives_the_automatic_session_end_checkpoint(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """Case B: the session-end checkpoint must not bury the session's own decision."""
     project, task, session = _seed(tmp_path)
     store = _store(tmp_path)
-    facade = _managed_facade(tmp_path, store, project.id, task.id, session)
+    facade = _managed_facade(tmp_path, store, project.id, task.id, session, live_mcp)
     facade.record_decision(DECISION)
 
     ended = session.model_copy(update={"status": SessionStatus.COMPLETED})
+    store.save_session(ended)
     checkpoint_service = CheckpointService(inspector=GitRepositoryInspector())
     session_end = checkpoint_service.capture_session_end_checkpoint(session=ended, store=store)
     assert session_end is not None
@@ -139,11 +148,13 @@ def test_decision_survives_the_automatic_session_end_checkpoint(tmp_path: Path) 
     assert payload.important_decisions == [DECISION]
 
 
-def test_handoff_text_no_longer_denies_a_recorded_decision(tmp_path: Path) -> None:
+def test_handoff_text_no_longer_denies_a_recorded_decision(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """The rendered package must not claim absence over a decision it is holding."""
     project, task, session = _seed(tmp_path)
     store = _store(tmp_path)
-    facade = _managed_facade(tmp_path, store, project.id, task.id, session)
+    facade = _managed_facade(tmp_path, store, project.id, task.id, session, live_mcp)
     facade.record_decision(DECISION)
     facade.create_checkpoint(note="Later milestone with no decisions")
     store.close()
@@ -157,11 +168,13 @@ def test_handoff_text_no_longer_denies_a_recorded_decision(tmp_path: Path) -> No
 # --- Aggregation semantics through the real stack ---
 
 
-def test_multiple_recorded_decisions_appear_in_chronological_order(tmp_path: Path) -> None:
+def test_multiple_recorded_decisions_appear_in_chronological_order(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """Case C: every decision recorded during the task reaches the handoff, oldest first."""
     project, task, session = _seed(tmp_path)
     store = _store(tmp_path)
-    facade = _managed_facade(tmp_path, store, project.id, task.id, session)
+    facade = _managed_facade(tmp_path, store, project.id, task.id, session, live_mcp)
 
     facade.record_decision("First: adopt SQLite WAL mode")
     facade.create_checkpoint(decisions=["Second: enforce pure stdout wire protocol"])
@@ -178,11 +191,13 @@ def test_multiple_recorded_decisions_appear_in_chronological_order(tmp_path: Pat
     ]
 
 
-def test_redundantly_recorded_decision_appears_once(tmp_path: Path) -> None:
+def test_redundantly_recorded_decision_appears_once(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """Case D: re-recording the same decision does not duplicate it in the handoff."""
     project, task, session = _seed(tmp_path)
     store = _store(tmp_path)
-    facade = _managed_facade(tmp_path, store, project.id, task.id, session)
+    facade = _managed_facade(tmp_path, store, project.id, task.id, session, live_mcp)
 
     facade.record_decision(DECISION)
     facade.create_checkpoint(decisions=[DECISION, "A distinct decision"])
@@ -194,11 +209,13 @@ def test_redundantly_recorded_decision_appears_once(tmp_path: Path) -> None:
     assert payload.important_decisions == [DECISION, "A distinct decision"]
 
 
-def test_task_without_decisions_still_reports_absence_honestly(tmp_path: Path) -> None:
+def test_task_without_decisions_still_reports_absence_honestly(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """Case G: a genuinely empty decision history keeps the honest unknown statement."""
     project, task, session = _seed(tmp_path)
     store = _store(tmp_path)
-    facade = _managed_facade(tmp_path, store, project.id, task.id, session)
+    facade = _managed_facade(tmp_path, store, project.id, task.id, session, live_mcp)
     facade.create_checkpoint(note="Milestone with no decisions", test_summary="12 passed")
     store.close()
 
@@ -216,20 +233,26 @@ def test_task_without_decisions_still_reports_absence_honestly(tmp_path: Path) -
     assert UNKNOWN_DECISIONS_STATEMENT in result.rendered_context
 
 
-def test_decisions_never_cross_task_boundaries(tmp_path: Path) -> None:
+def test_decisions_never_cross_task_boundaries(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """Case F: another task's decisions in the same project never enter this handoff."""
     project, task, session = _seed(tmp_path)
     store = _store(tmp_path)
 
     other_task = Task(project_id=project.id, title="Other", objective="Other objective")
     store.save_task(other_task)
-    other_session = Session(task_id=other_task.id, provider_id=PROVIDER_CLAUDE)
+    other_session = Session(
+        task_id=other_task.id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING
+    )
     store.save_session(other_session)
 
-    other_facade = _managed_facade(tmp_path, store, project.id, other_task.id, other_session)
+    other_facade = _managed_facade(
+        tmp_path, store, project.id, other_task.id, other_session, live_mcp
+    )
     other_facade.record_decision("Belongs strictly to the other task")
 
-    facade = _managed_facade(tmp_path, store, project.id, task.id, session)
+    facade = _managed_facade(tmp_path, store, project.id, task.id, session, live_mcp)
     facade.record_decision(DECISION)
     store.close()
 
@@ -243,11 +266,13 @@ def test_decisions_never_cross_task_boundaries(tmp_path: Path) -> None:
 # --- record_decision provenance marker (ADR-0009) ---
 
 
-def test_record_decision_persists_structured_trigger_marker(tmp_path: Path) -> None:
+def test_record_decision_persists_structured_trigger_marker(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """ADR-0009 specifies trigger="decision"; it rides in existing metadata mappings."""
     project, task, session = _seed(tmp_path)
     store = _store(tmp_path)
-    facade = _managed_facade(tmp_path, store, project.id, task.id, session)
+    facade = _managed_facade(tmp_path, store, project.id, task.id, session, live_mcp)
 
     decision_id = facade.record_decision(DECISION).checkpoint_id
     plain_id = facade.create_checkpoint(note="Ordinary milestone").checkpoint_id
@@ -266,11 +291,13 @@ def test_record_decision_persists_structured_trigger_marker(tmp_path: Path) -> N
     verify.close()
 
 
-def test_aggregation_does_not_depend_on_the_trigger_marker(tmp_path: Path) -> None:
+def test_aggregation_does_not_depend_on_the_trigger_marker(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """Decisions supplied through create_checkpoint aggregate just the same."""
     project, task, session = _seed(tmp_path)
     store = _store(tmp_path)
-    facade = _managed_facade(tmp_path, store, project.id, task.id, session)
+    facade = _managed_facade(tmp_path, store, project.id, task.id, session, live_mcp)
 
     facade.create_checkpoint(decisions=["Recorded without a decision trigger"])
     facade.create_checkpoint(note="Newer milestone with none")

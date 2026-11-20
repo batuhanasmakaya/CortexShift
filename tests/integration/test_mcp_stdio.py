@@ -11,10 +11,12 @@ from mcp.client.stdio import stdio_client
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.domain.checkpoint import CheckpointTestProvenance
+from cortexshift.domain.mcp_binding import McpSessionBinding
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE
-from cortexshift.domain.session import Session
+from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task
+from tests.mcp_invocations import LiveMcpInvocations
 
 
 def _init_repo(tmp_path: Path) -> tuple[Project, Task, Session]:
@@ -35,26 +37,26 @@ def _init_repo(tmp_path: Path) -> tuple[Project, Task, Session]:
     store.save_task(task)
     store.set_active_task_id(proj.id, task.id)
 
-    sess = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE)
+    sess = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING)
     store.save_session(sess)
     store.close()
     return proj, task, sess
 
 
 @pytest.mark.anyio
-async def test_mcp_stdio_server_lifecycle_and_tools(tmp_path: Path) -> None:
+async def test_mcp_stdio_server_lifecycle_and_tools(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     proj, task, sess = _init_repo(tmp_path)
+    with SQLiteStateStore(tmp_path / ".cortexshift" / "state.sqlite3") as store:
+        token = live_mcp.open(tmp_path, store, sess)
+    binding = McpSessionBinding.from_session(sess, tmp_path)
+    binding = binding.model_copy(update={"invocation_token": token})
 
     server_params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "cortexshift", "mcp", "serve"],
-        env={
-            "CORTEXSHIFT_PROJECT_ROOT": str(tmp_path),
-            "CORTEXSHIFT_TASK_ID": task.id,
-            "CORTEXSHIFT_SESSION_ID": sess.id,
-            "CORTEXSHIFT_PROVIDER_ID": "claude",
-            "CORTEXSHIFT_MCP_READ_ONLY": "0",
-        },
+        env=binding.to_env(),
     )
 
     async with (

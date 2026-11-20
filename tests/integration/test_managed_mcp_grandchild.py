@@ -16,7 +16,11 @@ import os
 import subprocess
 import sys
 import tomllib
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Event
 from typing import Any, cast
 
 import pytest
@@ -26,8 +30,12 @@ from mcp.client.stdio import stdio_client
 from cortexshift.adapters.providers.claude import ClaudeRuntimeAdapter
 from cortexshift.adapters.providers.codex import CodexRuntimeAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
+from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
+from cortexshift.application.recovery_service import RecoveryService
 from cortexshift.application.run_service import ProviderRuntimeRegistry, RunService
+from cortexshift.domain.errors import WorkspaceLockedError
 from cortexshift.domain.mcp_binding import (
+    ENV_INVOCATION_TOKEN,
     ENV_MCP_READ_ONLY,
     ENV_PROJECT_ROOT,
     ENV_PROVIDER_ID,
@@ -35,9 +43,10 @@ from cortexshift.domain.mcp_binding import (
     ENV_TASK_ID,
 )
 from cortexshift.domain.project import Project
-from cortexshift.domain.session import Session
+from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 from cortexshift.domain.task import Task
 from cortexshift.ports.process_runner import InteractiveProcessRunner
+from tests.integration.test_provider_process_ownership import wait_for
 
 READ_TOOLS = {
     "get_project_context",
@@ -84,13 +93,16 @@ _INHERITABLE = (
 class RecordingProcessRunner(InteractiveProcessRunner):
     """Captures the argv a provider CLI would have been spawned with."""
 
-    def __init__(self) -> None:
+    def __init__(self, wait_for_exit: Callable[[], None] | None = None) -> None:
         self.invocations: list[dict[str, Any]] = []
+        self.wait_for_exit = wait_for_exit
 
     def run_interactive(
         self, argv: list[str], cwd: Path | str, env: dict[str, str] | None = None
     ) -> int:
         self.invocations.append({"argv": list(argv), "cwd": cwd, "env": dict(env or {})})
+        if self.wait_for_exit:
+            self.wait_for_exit()
         return 0
 
 
@@ -111,9 +123,11 @@ def _seed(root: Path) -> tuple[Project, Task]:
     return project, task
 
 
-def _run_managed(root: Path, provider: str) -> tuple[Session, list[str]]:
+def _run_managed(
+    root: Path, provider: str, runner: RecordingProcessRunner | None = None
+) -> tuple[Session, list[str]]:
     """Perform a hermetic managed launch and return the session plus the provider argv."""
-    runner = RecordingProcessRunner()
+    runner = runner or RecordingProcessRunner()
     service = RunService(
         registry=ProviderRuntimeRegistry([ClaudeRuntimeAdapter(), CodexRuntimeAdapter()]),
         process_runner=runner,
@@ -122,6 +136,33 @@ def _run_managed(root: Path, provider: str) -> tuple[Session, list[str]]:
     )
     session = service.run(provider, start_dir=root)
     return session, runner.invocations[0]["argv"]
+
+
+@contextmanager
+def _active_launch(
+    root: Path, provider: str
+) -> Iterator[tuple[dict[str, str], Callable[[], Session]]]:
+    started = Event()
+    release = Event()
+
+    def wait_for_exit() -> None:
+        started.set()
+        assert release.wait(30)
+
+    runner = RecordingProcessRunner(wait_for_exit)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        launch = executor.submit(_run_managed, root, provider, runner)
+
+        def finish() -> Session:
+            release.set()
+            finished, _ = launch.result(timeout=10)
+            return finished
+
+        try:
+            assert started.wait(10)
+            yield _declared_mcp_env(provider, runner.invocations[0]["argv"]), finish
+        finally:
+            finish()
 
 
 def _declared_mcp_env(provider: str, argv: list[str]) -> dict[str, str]:
@@ -176,37 +217,52 @@ async def test_managed_launch_exposes_write_tools_to_the_mcp_grandchild(
     tmp_path: Path, provider: str
 ) -> None:
     _, task = _seed(tmp_path)
-    session, argv = _run_managed(tmp_path, provider)
+    with _active_launch(tmp_path, provider) as (declared, finish):
+        session_id = declared[ENV_SESSION_ID]
+        assert declared[ENV_INVOCATION_TOKEN]
+        assert declared[ENV_TASK_ID] == task.id
+        assert declared[ENV_PROVIDER_ID] == provider
+        assert declared[ENV_PROJECT_ROOT] == str(tmp_path)
+        assert declared[ENV_MCP_READ_ONLY] == "0"
 
-    declared = _declared_mcp_env(provider, argv)
-    assert declared[ENV_SESSION_ID] == session.id
-    assert declared[ENV_TASK_ID] == task.id
-    assert declared[ENV_PROVIDER_ID] == provider
-    assert declared[ENV_PROJECT_ROOT] == str(tmp_path)
-    assert declared[ENV_MCP_READ_ONLY] == "0"
+        async with (
+            stdio_client(_server_params(_sanitized_env(declared), tmp_path)) as (read, write),
+            ClientSession(read, write) as client,
+        ):
+            await client.initialize()
 
+            assert {t.name for t in (await client.list_tools()).tools} == READ_TOOLS | WRITE_TOOLS
+
+            context = json.loads(
+                cast(Any, (await client.call_tool("get_project_context")).content[0]).text
+            )
+            assert context["session"] is not None
+            assert context["session"]["id"] == session_id
+            assert context["session"]["provider_id"] == provider
+            assert context["task"]["id"] == task.id
+
+            created = await client.call_tool(
+                "create_checkpoint",
+                {"decisions": ["Bound the managed session"], "note": "Managed milestone"},
+            )
+            assert not created.is_error
+            checkpoint_id = json.loads(cast(Any, created.content[0]).text)["checkpoint_id"]
+
+            # Keep the connected server alive while the provider invocation finalizes.
+            session = finish()
+            assert session.id == session_id
+            rejected = await client.call_tool("set_current_work", {"current_work": "Stale update"})
+            assert rejected.is_error
+            assert "expired" in cast(Any, rejected.content[0]).text
+            assert not (await client.call_tool("get_current_task")).is_error
+
+    # A fresh server started with the same environment cannot regain write tools.
     async with (
         stdio_client(_server_params(_sanitized_env(declared), tmp_path)) as (read, write),
-        ClientSession(read, write) as client,
+        ClientSession(read, write) as restarted,
     ):
-        await client.initialize()
-
-        assert {t.name for t in (await client.list_tools()).tools} == READ_TOOLS | WRITE_TOOLS
-
-        context = json.loads(
-            cast(Any, (await client.call_tool("get_project_context")).content[0]).text
-        )
-        assert context["session"] is not None
-        assert context["session"]["id"] == session.id
-        assert context["session"]["provider_id"] == provider
-        assert context["task"]["id"] == task.id
-
-        created = await client.call_tool(
-            "create_checkpoint",
-            {"decisions": ["Bound the managed session"], "note": "Managed milestone"},
-        )
-        assert not created.is_error
-        checkpoint_id = json.loads(cast(Any, created.content[0]).text)["checkpoint_id"]
+        await restarted.initialize()
+        assert {t.name for t in (await restarted.list_tools()).tools} == READ_TOOLS
 
     with SQLiteStateStore(tmp_path / ".cortexshift" / "state.sqlite3") as store:
         persisted = store.get_checkpoint(checkpoint_id)
@@ -277,16 +333,16 @@ async def test_unmanaged_grandchild_exposes_only_read_tools(tmp_path: Path) -> N
 async def test_read_only_managed_launch_keeps_write_tools_unregistered(tmp_path: Path) -> None:
     """A managed binding marked read-only exposes exactly the unmanaged tool surface."""
     _seed(tmp_path)
-    _, argv = _run_managed(tmp_path, "codex")
-    declared = dict(_declared_mcp_env("codex", argv))
-    declared[ENV_MCP_READ_ONLY] = "1"
+    with _active_launch(tmp_path, "codex") as (active, _):
+        declared = dict(active)
+        declared[ENV_MCP_READ_ONLY] = "1"
 
-    async with (
-        stdio_client(_server_params(_sanitized_env(declared), tmp_path)) as (read, write),
-        ClientSession(read, write) as client,
-    ):
-        await client.initialize()
-        assert {t.name for t in (await client.list_tools()).tools} == READ_TOOLS
+        async with (
+            stdio_client(_server_params(_sanitized_env(declared), tmp_path)) as (read, write),
+            ClientSession(read, write) as client,
+        ):
+            await client.initialize()
+            assert {t.name for t in (await client.list_tools()).tools} == READ_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -336,8 +392,8 @@ def test_binding_is_not_replayable_against_another_project(tmp_path: Path) -> No
     assert result.stdout == ""
 
 
-def test_managed_binding_still_serves_when_valid(tmp_path: Path) -> None:
-    """Fail-closed checks must not be satisfied by a server that never starts at all."""
+def test_expired_managed_binding_still_serves_reads(tmp_path: Path) -> None:
+    """A historical Session is still usable for read-only context."""
     _seed(tmp_path)
     _, argv = _run_managed(tmp_path, "codex")
 
@@ -345,6 +401,109 @@ def test_managed_binding_still_serves_when_valid(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert "MCP server failed to start" not in result.stderr
+
+
+@pytest.mark.anyio
+async def test_launcher_death_revokes_connected_mcp_before_recovery(tmp_path: Path) -> None:
+    _seed(tmp_path)
+    provider = """
+import json, os, sys
+print(json.dumps({k: v for k, v in os.environ.items() if k.startswith('CORTEXSHIFT_')}),
+      flush=True)
+sys.stdin.readline()
+"""
+    launcher = f"""
+import sys
+from pathlib import Path
+from cortexshift.adapters.process_runner import SubprocessInteractiveProcessRunner
+from cortexshift.adapters.workspace_lease import FileWorkspaceLease
+from cortexshift.application.session_launcher import ProviderSessionLauncher
+from cortexshift.application.workspace import open_workspace
+from cortexshift.domain.launch import LaunchSpecification
+from cortexshift.domain.provider import PROVIDER_CODEX
+
+workspace, store = open_workspace(Path.cwd())
+assert (task := store.get_active_task_id(workspace.project.id))
+with store, FileWorkspaceLease(workspace.root / '.cortexshift' / 'agent.lock'):
+    manager = ProviderSessionLauncher(SubprocessInteractiveProcessRunner(), store,
+                                      workspace=workspace)
+    session = manager.start_session(task, PROVIDER_CODEX)
+    manager.run(session, LaunchSpecification(provider_id=PROVIDER_CODEX,
+        executable=sys.executable, cwd=workspace.root,
+        argv=[sys.executable, '-c', {provider!r}]))
+"""
+    with (
+        subprocess.Popen(
+            [sys.executable, "-c", launcher],
+            cwd=tmp_path,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        ) as process,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        assert process.stdin is not None and process.stdout is not None
+        ready = pool.submit(process.stdout.readline)
+        try:
+            env = _sanitized_env(json.loads(ready.result(timeout=10)))
+            session_id = env[ENV_SESSION_ID]
+            db_path = tmp_path / ".cortexshift" / "state.sqlite3"
+
+            async with (
+                stdio_client(_server_params(env, tmp_path)) as (read, write),
+                ClientSession(read, write) as client,
+            ):
+                await client.initialize()
+                success = await client.call_tool("set_current_work", {"current_work": "Live"})
+                assert not success.is_error
+
+                process.kill()
+                process.wait(timeout=10)
+                with SQLiteStateStore(db_path) as store:
+                    unfinished = store.get_session(session_id)
+                    assert unfinished is not None and unfinished.status == SessionStatus.RUNNING
+                    assert unfinished.ended_at is None and unfinished.reconciled_at is None
+
+                rejected = await client.call_tool("record_issue", {"items": ["Expired"]})
+                assert rejected.is_error
+                assert "expired" in cast(Any, rejected.content[0]).text
+
+                async with (
+                    stdio_client(_server_params(env, tmp_path)) as (new_read, new_write),
+                    ClientSession(new_read, new_write) as restarted,
+                ):
+                    await restarted.initialize()
+                    assert {t.name for t in (await restarted.list_tools()).tools} == READ_TOOLS
+
+                recovery = RecoveryService()
+                if sys.platform != "win32":
+                    with pytest.raises(WorkspaceLockedError, match="surviving provider work"):
+                        recovery.recover(tmp_path)
+
+                # The real fake-provider subprocess is still in readline after launcher death.
+                process.stdin.write("finish\n")
+                process.stdin.flush()
+                lease = FileWorkspaceLeaseManager().get_lease(tmp_path)
+                wait_for(lambda: not lease.is_locked())
+                assert recovery.recover(tmp_path).reconciled_session_ids == [session_id]
+
+                second = await client.call_tool("create_checkpoint")
+                assert second.is_error
+                assert "expired" in cast(Any, second.content[0]).text
+                assert not (await client.call_tool("get_current_task")).is_error
+
+            with SQLiteStateStore(db_path) as store:
+                reconciled = store.get_session(session_id)
+                assert reconciled is not None
+                assert reconciled.status == SessionStatus.INTERRUPTED
+                assert reconciled.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
+                assert reconciled.ended_at is None and reconciled.reconciled_at is not None
+                assert len(store.list_checkpoints()) == 1
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+            process.stdin.close()
 
 
 # ---------------------------------------------------------------------------

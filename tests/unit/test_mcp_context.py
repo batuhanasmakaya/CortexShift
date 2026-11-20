@@ -6,9 +6,10 @@ import pytest
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.domain.errors import McpContextError
+from cortexshift.domain.mcp_binding import ENV_INVOCATION_TOKEN
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX
-from cortexshift.domain.session import Session
+from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task
 from cortexshift.mcp.context import (
     ENV_MCP_READ_ONLY,
@@ -18,6 +19,7 @@ from cortexshift.mcp.context import (
     ENV_TASK_ID,
     resolve_mcp_context,
 )
+from tests.mcp_invocations import LiveMcpInvocations
 
 
 def _seed(
@@ -33,15 +35,16 @@ def _seed(
     store.save_task(task)
     store.set_active_task_id(project.id, task.id)
 
-    session = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE)
+    session = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING)
     store.save_session(session)
 
     return project, task, session, store
 
 
-def test_resolve_mcp_context_managed_valid(tmp_path: Path) -> None:
+def test_resolve_mcp_context_managed_valid(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
     project, task, session, store = _seed(tmp_path)
     env = {
+        ENV_INVOCATION_TOKEN: live_mcp.open(tmp_path, store, session).get_secret_value(),
         ENV_PROJECT_ROOT: str(tmp_path),
         ENV_SESSION_ID: session.id,
         ENV_TASK_ID: task.id,

@@ -13,3 +13,4 @@
 - [ADR-0011: Release and distribution](ADR-0011-release-and-distribution.md) — Accepted
 - [ADR-0012 · Verified workspace identity](ADR-0012-verified-workspace-identity.md) — Accepted
 - [ADR-0013 · Atomic Task writes](ADR-0013-atomic-task-writes.md) — Accepted
+- [ADR-0014 · Provider process ownership and MCP invocation authority](ADR-0014-provider-and-mcp-invocation-lifecycles.md) — Accepted

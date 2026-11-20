@@ -62,8 +62,8 @@ class RecoveryService:
     ) -> RecoveryReport:
         """Reconcile interrupted orchestration sessions and capture a Recovery Checkpoint.
 
-        Requires an exclusive workspace lease to verify no active CortexShift provider
-        process currently owns the workspace.
+        Requires the workspace lease and its retained-provider preflight. A free lease
+        establishes that recovery may proceed under CortexShift's advisory locks.
         """
         workspace, store = open_workspace(start_dir)
         project = workspace.project

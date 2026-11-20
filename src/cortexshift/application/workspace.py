@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
-from cortexshift.adapters.workspace_lease import LOCK_FILE_NAME
+from cortexshift.adapters.workspace_lease import LOCK_FILE_NAME, PROVIDER_LOCK_FILE_NAME
 from cortexshift.application.locator import ProjectLocator
 from cortexshift.domain.errors import ProjectConflictError, ProjectNotInitializedError
 from cortexshift.domain.project import Project
@@ -26,6 +26,7 @@ def project_database_path(root: Path, locator: type[ProjectLocator] = ProjectLoc
         path.parent,
         path,
         path.parent / LOCK_FILE_NAME,
+        path.parent / PROVIDER_LOCK_FILE_NAME,
         *(path.with_name(path.name + suffix) for suffix in ("-wal", "-shm", "-journal")),
     ):
         try:

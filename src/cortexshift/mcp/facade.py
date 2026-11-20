@@ -4,14 +4,14 @@ from typing import Any
 
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
-from cortexshift.application.checkpoint_builder import CheckpointBuilder
+from cortexshift.application.checkpoint_service import save_managed_checkpoint
+from cortexshift.application.mcp_invocation import require_active_invocation
 from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.task_service import TaskService
 from cortexshift.application.workspace import open_workspace
 from cortexshift.domain.checkpoint import (
     CHECKPOINT_TRIGGER_DECISION,
     CHECKPOINT_TRIGGER_KEY,
-    CheckpointKind,
     CheckpointRecord,
     CheckpointTestProvenance,
 )
@@ -20,7 +20,7 @@ from cortexshift.domain.errors import (
     NoActiveTaskError,
     ProjectConflictError,
 )
-from cortexshift.domain.git import RepositoryInspectionStatus
+from cortexshift.domain.session import Session
 from cortexshift.domain.task import Task
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.models import (
@@ -79,6 +79,19 @@ class McpApplicationFacade:
                 "State mutation is not permitted in read-only or unmanaged MCP mode."
             )
         self._workspace.revalidate()
+
+    def _require_active_invocation(self) -> tuple[Session, Task]:
+        return require_active_invocation(
+            self._workspace,
+            self._store,
+            session_id=self._context.session_id,
+            task_id=self._context.task_id,
+            provider_id=self._context.provider_id,
+            token=self._context.invocation_token,
+        )
+
+    def _authorize_task_update(self) -> None:
+        self._require_active_invocation()
 
     def _bound_task_id(self) -> str:
         self._workspace.revalidate()
@@ -252,6 +265,7 @@ class McpApplicationFacade:
             self._bound_task_id(),
             current_work=current_work,
             clear_current_work=current_work is None,
+            authorize=self._authorize_task_update,
         )
         return self._task_mutation_result(updated)
 
@@ -279,6 +293,7 @@ class McpApplicationFacade:
             self._context.project_id,
             self._bound_task_id(),
             complete_items=cleaned,
+            authorize=self._authorize_task_update,
         )
         return self._task_mutation_result(updated)
 
@@ -306,6 +321,7 @@ class McpApplicationFacade:
             self._context.project_id,
             self._bound_task_id(),
             add_remaining=cleaned,
+            authorize=self._authorize_task_update,
         )
         return self._task_mutation_result(updated)
 
@@ -334,6 +350,7 @@ class McpApplicationFacade:
             self._context.project_id,
             self._bound_task_id(),
             add_issues=cleaned,
+            authorize=self._authorize_task_update,
         )
         return self._task_mutation_result(updated)
 
@@ -442,40 +459,16 @@ class McpApplicationFacade:
         note: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> CheckpointRecord:
-        """Internal helper to construct and persist a checkpoint record without locking."""
-        project = self._store.get_project(self._context.project_id)
-        if project is None:
-            raise NoActiveTaskError("Project record missing.")
-
-        task = self._get_bound_task()
-        session = (
-            self._store.get_session(self._context.session_id) if self._context.session_id else None
-        )
-
-        # Live Git inspection
+        """Inspect Git outside the short authorization and persistence transaction."""
         inspection = self._repo_service.inspect_repository(self._workspace)
-        self._workspace.revalidate()
-        snapshot_id: str | None = None
-        if (
-            inspection.status == RepositoryInspectionStatus.READY
-            and inspection.snapshot is not None
-        ):
-            self._store.save_snapshot(inspection.snapshot)
-            snapshot_id = inspection.snapshot.id
-
-        record = CheckpointBuilder.build(
-            project=project,
-            task=task,
-            inspection=inspection,
-            kind=CheckpointKind.MANUAL,
-            snapshot_id=snapshot_id,
-            session=session,
+        return save_managed_checkpoint(
+            self._store,
+            self._workspace,
+            inspection,
+            self._require_active_invocation,
             decisions=decisions,
             test_summary=test_summary,
             test_provenance=test_provenance,
-            operator_note=note,
+            note=note,
             metadata=metadata,
         )
-
-        self._store.save_checkpoint(record)
-        return record

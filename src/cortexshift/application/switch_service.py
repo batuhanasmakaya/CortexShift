@@ -456,9 +456,9 @@ class SwitchService:
     ) -> SwitchResult:
         """Hand the active task off to another provider and launch the receiving agent.
 
-        The workspace lease is held continuously from repository observation through
-        target provider runtime, so the Git state described by the handoff cannot drift
-        under another CortexShift agent before the receiving agent starts.
+        The workspace lease is held from repository observation through target runtime.
+        Its preflight also checks for retained provider work. External and untracked
+        processes can still change the repository during a handoff.
 
         Task progress is never mutated: `switch` changes only handoff, session, and Git
         snapshot orchestration state.

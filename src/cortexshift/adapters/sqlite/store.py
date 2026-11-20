@@ -22,7 +22,7 @@ import json
 import os
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import closing, contextmanager
+from contextlib import AbstractContextManager, closing, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePath, PureWindowsPath
 from threading import RLock
@@ -104,7 +104,7 @@ class SQLiteStateStore(
         """Open state, validating an existing workspace before configuring or migrating it."""
         self.db_path = Path(db_path).resolve()
         self._connection_lock = RLock()
-        self._task_write_open = False
+        self._write_transaction_open = False
         if _mode == "rwc":
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -217,11 +217,11 @@ class SQLiteStateStore(
         self.close()
 
     @contextmanager
-    def _write(self, *, join_task_write: bool = False) -> Iterator[None]:
+    def _write(self, *, join_transaction: bool = False) -> Iterator[None]:
         # MCP worker threads share this connection. Only the owning thread can
-        # join its Task transaction, and unrelated writers must wait for it.
+        # join its transaction, and unrelated writers must wait for it.
         with self._connection_lock:
-            if join_task_write and self._task_write_open:
+            if join_transaction and self._write_transaction_open:
                 yield
                 return
             if self._conn.in_transaction:
@@ -229,22 +229,26 @@ class SQLiteStateStore(
             with self._conn:
                 yield
 
-    @contextmanager
-    def task_write_transaction(self) -> Iterator[None]:
+    def task_write_transaction(self) -> AbstractContextManager[None]:
         """Acquire SQLite's write reservation before reading canonical Task state."""
+        return self.write_transaction()
+
+    @contextmanager
+    def write_transaction(self) -> Iterator[None]:
+        """Serialize canonical mutations and their checks across all connections."""
         try:
             with self._write():
                 self._conn.execute("BEGIN IMMEDIATE;")
-                self._task_write_open = True
+                self._write_transaction_open = True
                 try:
                     yield
                 finally:
-                    self._task_write_open = False
+                    self._write_transaction_open = False
         except sqlite3.Error as err:
             code = getattr(err, "sqlite_errorcode", 0) & 0xFF
             if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                 raise DatabaseStateError(
-                    "Task update could not acquire or finish its write transaction. Try again."
+                    "Could not acquire or finish the state write transaction. Try again."
                 ) from err
             raise DatabaseStateError(f"Task write transaction failed: {err}") from err
 
@@ -343,7 +347,7 @@ class SQLiteStateStore(
     def save_task(self, task: Task) -> None:
         """Persist or update a canonical Task record."""
         try:
-            with self._write(join_task_write=True):
+            with self._write(join_transaction=True):
                 self._conn.execute(
                     """
                     INSERT INTO tasks (
@@ -459,7 +463,7 @@ class SQLiteStateStore(
     def set_active_task_id(self, project_id: str, task_id: str | None) -> None:
         """Set or clear the active task identifier for the project."""
         try:
-            with self._write(join_task_write=True):
+            with self._write(join_transaction=True):
                 self._conn.execute(
                     """
                     INSERT INTO project_runtime (project_id, active_task_id)
@@ -478,7 +482,7 @@ class SQLiteStateStore(
     def save_snapshot(self, snapshot: GitSnapshot) -> None:
         """Persist a canonical GitSnapshot record."""
         try:
-            with self._write():
+            with self._write(join_transaction=True):
                 self._conn.execute(
                     """
                     INSERT INTO git_snapshots (
@@ -886,7 +890,7 @@ class SQLiteStateStore(
         provider responses, transcripts, and full diffs are never persisted.
         """
         try:
-            with self._write():
+            with self._write(join_transaction=True):
                 self._conn.execute(
                     """
                     INSERT INTO checkpoints (

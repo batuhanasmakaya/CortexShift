@@ -5,6 +5,7 @@ MCP Shared State, Agent Self-Reporting, and Cross-Agent Continuity.
 import json
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +21,9 @@ from cortexshift.application.run_service import RunService
 from cortexshift.application.switch_service import ProviderHandoffRegistry, SwitchService
 from cortexshift.domain.handoff import HandoffStatus
 from cortexshift.domain.project import Project
-from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX
 from cortexshift.domain.session import SessionStatus
 from cortexshift.domain.task import Task
-from cortexshift.mcp.context import McpExecutionContext
+from cortexshift.mcp.context import resolve_mcp_context
 from cortexshift.mcp.facade import McpApplicationFacade
 from cortexshift.ports.headless_runner import HeadlessProviderRunner, HeadlessResult
 from cortexshift.ports.process_runner import InteractiveProcessRunner
@@ -35,12 +35,16 @@ runner = AnsiFreeCliRunner()
 class RecordingProcessRunner(InteractiveProcessRunner):
     def __init__(self, exit_code: int = 0) -> None:
         self.exit_code = exit_code
+        self.report: Callable[[dict[str, str]], None] | None = None
         self.invocations: list[dict[str, Any]] = []
 
     def run_interactive(
         self, argv: list[str], cwd: Path | str, env: dict[str, str] | None = None
     ) -> int:
         self.invocations.append({"argv": argv, "cwd": cwd, "env": env})
+        if self.report is not None:
+            assert env is not None
+            self.report(env)
         return self.exit_code
 
 
@@ -101,7 +105,7 @@ def _seed_git_repo(tmp_path: Path) -> tuple[Project, Task]:
 
 def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    project, task = _seed_git_repo(tmp_path)
+    _, task = _seed_git_repo(tmp_path)
     db_file = tmp_path / ".cortexshift" / "state.sqlite3"
 
     process_runner = RecordingProcessRunner(exit_code=0)
@@ -126,6 +130,47 @@ def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.Monkey
         is_tty_fn=lambda: True,
     )
 
+    milestone_ids: list[str] = []
+
+    def report_claude(env: dict[str, str]) -> None:
+        ctx, store = resolve_mcp_context(env_override=env)
+        with store:
+            facade1 = McpApplicationFacade(ctx, store)
+            # Agent reports current work
+            facade1.set_current_work("Implementing MCP server architecture")
+
+            # Agent adds more remaining items discovered during work
+            facade1.add_remaining(
+                ["Self-reported progress", "Subprocess stdio test", "Wire protocol verification"]
+            )
+
+            # Agent marks item completed (removes from remaining, does not finish whole task!)
+            facade1.mark_completed(["Self-reported progress", "Subprocess stdio test"])
+
+            # Agent records known issue
+            facade1.record_issue(["Minor stdio buffer flush nuance"])
+
+            # Agent records architectural decision. It lands in its own immutable checkpoint and is
+            # deliberately NOT repeated in the milestone checkpoint below: the handoff assertions
+            # further down only hold because decisions are aggregated across checkpoint history.
+            dec_res = facade1.record_decision("Adopted stdio transport for local MCP communication")
+            assert dec_res.checkpoint_id.startswith("cp_")
+
+            # Agent captures milestone checkpoint
+            cp_res = facade1.create_checkpoint(
+                decisions=["Enforce pure stdout wire protocol"],
+                test_summary="540 passed in 18s",
+                note="Claude implementation complete, ready for handoff",
+            )
+            assert cp_res.checkpoint_id.startswith("cp_")
+            assert cp_res.decisions == ["Enforce pure stdout wire protocol"]
+            assert cp_res.checkpoint_id != dec_res.checkpoint_id
+            milestone_ids.append(cp_res.checkpoint_id)
+            live_preview = switch_service.preview("codex", start_dir=tmp_path).payload
+            assert live_preview.test_status.known is True
+            assert "540 passed in 18s" in live_preview.test_status.summary
+
+    process_runner.report = report_claude
     # -------------------------------------------------------------------------
     # 1. Agent 1 (Claude Code) runs
     # -------------------------------------------------------------------------
@@ -142,52 +187,28 @@ def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.Monkey
     assert inv1["env"]["CORTEXSHIFT_SESSION_ID"] == s1.id
     assert inv1["env"]["CORTEXSHIFT_MCP_READ_ONLY"] == "0"
 
-    # -------------------------------------------------------------------------
-    # 2. Claude interacts with CortexShift MCP during session
-    # -------------------------------------------------------------------------
-    store = SQLiteStateStore(db_file)
-    ctx1 = McpExecutionContext(
-        project_root=tmp_path,
-        project_id=project.id,
-        task_id=task.id,
-        session_id=s1.id,
-        provider_id=PROVIDER_CLAUDE,
-        managed_session=True,
-        read_only=False,
-    )
-    facade1 = McpApplicationFacade(ctx1, store)
+    def report_codex(env: dict[str, str]) -> None:
+        ctx, store = resolve_mcp_context(env_override=env)
+        with store:
+            facade2 = McpApplicationFacade(ctx, store)
+            task_view = facade2.get_current_task()
+            assert task_view["current_work"] == "Implementing MCP server architecture"
+            assert "Wire protocol verification" in task_view["remaining_items"]
 
-    # Agent reports current work
-    facade1.set_current_work("Implementing MCP server architecture")
+            chk_view = facade2.get_latest_checkpoint()
+            assert chk_view.checkpoint is not None
+            assert chk_view.checkpoint["kind"] == "session_end"
+            assert chk_view.checkpoint["session_id"] == s1.id
 
-    # Agent adds more remaining items discovered during work
-    facade1.add_remaining(
-        ["Self-reported progress", "Subprocess stdio test", "Wire protocol verification"]
-    )
+            claude_cp = store.get_checkpoint(milestone_ids[0])
+            assert claude_cp is not None
+            assert claude_cp.payload.test_status.summary == "540 passed in 18s"
+            assert claude_cp.payload.test_status.known is True
 
-    # Agent marks item completed (removes from remaining, does not finish whole task!)
-    facade1.mark_completed(["Self-reported progress", "Subprocess stdio test"])
+            facade2.mark_completed(["Wire protocol verification", "Handoff to Codex"])
+            facade2.set_current_work(None)
 
-    # Agent records known issue
-    facade1.record_issue(["Minor stdio buffer flush nuance"])
-
-    # Agent records architectural decision. It lands in its own immutable checkpoint and is
-    # deliberately NOT repeated in the milestone checkpoint below: the handoff assertions
-    # further down only hold because decisions are aggregated across checkpoint history.
-    dec_res = facade1.record_decision("Adopted stdio transport for local MCP communication")
-    assert dec_res.checkpoint_id.startswith("cp_")
-
-    # Agent captures milestone checkpoint
-    cp_res = facade1.create_checkpoint(
-        decisions=["Enforce pure stdout wire protocol"],
-        test_summary="540 passed in 18s",
-        note="Claude implementation complete, ready for handoff",
-    )
-    assert cp_res.checkpoint_id.startswith("cp_")
-    assert cp_res.decisions == ["Enforce pure stdout wire protocol"]
-    assert cp_res.checkpoint_id != dec_res.checkpoint_id
-    store.close()
-
+    process_runner.report = report_codex
     # -------------------------------------------------------------------------
     # 3. Switch to Agent 2 (Codex): verify handoff includes MCP-reported state
     # -------------------------------------------------------------------------
@@ -208,8 +229,9 @@ def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.Monkey
         "Enforce pure stdout wire protocol",
     ]
     assert payload.decisions_known is True
-    assert "540 passed in 18s" in payload.test_status.summary
-    assert payload.test_status.known is True
+    # Handoff test status still reflects the latest checkpoint, now the session-end record.
+    assert payload.source_checkpoint_kind == "session_end"
+    assert payload.test_status.known is False
 
     # Verify Codex launch specification includes -c MCP overrides
     assert len(process_runner.invocations) == 2
@@ -218,44 +240,6 @@ def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.Monkey
     c_indices = [i for i, a in enumerate(inv2["argv"]) if a == "-c"]
     c_values = [inv2["argv"][i + 1] for i in c_indices]
     assert f"mcp_servers.cortexshift.command={json.dumps(sys.executable)}" in c_values
-
-    # -------------------------------------------------------------------------
-    # 4. Codex resumes work and updates state via MCP
-    # -------------------------------------------------------------------------
-    s2_id = switch_res.target_session.id
-    store2 = SQLiteStateStore(db_file)
-    ctx2 = McpExecutionContext(
-        project_root=tmp_path,
-        project_id=project.id,
-        task_id=task.id,
-        session_id=s2_id,
-        provider_id=PROVIDER_CODEX,
-        managed_session=True,
-        read_only=False,
-    )
-    facade2 = McpApplicationFacade(ctx2, store2)
-
-    # Codex reads task context and latest checkpoint
-    task_view = facade2.get_current_task()
-    assert task_view["current_work"] == "Implementing MCP server architecture"
-    assert "Wire protocol verification" in task_view["remaining_items"]
-
-    chk_view = facade2.get_latest_checkpoint()
-    assert chk_view.checkpoint is not None
-    # S2 session completion automatically captured a SESSION_END checkpoint
-    assert chk_view.checkpoint["kind"] == "session_end"
-    assert chk_view.checkpoint["session_id"] == s2_id
-
-    # Claude's milestone checkpoint is preserved in checkpoint history
-    claude_cp = store2.get_checkpoint(cp_res.checkpoint_id)
-    assert claude_cp is not None
-    assert claude_cp.payload.test_status.summary == "540 passed in 18s"
-    assert claude_cp.payload.test_status.known is True
-
-    # Codex finishes the remaining items
-    facade2.mark_completed(["Wire protocol verification", "Handoff to Codex"])
-    facade2.set_current_work(None)
-    store2.close()
 
     # -------------------------------------------------------------------------
     # 5. Invariants and final state verification
@@ -267,6 +251,10 @@ def test_phase8_mcp_flagship_workflow(tmp_path: Path, monkeypatch: pytest.Monkey
     assert "Wire protocol verification" in final_task.completed
     assert "Handoff to Codex" in final_task.completed
     assert len(final_task.remaining) == 0
+
+    final_checkpoint = final_store.get_latest_checkpoint(task.id)
+    assert final_checkpoint is not None
+    assert final_checkpoint.session_id == switch_res.target_session.id
 
     # Schema version remains strictly v6
     assert final_store.get_schema_version() == 6

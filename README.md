@@ -32,7 +32,7 @@ not proof; checkpoints never establish that tests passed independently.
 - Cooperative checkpoints and deterministic crash recovery.
 - MCP shared state over local stdio: agents can read context and report progress.
 - A keyboard-driven terminal control center for tasks, repository state, and history.
-- Read-only Git inspection and an OS workspace lock for exclusive provider runs.
+- Read-only Git inspection and an OS workspace lease for managed provider runs.
 
 ## Quick start
 
@@ -109,7 +109,8 @@ An open dashboard holds no workspace lease and may observe a running agent.
 Claude and Codex receive MCP configuration automatically. Antigravity requires
 explicit workspace setup: `cortexshift mcp setup antigravity`.
 Inspect integration with `cortexshift mcp status`. Managed sessions expose
-10 context-bound tools; unmanaged/read-only sessions expose four read tools.
+10 context-bound tools while the invocation is live. Unmanaged and expired
+bindings expose four read tools at startup.
 See [Provider Support][provider-support] for identity, resume, and
 validation limits.
 

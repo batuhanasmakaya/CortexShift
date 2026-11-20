@@ -44,13 +44,17 @@ In accordance with the same-working-tree architectural invariant:
 - Subdirectory paths are resolved upwards to the enclosing project root via `ProjectLocator`.
 
 ### 4. Workspace Lease via OS Advisory Lock (`FileWorkspaceLease`)
+
+See [ADR-0014](ADR-0014-provider-and-mcp-invocation-lifecycles.md) for the additional
+provider guard and the platform limits on detecting surviving processes.
+
 To enforce the single-mutating-agent invariant per project:
 - A non-blocking exclusive advisory lock is acquired on `<project_root>/.cortexshift/agent.lock` prior to launching the provider process.
 - Implemented using POSIX `fcntl.flock` (with Windows fallback via `msvcrt.locking`).
 - If another session holds the lock, launch fails immediately with `WorkspaceLockedError` and exit code 1.
 - The OS advisory lock on the open file descriptor is authoritative; the mere existence of the lock file on disk does NOT indicate an active lock. Users should never be instructed to delete `.cortexshift/agent.lock` as normal error recovery.
 - Stale database session records (e.g. from an ungraceful shutdown leaving status `running` in SQLite) do not impede workspace leasing; only the live OS advisory lock controls exclusivity.
-- Lock release is guaranteed via context managers and `try...finally` blocks upon child process exit, interruption, or spawn failure.
+- The launcher releases its primary lease after finalization or on unwinding. An inherited POSIX provider guard can stay held by surviving work.
 - Independent projects maintain distinct lock files and do not block one another.
 
 ### 5. Active Task Requirement
@@ -93,8 +97,8 @@ In accordance with zero-credential and structured-canonical-state invariants:
 
 ### Positive
 - Users can run their preferred native coding agent seamlessly through CortexShift without altering their existing CLI auth or configuration.
-- Single-mutating-agent invariant prevents destructive concurrent workspace edits.
-- Workspace lease releases cleanly even across crashed processes or signal interruptions.
+- Managed launches contend for the same workspace lease and consult the provider guard before proceeding.
+- The OS releases the launcher's locks on process death. An inherited provider guard stays held while any copy of its descriptor survives.
 - Audit trail of sessions (start time, end time, provider, status, exit code) is available via `cortexshift session list` and `cortexshift session show`.
 - Zero prompts or credentials captured or logged.
 

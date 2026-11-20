@@ -1,9 +1,19 @@
 """Native provider model calls are never allowed in the deterministic test suite."""
 
+from collections.abc import Iterator
+from contextlib import ExitStack
+
 import pytest
 
 from tests.cli_runner import pin_console_width
 from tests.factories import FakeCodexBootstrap
+from tests.mcp_invocations import LiveMcpInvocations
+
+
+@pytest.fixture
+def live_mcp() -> Iterator[LiveMcpInvocations]:
+    with ExitStack() as locks:
+        yield LiveMcpInvocations(locks)
 
 
 @pytest.fixture(autouse=True)

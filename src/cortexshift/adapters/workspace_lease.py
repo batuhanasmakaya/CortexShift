@@ -2,19 +2,44 @@
 
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
+from cortexshift.adapters.advisory_lock import is_locked, release_lock, try_lock
+from cortexshift.domain.errors import WorkspaceLockedError
 from cortexshift.ports.workspace_lease import WorkspaceLease, WorkspaceLeaseManager
 
 STATE_DIR_NAME = ".cortexshift"
 LOCK_FILE_NAME = "agent.lock"
+PROVIDER_LOCK_FILE_NAME = "provider.lock"
+
+
+@contextmanager
+def hold_provider_guard(project_root: Path) -> Iterator[tuple[int, ...]]:
+    """Pass the POSIX guard into an owned process without changing its process group."""
+    if sys.platform == "win32":
+        yield ()
+        return
+
+    path = project_root / STATE_DIR_NAME / PROVIDER_LOCK_FILE_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = try_lock(path, create=True)
+    if fd is None:
+        raise WorkspaceLockedError(lock_path=path)
+    try:
+        yield (fd,)
+    finally:
+        # LOCK_UN would also unlock any descendants' copies of this descriptor.
+        os.close(fd)
 
 
 class FileWorkspaceLease(WorkspaceLease):
-    """OS-level advisory file lock enforcing single-mutating-agent invariant per project."""
+    """Workspace lease with a preflight for surviving managed provider work."""
 
     def __init__(self, lock_path: Path) -> None:
-        self._lock_path = Path(lock_path).resolve()
+        self._lock_path = lock_path.parent.resolve() / lock_path.name
+        self._provider_lock = self._lock_path.with_name(PROVIDER_LOCK_FILE_NAME)
         self._fd: int | None = None
 
     @property
@@ -22,92 +47,36 @@ class FileWorkspaceLease(WorkspaceLease):
         return self._lock_path
 
     def acquire(self) -> bool:
-        """Attempt non-blocking exclusive acquisition of the workspace lock."""
+        """Acquire the primary lock before probing the preceding provider's lock."""
         if self._fd is not None:
             return True
 
-        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = None
         try:
-            fd = os.open(str(self._lock_path), os.O_RDWR | os.O_CREAT, 0o600)
-        except OSError:
-            return False
-
-        try:
-            if sys.platform == "win32":
-                import msvcrt
-
-                if os.path.getsize(str(self._lock_path)) == 0:
-                    os.write(fd, b"\0")
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
+            self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = try_lock(self._lock_path, create=True)
+            if fd is None or is_locked(self._provider_lock):
+                return False
             self._fd = fd
             return True
-        except (BlockingIOError, OSError):
-            os.close(fd)
+        except OSError:
             return False
+        finally:
+            if fd is not None and self._fd is None:
+                release_lock(fd)
 
     def release(self) -> None:
         """Release the exclusive lock and close the underlying file descriptor."""
-        if self._fd is None:
-            return
-
-        try:
-            if sys.platform == "win32":
-                import msvcrt
-
-                os.lseek(self._fd, 0, os.SEEK_SET)
-                msvcrt.locking(self._fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        finally:
-            os.close(self._fd)
-            self._fd = None
+        if self._fd is not None:
+            fd, self._fd = self._fd, None
+            release_lock(fd)
 
     def is_locked(self) -> bool:
-        """Check whether the lock is currently held by any process."""
-        if self._fd is not None:
-            return True
-        if not self._lock_path.exists():
-            return False
-        try:
-            fd = os.open(str(self._lock_path), os.O_RDWR, 0o600)
-        except OSError:
-            return False
-
-        try:
-            if sys.platform == "win32":
-                import msvcrt
-
-                if os.path.getsize(str(self._lock_path)) == 0:
-                    return False
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            return False
-        except (BlockingIOError, OSError):
-            return True
-        finally:
-            os.close(fd)
+        """Check whether the workspace is unavailable for managed agent operations."""
+        return self._fd is not None or is_locked(self._lock_path) or is_locked(self._provider_lock)
 
     def __enter__(self) -> "FileWorkspaceLease":
         if not self.acquire():
-            from cortexshift.domain.errors import WorkspaceLockedError
-
             raise WorkspaceLockedError(lock_path=self._lock_path)
         return self
 

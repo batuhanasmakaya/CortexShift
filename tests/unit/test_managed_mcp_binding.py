@@ -30,6 +30,7 @@ from cortexshift.adapters.providers.codex import (
 )
 from cortexshift.application.session_launcher import ProviderSessionLauncher
 from cortexshift.domain.mcp_binding import (
+    ENV_INVOCATION_TOKEN,
     ENV_MCP_READ_ONLY,
     ENV_PROJECT_ROOT,
     ENV_PROVIDER_ID,
@@ -323,7 +324,7 @@ def test_launcher_binds_provider_mcp_config_to_the_started_session(tmp_path: Pat
     assert invocation["env"][ENV_SESSION_ID] == session.id
 
 
-def test_launcher_observer_sees_the_bound_specification(tmp_path: Path) -> None:
+def test_launcher_observer_does_not_receive_the_invocation_token(tmp_path: Path) -> None:
     runner = RecordingProcessRunner()
     store = InMemorySessionStore()
     launcher = ProviderSessionLauncher(process_runner=runner, store=store)
@@ -340,7 +341,8 @@ def test_launcher_observer_sees_the_bound_specification(tmp_path: Path) -> None:
         mcp_binder=adapter,
     )
 
-    assert _codex_mcp_table(observed[0])["env"][ENV_SESSION_ID] == session.id
+    assert observed == [spec.argv]
+    assert ENV_INVOCATION_TOKEN in _codex_mcp_table(runner.invocations[0]["argv"])["env"]
 
 
 def test_launcher_without_binder_leaves_the_specification_alone(tmp_path: Path) -> None:

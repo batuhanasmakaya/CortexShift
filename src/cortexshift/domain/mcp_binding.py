@@ -7,9 +7,10 @@ exclusively from persisted state at launch time and is never assembled from prov
 model input.
 """
 
+from hashlib import sha256
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from cortexshift.domain.provider import ProviderId
 from cortexshift.domain.session import Session
@@ -19,6 +20,8 @@ ENV_TASK_ID = "CORTEXSHIFT_TASK_ID"
 ENV_SESSION_ID = "CORTEXSHIFT_SESSION_ID"
 ENV_PROVIDER_ID = "CORTEXSHIFT_PROVIDER_ID"
 ENV_MCP_READ_ONLY = "CORTEXSHIFT_MCP_READ_ONLY"
+ENV_INVOCATION_TOKEN = "CORTEXSHIFT_INVOCATION_TOKEN"
+INVOCATION_VERIFIER_KEY = "mcp_invocation_verifier"
 
 #: Every variable the managed binding owns. A launch specification may add environment of
 #: its own, but never these: the binding is the single authority over execution context.
@@ -28,14 +31,20 @@ BINDING_ENV_VARS = (
     ENV_SESSION_ID,
     ENV_PROVIDER_ID,
     ENV_MCP_READ_ONLY,
+    ENV_INVOCATION_TOKEN,
 )
+
+
+def invocation_verifier(token: SecretStr) -> str:
+    """Derive the local verifier without persisting the authority-bearing token."""
+    return sha256(token.get_secret_value().encode()).hexdigest()
 
 
 class McpSessionBinding(BaseModel):
     """Canonical managed execution context for one provider launch.
 
-    The MCP server re-validates every field against SQLite before granting write tools, so
-    this object asserts an identity rather than a permission.
+    A live launch can also carry a token. MCP checks its Session verifier and launcher
+    lock before enabling write tools and again before each mutation.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -45,6 +54,7 @@ class McpSessionBinding(BaseModel):
     session_id: str
     provider_id: ProviderId
     read_only: bool = False
+    invocation_token: SecretStr | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("task_id", "session_id")
     @classmethod
@@ -72,10 +82,13 @@ class McpSessionBinding(BaseModel):
 
     def to_env(self) -> dict[str, str]:
         """Render the binding as the environment variables the MCP server resolves."""
-        return {
+        env = {
             ENV_PROJECT_ROOT: str(self.project_root),
             ENV_TASK_ID: self.task_id,
             ENV_SESSION_ID: self.session_id,
             ENV_PROVIDER_ID: str(self.provider_id),
             ENV_MCP_READ_ONLY: "1" if self.read_only else "0",
         }
+        if self.invocation_token is not None:
+            env[ENV_INVOCATION_TOKEN] = self.invocation_token.get_secret_value()
+        return env

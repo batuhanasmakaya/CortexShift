@@ -9,9 +9,10 @@ from cortexshift.domain.checkpoint import (
     CheckpointTestProvenance,
 )
 from cortexshift.domain.errors import McpReadOnlyError
+from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE
-from cortexshift.domain.session import Session
+from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
@@ -21,10 +22,11 @@ from cortexshift.mcp.models import (
     MAX_ITEM_CHARS,
     MAX_ITEMS_PER_CALL,
 )
+from tests.mcp_invocations import LiveMcpInvocations
 
 
 def _setup_test_env(
-    tmp_path: Path, managed: bool = True, read_only: bool = False
+    tmp_path: Path, live_mcp: LiveMcpInvocations, managed: bool = True, read_only: bool = False
 ) -> tuple[McpApplicationFacade, SQLiteStateStore, Task, Session]:
     db_file = tmp_path / ".cortexshift" / "state.sqlite3"
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -44,7 +46,7 @@ def _setup_test_env(
     store.save_task(task)
     store.set_active_task_id(project.id, task.id)
 
-    session = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE)
+    session = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING)
     store.save_session(session)
 
     ctx = McpExecutionContext(
@@ -57,12 +59,32 @@ def _setup_test_env(
         read_only=read_only,
     )
 
+    if managed and not read_only:
+        ctx = live_mcp.authorize(ctx, store)
     facade = McpApplicationFacade(ctx, store)
     return facade, store, task, session
 
 
-def test_get_project_context(tmp_path: Path) -> None:
-    facade, store, task, session = _setup_test_env(tmp_path)
+def test_connected_mcp_loses_write_authority_after_finalization(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
+    facade, store, task, session = _setup_test_env(tmp_path, live_mcp)
+    with store:
+        facade.set_current_work("Final provider update")
+        with SQLiteStateStore(store.db_path) as launcher_store:
+            launcher_store.save_session(
+                session.model_copy(
+                    update={"status": SessionStatus.COMPLETED, "ended_at": utc_now()}
+                )
+            )
+        with pytest.raises(McpReadOnlyError, match="expired"):
+            facade.set_current_work("Stale update")
+        assert facade.get_current_task()["current_work"] == "Final provider update"
+        assert facade.get_current_task()["id"] == task.id
+
+
+def test_get_project_context(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, task, session = _setup_test_env(tmp_path, live_mcp)
     res = facade.get_project_context()
     assert res.project.name == "ToolTest"
     assert res.task is not None
@@ -76,8 +98,8 @@ def test_get_project_context(tmp_path: Path) -> None:
     store.close()
 
 
-def test_get_current_task(tmp_path: Path) -> None:
-    facade, store, task, _ = _setup_test_env(tmp_path)
+def test_get_current_task(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, task, _ = _setup_test_env(tmp_path, live_mcp)
     res = facade.get_current_task()
     assert res["id"] == task.id
     assert res["title"] == "Implementation Task"
@@ -88,8 +110,8 @@ def test_get_current_task(tmp_path: Path) -> None:
     store.close()
 
 
-def test_get_latest_checkpoint(tmp_path: Path) -> None:
-    facade, store, task, session = _setup_test_env(tmp_path)
+def test_get_latest_checkpoint(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, task, session = _setup_test_env(tmp_path, live_mcp)
     # Initially no checkpoint
     assert facade.get_latest_checkpoint().checkpoint is None
 
@@ -110,16 +132,16 @@ def test_get_latest_checkpoint(tmp_path: Path) -> None:
     store.close()
 
 
-def test_get_repository_status(tmp_path: Path) -> None:
-    facade, store, _, _ = _setup_test_env(tmp_path)
+def test_get_repository_status(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, _, _ = _setup_test_env(tmp_path, live_mcp)
     res = facade.get_repository_status()
     assert "available" in res
     assert "status" in res
     store.close()
 
 
-def test_set_current_work(tmp_path: Path) -> None:
-    facade, store, task, _ = _setup_test_env(tmp_path)
+def test_set_current_work(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, task, _ = _setup_test_env(tmp_path, live_mcp)
     res = facade.set_current_work("Refactoring MCP facade")
     assert res.current_work == "Refactoring MCP facade"
 
@@ -134,8 +156,10 @@ def test_set_current_work(tmp_path: Path) -> None:
     store.close()
 
 
-def test_mark_completed_removes_from_remaining(tmp_path: Path) -> None:
-    facade, store, task, _ = _setup_test_env(tmp_path)
+def test_mark_completed_removes_from_remaining(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
+    facade, store, task, _ = _setup_test_env(tmp_path, live_mcp)
     assert "Write tests" in task.remaining
     res = facade.mark_completed(["Write tests", "New completed item"])
     assert "Write tests" in res.completed
@@ -150,8 +174,8 @@ def test_mark_completed_removes_from_remaining(tmp_path: Path) -> None:
     store.close()
 
 
-def test_add_remaining(tmp_path: Path) -> None:
-    facade, store, task, _ = _setup_test_env(tmp_path)
+def test_add_remaining(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, task, _ = _setup_test_env(tmp_path, live_mcp)
     res = facade.add_remaining(["Audit security", "Benchmarking"])
     assert "Audit security" in res.remaining
     assert "Benchmarking" in res.remaining
@@ -162,8 +186,8 @@ def test_add_remaining(tmp_path: Path) -> None:
     store.close()
 
 
-def test_record_issue(tmp_path: Path) -> None:
-    facade, store, task, _ = _setup_test_env(tmp_path)
+def test_record_issue(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, task, _ = _setup_test_env(tmp_path, live_mcp)
     res = facade.record_issue(["Intermittent file lock timeout"])
     assert "Intermittent file lock timeout" in res.known_issues
 
@@ -173,8 +197,8 @@ def test_record_issue(tmp_path: Path) -> None:
     store.close()
 
 
-def test_record_decision_creates_checkpoint(tmp_path: Path) -> None:
-    facade, store, task, _ = _setup_test_env(tmp_path)
+def test_record_decision_creates_checkpoint(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, task, _ = _setup_test_env(tmp_path, live_mcp)
     res = facade.record_decision("Adopt SQLite WAL mode for local concurrency")
     assert res.checkpoint_id.startswith("cp_")
     assert res.decision == "Adopt SQLite WAL mode for local concurrency"
@@ -185,8 +209,8 @@ def test_record_decision_creates_checkpoint(tmp_path: Path) -> None:
     store.close()
 
 
-def test_create_checkpoint(tmp_path: Path) -> None:
-    facade, store, task, _ = _setup_test_env(tmp_path)
+def test_create_checkpoint(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, task, _ = _setup_test_env(tmp_path, live_mcp)
     res = facade.create_checkpoint(
         decisions=["Decided on standard stdio transport"],
         test_summary="15 unit tests passing",
@@ -206,9 +230,11 @@ def test_create_checkpoint(tmp_path: Path) -> None:
     store.close()
 
 
-def test_write_tools_reject_unmanaged_or_read_only(tmp_path: Path) -> None:
+def test_write_tools_reject_unmanaged_or_read_only(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     # Unmanaged
-    facade_unm, store_unm, _, _ = _setup_test_env(tmp_path, managed=False)
+    facade_unm, store_unm, _, _ = _setup_test_env(tmp_path, live_mcp, managed=False)
     with pytest.raises(McpReadOnlyError):
         facade_unm.set_current_work("Hack")
     with pytest.raises(McpReadOnlyError):
@@ -225,15 +251,15 @@ def test_write_tools_reject_unmanaged_or_read_only(tmp_path: Path) -> None:
 
     # Managed but explicit read-only
     facade_ro, store_ro, _, _ = _setup_test_env(
-        tmp_path / "managed-read-only", managed=True, read_only=True
+        tmp_path / "managed-read-only", live_mcp, managed=True, read_only=True
     )
     with pytest.raises(McpReadOnlyError):
         facade_ro.set_current_work("Hack")
     store_ro.close()
 
 
-def test_write_tools_input_bounds_validation(tmp_path: Path) -> None:
-    facade, store, _, _ = _setup_test_env(tmp_path)
+def test_write_tools_input_bounds_validation(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
+    facade, store, _, _ = _setup_test_env(tmp_path, live_mcp)
 
     # current_work too long
     with pytest.raises(ValueError, match="exceeds maximum length"):

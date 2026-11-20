@@ -301,12 +301,13 @@ async def test_dashboard_actions_never_reach_another_project(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_the_workspace_probe_releases_the_lease_immediately(project: Path) -> None:
-    """The probe may acquire the lease, but must never hold it."""
+async def test_the_workspace_probe_does_not_create_a_lease(project: Path) -> None:
+    """The dashboard observes existing locks and leaves the private directory alone."""
     facade = build_facade(project)
     assert facade.workspace_activity() is WorkspaceActivity.FREE
 
     lease = FileWorkspaceLeaseManager().get_lease(project)
+    assert not lease.lock_path.exists()
     assert lease.acquire() is True
     try:
         assert facade.workspace_activity() is WorkspaceActivity.BUSY

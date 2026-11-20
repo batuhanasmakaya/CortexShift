@@ -11,13 +11,16 @@ from cortexshift.domain.errors import (
 )
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE
-from cortexshift.domain.session import Session
+from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
+from tests.mcp_invocations import LiveMcpInvocations
 
 
-def test_mcp_context_isolates_bound_task_even_if_active_task_changes(tmp_path: Path) -> None:
+def test_mcp_context_isolates_bound_task_even_if_active_task_changes(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """Invariant: MCP tools mutate only the Task bound at launch, not whatever task is active."""
     db_file = tmp_path / ".cortexshift" / "state.sqlite3"
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -49,7 +52,7 @@ def test_mcp_context_isolates_bound_task_even_if_active_task_changes(tmp_path: P
     )
     store.save_task(task_b)
 
-    sess_a = Session(task_id=task_a.id, provider_id=PROVIDER_CLAUDE)
+    sess_a = Session(task_id=task_a.id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING)
     store.save_session(sess_a)
 
     # Launch context bound specifically to Task A
@@ -62,7 +65,7 @@ def test_mcp_context_isolates_bound_task_even_if_active_task_changes(tmp_path: P
         managed_session=True,
         read_only=False,
     )
-    facade_a = McpApplicationFacade(ctx_a, store)
+    facade_a = McpApplicationFacade(live_mcp.authorize(ctx_a, store), store)
 
     # Now change active task in DB to Task B
     store.set_active_task_id(proj.id, task_b.id)
@@ -143,7 +146,7 @@ def test_mcp_context_with_nonexistent_task_fails_safely(tmp_path: Path) -> None:
     with pytest.raises(TaskNotFoundError):
         facade.get_current_task()
 
-    with pytest.raises(TaskNotFoundError):
+    with pytest.raises(McpReadOnlyError, match="expired"):
         facade.set_current_work("Work")
 
     store.close()

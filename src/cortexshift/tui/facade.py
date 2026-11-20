@@ -336,19 +336,11 @@ class TuiFacade:
     # ------------------------------------------------------------------
 
     def workspace_activity(self) -> WorkspaceActivity:
-        """Probe whether another agent currently owns the exclusive workspace lease.
-
-        The OS advisory lock is authoritative: presence of the lock file on disk proves
-        nothing. When the lease is free the probe acquires and immediately releases it,
-        so the dashboard never holds the lease.
-        """
+        """Probe the workspace and provider guards without starting a lease."""
         try:
             self.workspace.revalidate()
             lease = self._lease_manager.get_lease(self._root)
-            if lease.acquire():
-                lease.release()
-                return WorkspaceActivity.FREE
-            return WorkspaceActivity.BUSY
+            return WorkspaceActivity.BUSY if lease.is_locked() else WorkspaceActivity.FREE
         except Exception:
             return WorkspaceActivity.UNKNOWN
 
