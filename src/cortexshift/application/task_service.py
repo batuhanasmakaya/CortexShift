@@ -1,5 +1,7 @@
 """Application service managing Task lifecycle and active task pointer."""
 
+from collections.abc import Callable
+
 from cortexshift.domain.errors import (
     NoActiveTaskError,
     TaskAlreadyCompletedError,
@@ -144,6 +146,7 @@ class TaskService:
         add_issues: list[str] | None = None,
         *,
         complete_items: list[str] | None = None,
+        authorize: Callable[[], None] | None = None,
     ) -> Task:
         """Update fields and progression lists on a task.
 
@@ -158,6 +161,7 @@ class TaskService:
             add_remaining: Optional list of remaining item strings to append.
             add_issues: Optional list of known issue strings to append.
             complete_items: Optional items to add to completed and remove from remaining.
+            authorize: Optional caller-specific check under the Task write reservation.
 
         Returns:
             The updated Task entity.
@@ -168,6 +172,8 @@ class TaskService:
             TaskTerminalError: If the task is completed or cancelled.
         """
         with self._store.task_write_transaction():
+            if authorize is not None:
+                authorize()
             task = self._get_project_task(project_id, task_id, "update")
             self._require_nonterminal(task, "update")
 

@@ -17,7 +17,7 @@ class WorkspaceLease(Protocol):
         """Attempt to acquire the exclusive non-blocking lease.
 
         Returns:
-            True if the lease was acquired successfully, False if already held.
+            True if the lease was acquired successfully, False if unavailable.
         """
         ...
 
@@ -26,7 +26,7 @@ class WorkspaceLease(Protocol):
         ...
 
     def is_locked(self) -> bool:
-        """Check whether the workspace is currently locked by any process."""
+        """Check whether managed workspace operations are currently blocked by a lock."""
         ...
 
 

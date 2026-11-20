@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from pydantic import SecretStr
 
 from cortexshift.adapters.providers.antigravity import (
     AntigravityHandoffAdapter,
@@ -38,7 +39,7 @@ from cortexshift.domain.errors import (
     WorkspaceLockedError,
 )
 from cortexshift.domain.identifiers import utc_now
-from cortexshift.domain.mcp_binding import McpSessionBinding
+from cortexshift.domain.mcp_binding import ENV_INVOCATION_TOKEN, McpSessionBinding
 from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX, ProviderId
 from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
@@ -52,9 +53,18 @@ def store_at(root: Path) -> SQLiteStateStore:
     return SQLiteStateStore(root / ".cortexshift/state.sqlite3", auto_migrate=False)
 
 
-def managed_binding(root: Path, session: Session) -> McpSessionBinding:
-    """The binding a managed launch of this session stamps into its MCP configuration."""
-    return McpSessionBinding.from_session(session=session, project_root=root)
+class BoundProcessRunner(FakeProcessRunner):
+    def run_interactive(
+        self, argv: list[str], cwd: Path | str, env: dict[str, str] | None = None
+    ) -> int:
+        assert env is not None
+        self.token = SecretStr(env[ENV_INVOCATION_TOKEN])
+        return super().run_interactive(argv, cwd, env)
+
+    def binding(self, root: Path, session: Session) -> McpSessionBinding:
+        return McpSessionBinding.from_session(session, root).model_copy(
+            update={"invocation_token": self.token}
+        )
 
 
 def known(root: Path, task_id: str, provider: str = "claude", native: str = "native-A") -> Session:
@@ -97,7 +107,7 @@ def test_exact_resume_contract(adapter, expected_suffix, tmp_path: Path) -> None
 
 def test_claude_uuid_persisted_before_launch_and_prompt_not_persisted(tmp_path: Path) -> None:
     _, task = seed_project(tmp_path)
-    runner = FakeProcessRunner()
+    runner = BoundProcessRunner()
     service = RunService(
         process_runner=runner, which_fn=lambda cmd: "/fake/" + cmd, is_tty_fn=lambda: True
     )
@@ -115,7 +125,7 @@ def test_claude_uuid_persisted_before_launch_and_prompt_not_persisted(tmp_path: 
     assert runner.invocations[0]["argv"] == [
         "/fake/claude",
         "--mcp-config",
-        build_claude_mcp_config(binding=managed_binding(tmp_path, session)),
+        build_claude_mcp_config(binding=runner.binding(tmp_path, session)),
         "--session-id",
         session.native_session_id,
         "SECRET-USER-PROMPT",
@@ -130,13 +140,13 @@ def test_plain_run_keeps_unknown_id_without_model_turn(
     tmp_path: Path, provider: str, codex_bootstrap: FakeCodexBootstrap
 ) -> None:
     seed_project(tmp_path)
-    process = FakeProcessRunner()
+    process = BoundProcessRunner()
     service = RunService(
         process_runner=process, which_fn=lambda cmd: "/fake/" + cmd, is_tty_fn=lambda: True
     )
     session = service.run(provider, start_dir=tmp_path)
     assert session.native_session_id is None
-    binding = managed_binding(tmp_path, session)
+    binding = process.binding(tmp_path, session)
     expected_len = 1 + len(build_codex_mcp_args(binding=binding)) if provider == "codex" else 1
     assert len(process.invocations[0]["argv"]) == expected_len
     assert not codex_bootstrap.invocations
@@ -467,7 +477,7 @@ def test_codex_plain_prompt_does_not_bootstrap(
     tmp_path: Path, codex_bootstrap: FakeCodexBootstrap
 ) -> None:
     seed_project(tmp_path)
-    process = FakeProcessRunner()
+    process = BoundProcessRunner()
     service = RunService(
         process_runner=process, which_fn=lambda cmd: "/fake/" + cmd, is_tty_fn=lambda: True
     )
@@ -475,7 +485,7 @@ def test_codex_plain_prompt_does_not_bootstrap(
     assert result.native_session_id is None
     assert process.invocations[0]["argv"] == [
         "/fake/codex",
-        *build_codex_mcp_args(binding=managed_binding(tmp_path, result)),
+        *build_codex_mcp_args(binding=process.binding(tmp_path, result)),
         "USER-PROMPT",
     ]
     assert not codex_bootstrap.invocations

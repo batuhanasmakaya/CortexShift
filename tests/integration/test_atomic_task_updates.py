@@ -22,11 +22,12 @@ from cortexshift.domain.errors import (
 )
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CODEX
-from cortexshift.domain.session import Session
+from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task, TaskStatus
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
 from tests.factories import seed_project
+from tests.mcp_invocations import LiveMcpInvocations
 
 
 @pytest.fixture
@@ -331,10 +332,11 @@ def test_concurrent_bound_mcp_writes_preserve_progress_and_decisions(
     connections: tuple[Project, Task, SQLiteStateStore, SQLiteStateStore],
     tmp_path: Path,
     share_connection: bool,
+    live_mcp: LiveMcpInvocations,
 ) -> None:
     project, original, first, second = connections
     tasks = TaskService(first)
-    session = Session(task_id=original.id, provider_id=PROVIDER_CODEX)
+    session = Session(task_id=original.id, provider_id=PROVIDER_CODEX, status=SessionStatus.RUNNING)
     first.save_session(session)
     context = McpExecutionContext(
         project_root=tmp_path,
@@ -344,6 +346,8 @@ def test_concurrent_bound_mcp_writes_preserve_progress_and_decisions(
         provider_id=session.provider_id,
         managed_session=True,
     )
+    context = live_mcp.authorize(context, first)
+    live_session = first.get_session(session.id)
     mcp_first = McpApplicationFacade(context, first)
     mcp_second = McpApplicationFacade(context, first if share_connection else second)
     active = tasks.start_task(project.id, "Different task", "Must stay untouched")
@@ -398,7 +402,7 @@ def test_concurrent_bound_mcp_writes_preserve_progress_and_decisions(
     with pytest.raises(TaskTerminalError, match="completed"):
         mcp_second.add_remaining(["Stale session report"])
     assert second.get_task(original.id) == completed
-    assert second.get_session(session.id) == session
+    assert second.get_session(session.id) == live_session
     assert tasks.get_active_task(project.id) == active
 
 

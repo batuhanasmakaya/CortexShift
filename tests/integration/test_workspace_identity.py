@@ -30,6 +30,7 @@ from cortexshift.domain.errors import (
 )
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.mcp_binding import (
+    ENV_INVOCATION_TOKEN,
     ENV_PROJECT_ROOT,
     ENV_PROVIDER_ID,
     ENV_SESSION_ID,
@@ -45,6 +46,7 @@ from cortexshift.tui.coordinator import TuiCoordinator
 from cortexshift.tui.facade import TuiFacade
 from tests.cli_runner import AnsiFreeCliRunner, unwrapped
 from tests.factories import FakeCodexBootstrap, make_inspection, patch_which
+from tests.mcp_invocations import LiveMcpInvocations
 from tests.unit.test_sqlite_v6_migrations import build_v5
 
 MISMATCH = "Workspace identity mismatch"
@@ -239,13 +241,18 @@ def test_valid_legacy_state_still_migrates_on_init(tmp_path: Path) -> None:
         assert store.get_task(ids["task"]) is not None
 
 
-def test_managed_mcp_checks_workspace_before_granting_write_access(tmp_path: Path) -> None:
+def test_managed_mcp_checks_workspace_before_granting_write_access(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     original = tmp_path / "original"
     copied = tmp_path / "copy"
     task = initialize(original)
     session = save_session(original, task, stale=True)
     shutil.copytree(original, copied)
+    with SQLiteStateStore(ProjectLocator.get_database_path(original)) as launcher_store:
+        token = live_mcp.open(original, launcher_store, session)
     env = {
+        ENV_INVOCATION_TOKEN: token.get_secret_value(),
         ENV_PROJECT_ROOT: str(original),
         ENV_SESSION_ID: session.id,
         ENV_TASK_ID: task.id,

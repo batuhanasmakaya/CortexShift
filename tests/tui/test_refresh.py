@@ -15,11 +15,13 @@ from cortexshift.application.workspace import WorkspaceStart
 from cortexshift.domain.git import RepositoryInspection, RepositoryInspectionStatus
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE
+from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.status import ProjectStatus
 from cortexshift.tui.app import STATE_WORKER_GROUP
 from cortexshift.tui.screens import TuiSection
 from cortexshift.tui.screens.sessions import SessionsSection
 from tests.factories import make_inspection
+from tests.mcp_invocations import LiveMcpInvocations
 from tests.tui.conftest import (
     active_task,
     assert_section,
@@ -93,7 +95,9 @@ async def test_explicit_refresh_picks_up_state_changed_outside_the_dashboard(
 
 
 @pytest.mark.asyncio
-async def test_lightweight_timer_reflects_state_written_through_mcp(project: Path) -> None:
+async def test_lightweight_timer_reflects_state_written_through_mcp(
+    project: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """An agent self-reporting through MCP shows up in an already-open dashboard.
 
     The MCP write path and the dashboard read path share one SQLite database, so no
@@ -115,18 +119,19 @@ async def test_lightweight_timer_reflects_state_written_through_mcp(project: Pat
             assert db_project is not None
             task_id = store.get_active_task_id(db_project.id)
             assert task_id is not None
-            mcp = McpApplicationFacade(
-                McpExecutionContext(
-                    project_root=project,
-                    project_id=db_project.id,
-                    task_id=task_id,
-                    session_id="sess_mcp_agent",
-                    provider_id=PROVIDER_CLAUDE,
-                    managed_session=True,
-                    read_only=False,
-                ),
-                store,
+            session = Session(
+                task_id=task_id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING
             )
+            store.save_session(session)
+            context = McpExecutionContext(
+                project_root=project,
+                project_id=db_project.id,
+                task_id=task_id,
+                session_id=session.id,
+                provider_id=PROVIDER_CLAUDE,
+                managed_session=True,
+            )
+            mcp = McpApplicationFacade(live_mcp.authorize(context, store), store)
             mcp.mark_completed(["Wire the parser"])
             mcp.record_issue(["Parser chokes on unicode paths"])
         finally:

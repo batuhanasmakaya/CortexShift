@@ -10,11 +10,12 @@ from mcp.server.mcpserver.exceptions import ResourceError
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE
-from cortexshift.domain.session import Session
+from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
 from cortexshift.mcp.server import create_mcp_server
+from tests.mcp_invocations import LiveMcpInvocations
 
 
 def _setup_test_env(
@@ -37,7 +38,7 @@ def _setup_test_env(
     store.save_task(task)
     store.set_active_task_id(project.id, task.id)
 
-    session = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE)
+    session = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING)
     store.save_session(session)
 
     ctx = McpExecutionContext(
@@ -53,7 +54,7 @@ def _setup_test_env(
 
 
 @pytest.mark.anyio
-async def test_list_resources(tmp_path: Path) -> None:
+async def test_list_resources(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
     ctx, store, _, _ = _setup_test_env(tmp_path)
     server = create_mcp_server(ctx, store)
 
@@ -68,7 +69,7 @@ async def test_list_resources(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_read_project_resource(tmp_path: Path) -> None:
+async def test_read_project_resource(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
     ctx, store, task, session = _setup_test_env(tmp_path)
     server = create_mcp_server(ctx, store)
 
@@ -86,7 +87,7 @@ async def test_read_project_resource(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_read_task_resource(tmp_path: Path) -> None:
+async def test_read_task_resource(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
     ctx, store, task, _ = _setup_test_env(tmp_path)
     server = create_mcp_server(ctx, store)
 
@@ -104,9 +105,9 @@ async def test_read_task_resource(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_read_checkpoint_resource(tmp_path: Path) -> None:
+async def test_read_checkpoint_resource(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
     ctx, store, _, _ = _setup_test_env(tmp_path)
-    facade = McpApplicationFacade(ctx, store)
+    facade = McpApplicationFacade(live_mcp.authorize(ctx, store), store)
     cp_res = facade.create_checkpoint(
         decisions=["Use stdio transport"],
         test_summary="5 passed",
@@ -127,7 +128,7 @@ async def test_read_checkpoint_resource(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_read_checkpoint_resource_empty(tmp_path: Path) -> None:
+async def test_read_checkpoint_resource_empty(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
     ctx, store, _, _ = _setup_test_env(tmp_path)
     server = create_mcp_server(ctx, store)
 
@@ -142,7 +143,7 @@ async def test_read_checkpoint_resource_empty(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_read_repository_resource(tmp_path: Path) -> None:
+async def test_read_repository_resource(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
     ctx, store, _, _ = _setup_test_env(tmp_path)
     server = create_mcp_server(ctx, store)
 
@@ -158,7 +159,7 @@ async def test_read_repository_resource(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_read_unknown_resource_raises(tmp_path: Path) -> None:
+async def test_read_unknown_resource_raises(tmp_path: Path, live_mcp: LiveMcpInvocations) -> None:
     ctx, store, _, _ = _setup_test_env(tmp_path)
     server = create_mcp_server(ctx, store)
 

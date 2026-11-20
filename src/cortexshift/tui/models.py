@@ -46,7 +46,7 @@ AUTHORITY_LABELS: dict[DataAuthority, str] = {
 
 
 class WorkspaceActivity(StrEnum):
-    """Observed state of the exclusive project workspace lease.
+    """Observed availability under the workspace lease and retained process guard.
 
     Derived strictly from a non-blocking OS advisory lock probe. The presence of the
     lock file on disk is never treated as evidence of an active lease.

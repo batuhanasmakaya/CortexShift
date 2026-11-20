@@ -8,14 +8,22 @@ around the same workspace.
 """
 
 import contextlib
+import secrets
 from collections.abc import Callable
 from typing import Any
 
+from pydantic import SecretStr
+
+from cortexshift.adapters.invocation_lock import hold_invocation
 from cortexshift.application.workspace import WorkspaceIdentity
 from cortexshift.domain.errors import ProjectConflictError
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.launch import LaunchSpecification
-from cortexshift.domain.mcp_binding import McpSessionBinding
+from cortexshift.domain.mcp_binding import (
+    INVOCATION_VERIFIER_KEY,
+    McpSessionBinding,
+    invocation_verifier,
+)
 from cortexshift.domain.provider import ProviderId
 from cortexshift.domain.session import Session, SessionExitReason, SessionStatus
 from cortexshift.ports.process_runner import InteractiveProcessRunner
@@ -104,23 +112,60 @@ class ProviderSessionLauncher:
         quota exhaustion or rate limiting from an exit code. Spawn failures map to
         `spawn_failed` and re-raise so the caller can classify the operation as failed.
         """
+        with contextlib.ExitStack() as authority:
+            session = self._execute(session, launch_spec, on_launch, mcp_binder, authority)
+            if self._workspace is not None:
+                self._workspace.revalidate()
+            self._store.save_session(session)
+
+        # Internal checkpoint capture belongs to CortexShift after provider write authority ends.
+        if self._checkpoint_service is not None and hasattr(
+            self._checkpoint_service, "capture_session_end_checkpoint"
+        ):
+            with contextlib.suppress(Exception):
+                self._checkpoint_service.capture_session_end_checkpoint(
+                    session=session,
+                    store=self._store,
+                    workspace=self._workspace,
+                )
+        return session
+
+    def _execute(
+        self,
+        session: Session,
+        launch_spec: LaunchSpecification,
+        on_launch: Callable[[LaunchSpecification, Session], None] | None,
+        mcp_binder: ManagedMcpBinder | None,
+        authority: contextlib.ExitStack,
+    ) -> Session:
         root = self._workspace.root if self._workspace is not None else launch_spec.cwd
         try:
+            if on_launch:
+                on_launch(launch_spec, session)
+
+            token = SecretStr(secrets.token_hex(32))
+            verifier = invocation_verifier(token)
             binding = McpSessionBinding.from_session(
                 session=session,
                 project_root=root,
-            )
+            ).model_copy(update={"invocation_token": token})
             if mcp_binder is not None:
                 launch_spec = mcp_binder.bind_managed_mcp(launch_spec, binding)
-
-            if on_launch:
-                on_launch(launch_spec, session)
 
             # A launch specification may contribute environment of its own, but the trusted
             # binding always wins: execution context is never negotiable by an adapter.
             binding_env: dict[str, str] = dict(launch_spec.env)
             binding_env.update(binding.to_env())
 
+            if self._workspace is not None:
+                self._workspace.validate_launch_root(launch_spec.cwd)
+            authority.enter_context(hold_invocation(root, verifier))
+            # Use the original Session to finalize. Only a live launch needs this verifier.
+            self._store.save_session(
+                session.model_copy(
+                    update={"metadata": {**session.metadata, INVOCATION_VERIFIER_KEY: verifier}}
+                )
+            )
             if self._workspace is not None:
                 self._workspace.validate_launch_root(launch_spec.cwd)
             exit_code = self._runner.run_interactive(
@@ -180,20 +225,5 @@ class ProviderSessionLauncher:
             )
             self._store.save_session(session)
             raise
-
-        if self._workspace is not None:
-            self._workspace.revalidate()
-        self._store.save_session(session)
-
-        # Automatic session-end checkpoint capture for completed, failed, or interrupted runs
-        if self._checkpoint_service is not None and hasattr(
-            self._checkpoint_service, "capture_session_end_checkpoint"
-        ):
-            with contextlib.suppress(Exception):
-                self._checkpoint_service.capture_session_end_checkpoint(
-                    session=session,
-                    store=self._store,
-                    workspace=self._workspace,
-                )
 
         return session

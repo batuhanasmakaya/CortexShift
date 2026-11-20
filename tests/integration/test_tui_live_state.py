@@ -11,9 +11,11 @@ import pytest
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.provider import PROVIDER_CLAUDE
+from cortexshift.domain.session import SessionStatus
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
 from cortexshift.tui.screens import TuiSection
+from tests.mcp_invocations import LiveMcpInvocations
 from tests.tui.conftest import (
     active_task,
     build_app,
@@ -27,7 +29,9 @@ from tests.tui.conftest import (
 )
 
 
-def agent_facade(root: Path, session_id: str) -> tuple[McpApplicationFacade, SQLiteStateStore]:
+def agent_facade(
+    root: Path, session_id: str, live_mcp: LiveMcpInvocations
+) -> tuple[McpApplicationFacade, SQLiteStateStore]:
     """Build the MCP facade exactly as a launched agent's server would bind it."""
     store = SQLiteStateStore(root / ".cortexshift" / "state.sqlite3", auto_migrate=False)
     project = store.get_default_project()
@@ -43,12 +47,13 @@ def agent_facade(root: Path, session_id: str) -> tuple[McpApplicationFacade, SQL
         managed_session=True,
         read_only=False,
     )
-    return McpApplicationFacade(context, store), store
+    return McpApplicationFacade(live_mcp.authorize(context, store), store), store
 
 
 @pytest.mark.asyncio
 async def test_an_open_dashboard_reflects_agent_progress_reported_over_mcp(
     tmp_path: Path,
+    live_mcp: LiveMcpInvocations,
 ) -> None:
     root = tmp_path / "live"
     root.mkdir()
@@ -60,7 +65,9 @@ async def test_an_open_dashboard_reflects_agent_progress_reported_over_mcp(
         issues=None,
         current_work=None,
     )
-    session = seed_session(root, task.id)
+    session = seed_session(
+        root, task.id, status=SessionStatus.RUNNING, exit_reason=None, exit_code=None
+    )
 
     app = build_app(root, refresh_seconds=0.05)
     async with app.run_test(size=(110, 40)) as pilot:
@@ -72,7 +79,7 @@ async def test_an_open_dashboard_reflects_agent_progress_reported_over_mcp(
         assert initial.current_work is None
 
         # The agent self-reports mid-flight, exactly as it would through MCP tools.
-        facade, store = agent_facade(root, session.id)
+        facade, store = agent_facade(root, session.id, live_mcp)
         try:
             facade.set_current_work("Parsing multi-monitor geometry")
             facade.mark_completed(["Wire the parser"])
@@ -113,19 +120,23 @@ async def test_an_open_dashboard_reflects_agent_progress_reported_over_mcp(
 
 
 @pytest.mark.asyncio
-async def test_an_agent_checkpoint_appears_in_the_open_dashboard(tmp_path: Path) -> None:
+async def test_an_agent_checkpoint_appears_in_the_open_dashboard(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     root = tmp_path / "live-checkpoint"
     root.mkdir()
     make_git_repo(root)
     task = seed_project(root, remaining=["Something"])
-    session = seed_session(root, task.id)
+    session = seed_session(
+        root, task.id, status=SessionStatus.RUNNING, exit_reason=None, exit_code=None
+    )
 
     app = build_app(root, refresh_seconds=0.05)
     async with app.run_test(size=(110, 40)) as pilot:
         await settle(app, pilot)
         assert len(state(app).checkpoints) == 0
 
-        facade, store = agent_facade(root, session.id)
+        facade, store = agent_facade(root, session.id, live_mcp)
         try:
             facade.create_checkpoint(
                 decisions=["Kept the parser provider-agnostic"],

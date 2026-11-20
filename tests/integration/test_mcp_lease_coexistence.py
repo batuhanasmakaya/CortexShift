@@ -10,13 +10,16 @@ from cortexshift.application.handoff_builder import aggregate_task_decisions
 from cortexshift.domain.errors import WorkspaceLockedError
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import PROVIDER_CLAUDE
-from cortexshift.domain.session import Session
+from cortexshift.domain.session import Session, SessionStatus
 from cortexshift.domain.task import Task
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
+from tests.mcp_invocations import LiveMcpInvocations
 
 
-def test_mcp_mutations_succeed_while_workspace_lease_held(tmp_path: Path) -> None:
+def test_mcp_mutations_succeed_while_workspace_lease_held(
+    tmp_path: Path, live_mcp: LiveMcpInvocations
+) -> None:
     """Invariant: MCP tools must never acquire agent.lock, avoiding self-deadlock."""
     db_file = tmp_path / ".cortexshift" / "state.sqlite3"
     db_file.parent.mkdir(parents=True, exist_ok=True)
@@ -35,7 +38,7 @@ def test_mcp_mutations_succeed_while_workspace_lease_held(tmp_path: Path) -> Non
     store.save_task(task)
     store.set_active_task_id(proj.id, task.id)
 
-    sess = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE)
+    sess = Session(task_id=task.id, provider_id=PROVIDER_CLAUDE, status=SessionStatus.RUNNING)
     store.save_session(sess)
 
     lease_mgr = FileWorkspaceLeaseManager()
@@ -62,7 +65,7 @@ def test_mcp_mutations_succeed_while_workspace_lease_held(tmp_path: Path) -> Non
             managed_session=True,
             read_only=False,
         )
-        facade = McpApplicationFacade(ctx, store)
+        facade = McpApplicationFacade(live_mcp.authorize(ctx, store), store)
 
         # Execute MCP write tools: they MUST bypass agent.lock and succeed
         res_work = facade.set_current_work("Performing work under active lease")

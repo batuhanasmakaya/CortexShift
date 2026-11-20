@@ -10,19 +10,23 @@ Two things made the second public CI run red, and both are covered here:
   application intends.
 """
 
+import asyncio
 import json
 import os
 import shutil
 import sys
 import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 from textual.screen import Screen
 from textual.widgets import Button, OptionList, Static
-from textual.worker import Worker, WorkerCancelled, WorkerFailed, WorkerState
+from textual.worker import Worker, WorkerCancelled, WorkerFailed, WorkerState, get_current_worker
 
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.workspace import WorkspaceStart
@@ -39,8 +43,10 @@ from cortexshift.tui.modals import (
     ProviderActionModal,
     SetCurrentWorkModal,
 )
+from cortexshift.tui.models import TuiStateSnapshot
 from tests.cli_runner import PROVIDER_EXECUTABLES, path_without_providers, run_cli
 from tests.tui.conftest import (
+    WORKER_TIMEOUT_SECONDS,
     NoLaunchProcessRunner,
     TuiPilot,
     assert_screen,
@@ -344,17 +350,78 @@ async def test_wait_surfaces_unexpected_worker_failure(project: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_worker_is_left_running_when_the_dashboard_closes(project: Path) -> None:
-    """A test must not leave the app with work in flight for teardown to cancel."""
+@pytest.mark.parametrize("read_fails", [False, True], ids=["late-result", "late-error"])
+async def test_no_worker_is_left_running_when_the_dashboard_closes(
+    project: Path, monkeypatch: pytest.MonkeyPatch, read_fails: bool
+) -> None:
+    """Close with a real refresh in flight, then let its background read return."""
     app = build_app(project, refresh_seconds=0.05)
-    async with app.run_test() as pilot:
-        await settle(app, pilot)
-        await wait_until(
-            pilot,
-            lambda: not [w for w in app.workers if w.state is WorkerState.RUNNING],
-            description="the dashboard is quiescent",
-        )
-        assert not [w for w in app.workers if w.state is WorkerState.RUNNING]
+    snapshot = app.facade.load_state()
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    refresh_workers: list[Worker[None]] = []
+    release = threading.Event()
+    jobs: list[Future[Any]] = []
+
+    class RecordingExecutor(ThreadPoolExecutor):
+        def submit[T, **P](
+            self, fn: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+        ) -> Future[T]:
+            job = super().submit(fn, *args, **kwargs)
+            jobs.append(job)
+            return job
+
+    def record_worker(worker: Worker[None]) -> None:
+        refresh_workers.append(worker)
+        started.set()
+
+    def load_state() -> TuiStateSnapshot:
+        loop.call_soon_threadsafe(record_worker, get_current_worker())
+        assert release.wait(WORKER_TIMEOUT_SECONDS), "test did not release the blocked refresh"
+        if read_fails:
+            raise RuntimeError("The blocked state read failed")
+        return snapshot
+
+    loop.set_default_executor(RecordingExecutor())
+    apply_state = Mock(wraps=app._apply_state)
+    report_error = Mock(wraps=app._on_state_error)
+    monkeypatch.setattr(app.facade, "load_state", load_state)
+    monkeypatch.setattr(app, "_apply_state", apply_state)
+    monkeypatch.setattr(app, "_on_state_error", report_error)
+
+    try:
+        async with asyncio.timeout(WORKER_TIMEOUT_SECONDS):
+            async with app.run_test():
+                await started.wait()
+                (worker,) = refresh_workers
+                assert worker.group == STATE_WORKER_GROUP
+                assert app.screen.is_mounted
+                generation = app._state_generation
+                app.exit()
+
+            assert not app.is_running
+            assert worker.is_cancelled
+            with pytest.raises(WorkerCancelled):
+                await worker.wait()
+
+            # The Textual worker task has stopped while its executor job remains blocked.
+            assert any(not job.done() for job in jobs)
+            release.set()
+            # A queued executor job may be cancelled before its callable starts.
+            results = await asyncio.gather(
+                *(asyncio.wrap_future(job) for job in jobs), return_exceptions=True
+            )
+            for job, result in zip(jobs, results, strict=True):
+                if not job.cancelled() and isinstance(result, BaseException):
+                    raise result
+            apply_state.assert_not_called()
+            report_error.assert_not_called()
+
+            # Exercise a late timer callback directly, without waiting for a wall-clock tick.
+            app._on_state_tick()
+            assert app._state_generation == generation
+    finally:
+        release.set()
 
 
 # --- helpers --------------------------------------------------------------

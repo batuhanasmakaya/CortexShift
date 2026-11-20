@@ -28,7 +28,7 @@ from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.containers import Horizontal, Vertical
 from textual.widgets import ContentSwitcher, DataTable, Footer, Header, OptionList, Static
 from textual.widgets.option_list import Option
-from textual.worker import WorkerState
+from textual.worker import WorkerState, get_current_worker
 
 from cortexshift.application.workspace import WorkspaceStart
 from cortexshift.domain.checkpoint import CheckpointRecord
@@ -340,7 +340,7 @@ class CortexShiftApp(App[TuiExitRequest | None]):
         keeps the timer from starving the very refresh it exists to perform. An operator
         asking for a refresh still supersedes -- see `action_refresh`.
         """
-        if self._state_refresh_running():
+        if not self.is_running or self._state_refresh_running():
             return
         self.refresh_state()
 
@@ -356,14 +356,30 @@ class CortexShiftApp(App[TuiExitRequest | None]):
         self._state_generation += 1
         self._load_state(self._state_generation)
 
+    def _queue_worker_callback[**P](
+        self, callback: Callable[P, None], *args: P.args, **kwargs: P.kwargs
+    ) -> None:
+        """Deliver a current worker's result through the dashboard's message pump."""
+        worker = get_current_worker()
+        if worker.is_cancelled or not self.is_running:
+            return
+
+        def deliver() -> None:
+            if self.is_running and not worker.is_cancelled:
+                callback(*args, **kwargs)
+
+        # A thread can finish after its task is cancelled. Queue the result so it
+        # follows UI shutdown and the thread never waits for a closing event loop.
+        self.call_later(deliver)
+
     @work(exclusive=True, group=STATE_WORKER_GROUP, thread=True, exit_on_error=False)
     def _load_state(self, generation: int) -> None:
         try:
             snapshot = self.facade.load_state()
         except Exception as exc:
-            self.call_from_thread(self._on_state_error, exc)
+            self._queue_worker_callback(self._on_state_error, exc)
             return
-        self.call_from_thread(self._apply_state, generation, snapshot)
+        self._queue_worker_callback(self._apply_state, generation, snapshot)
 
     def _on_state_error(self, error: Exception) -> None:
         """Report a state refresh failure once, not on every tick.
@@ -406,9 +422,9 @@ class CortexShiftApp(App[TuiExitRequest | None]):
         try:
             repository = self.facade.inspect_repository()
         except Exception as exc:
-            self.call_from_thread(self._report_error, "Repository inspection failed", exc)
+            self._queue_worker_callback(self._report_error, "Repository inspection failed", exc)
             return
-        self.call_from_thread(self._apply_repository, generation, repository)
+        self._queue_worker_callback(self._apply_repository, generation, repository)
 
     def _apply_repository(self, generation: int, repository: TuiRepositoryModel) -> None:
         """Apply a repository result unless a newer inspection has already started."""
@@ -435,9 +451,9 @@ class CortexShiftApp(App[TuiExitRequest | None]):
             mcp = self.facade.mcp_status()
             activity = self.facade.workspace_activity()
         except Exception as exc:
-            self.call_from_thread(self._report_error, "Provider discovery failed", exc)
+            self._queue_worker_callback(self._report_error, "Provider discovery failed", exc)
             return
-        self.call_from_thread(self._apply_providers, generation, providers, mcp, activity)
+        self._queue_worker_callback(self._apply_providers, generation, providers, mcp, activity)
 
     def _apply_providers(
         self,
@@ -478,9 +494,9 @@ class CortexShiftApp(App[TuiExitRequest | None]):
         try:
             result = call.run()
         except Exception as exc:
-            self.call_from_thread(self._report_error, call.failure_title, exc)
+            self._queue_worker_callback(self._report_error, call.failure_title, exc)
             return
-        self.call_from_thread(call.complete, result)
+        self._queue_worker_callback(call.complete, result)
 
     def _report_error(self, title: str, error: Exception) -> None:
         """Surface an error without taking the dashboard down.

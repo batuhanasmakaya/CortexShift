@@ -4,6 +4,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from cortexshift.adapters.workspace_lease import hold_provider_guard
+from cortexshift.domain.mcp_binding import ENV_INVOCATION_TOKEN
 from cortexshift.ports.headless_runner import (
     DEFAULT_HEADLESS_TIMEOUT_SECONDS,
     HeadlessProviderRunner,
@@ -56,19 +58,22 @@ class SubprocessHeadlessProviderRunner(HeadlessProviderRunner):
         full_env = dict(os.environ)
         if env:
             full_env.update(env)
+        full_env.pop(ENV_INVOCATION_TOKEN, None)
 
         try:
-            completed = subprocess.run(
-                argv,
-                cwd=str(cwd),
-                env=full_env,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                shell=False,
-                check=False,
-                stdin=subprocess.DEVNULL,
-            )
+            with hold_provider_guard(Path(cwd)) as pass_fds:
+                completed = subprocess.run(
+                    argv,
+                    cwd=str(cwd),
+                    env=full_env,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    shell=False,
+                    check=False,
+                    stdin=subprocess.DEVNULL,
+                    pass_fds=pass_fds,
+                )
             return HeadlessResult(
                 exit_code=completed.returncode,
                 stdout=_bound(completed.stdout),

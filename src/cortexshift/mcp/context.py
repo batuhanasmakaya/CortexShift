@@ -4,12 +4,19 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
+from cortexshift.application.mcp_invocation import require_active_invocation
 from cortexshift.application.workspace import WorkspaceIdentity, open_workspace
-from cortexshift.domain.errors import CortexShiftError, McpContextError, ProjectNotInitializedError
+from cortexshift.domain.errors import (
+    CortexShiftError,
+    McpContextError,
+    McpReadOnlyError,
+    ProjectNotInitializedError,
+)
 from cortexshift.domain.mcp_binding import (
+    ENV_INVOCATION_TOKEN,
     ENV_MCP_READ_ONLY,
     ENV_PROJECT_ROOT,
     ENV_PROVIDER_ID,
@@ -42,9 +49,10 @@ class McpExecutionContext(BaseModel):
     provider_id: ProviderId | None = None
     managed_session: bool = False
     read_only: bool = False
+    invocation_token: SecretStr | None = Field(default=None, exclude=True, repr=False)
 
     def can_mutate(self) -> bool:
-        """Return True if write operations are permitted in this context."""
+        """Return whether this context exposes write tools at startup."""
         return self.managed_session and not self.read_only
 
 
@@ -135,6 +143,26 @@ def _bind_context(
         if task.project_id != project.id:
             raise McpContextError(f"Task '{task.id}' does not belong to project '{project.id}'.")
 
+        token = env.get(ENV_INVOCATION_TOKEN)
+        invocation_token = None
+        if not explicit_read_only and env_task_id and env_provider_id and token:
+            try:
+                # Serialize lock probes too. On Windows a probe briefly takes an
+                # exclusive lock and must never be mistaken for the launcher.
+                with store.write_transaction():
+                    require_active_invocation(
+                        workspace,
+                        store,
+                        session_id=session.id,
+                        task_id=env_task_id,
+                        provider_id=session.provider_id,
+                        token=SecretStr(token),
+                    )
+            except McpReadOnlyError:
+                pass
+            else:
+                invocation_token = SecretStr(token)
+
         context = McpExecutionContext(
             project_root=workspace.root,
             workspace=workspace,
@@ -143,7 +171,8 @@ def _bind_context(
             session_id=session.id,
             provider_id=session.provider_id,
             managed_session=True,
-            read_only=explicit_read_only,
+            read_only=invocation_token is None,
+            invocation_token=invocation_token,
         )
     else:
         # Unmanaged invocation: strictly read-only

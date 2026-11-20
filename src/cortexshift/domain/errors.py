@@ -165,9 +165,11 @@ class WorkspaceLockedError(CortexShiftError):
         self.lock_path = lock_path
         if message is None:
             message = (
-                "Another CortexShift agent session is already active for this project.\n\n"
-                "Lock file: .cortexshift/agent.lock\n\n"
-                "Wait for that session to finish and try again."
+                "Another CortexShift agent session is already active, "
+                "surviving provider work holds a guard, or a workspace lock could "
+                "not be checked.\n\n"
+                "Wait for it to finish, or stop known background work using its normal controls, "
+                "then try again."
             )
         super().__init__(message)
 
