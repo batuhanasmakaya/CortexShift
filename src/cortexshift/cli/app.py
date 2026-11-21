@@ -37,6 +37,7 @@ from cortexshift.application.start_service import StartService
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.switch_service import SwitchService
 from cortexshift.application.task_service import TaskService
+from cortexshift.application.task_startup_context import objective_retrieval
 from cortexshift.application.workspace import open_workspace, resolve_workspace
 from cortexshift.cli.start_input import interactive_stdin, read_objective
 from cortexshift.domain.checkpoint import CheckpointKind, CheckpointRecord
@@ -79,8 +80,8 @@ from cortexshift.domain.handoff import HandoffRecord, HandoffStatus
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.project import Project
 from cortexshift.domain.provider import ProviderId
-from cortexshift.domain.session import Session, SessionStatus
-from cortexshift.domain.status import ProjectStatus
+from cortexshift.domain.session import UNFINALIZED_SESSION_STATUSES, Session, SessionStatus
+from cortexshift.domain.status import ObjectiveRetrieval, ProjectStatus
 from cortexshift.domain.task import Task, TaskStatus
 from cortexshift.mcp.context import (
     ENV_PROJECT_ROOT,
@@ -201,7 +202,8 @@ def _handle_error(err: Exception) -> None:
         err_console.print(
             "\nNo active task.\n\n"
             "No active CortexShift task.\n\n"
-            "Create or activate one first:\n\n  cortexshift task start ...\n"
+            "Find a Task with cortexshift task list. Select it with cortexshift task activate ID.\n"
+            "Create a Task with cortexshift task start or cortexshift start PROVIDER --file FILE.\n"
         )
         raise typer.Exit(code=1)
 
@@ -222,7 +224,7 @@ def _handle_error(err: Exception) -> None:
             SessionRecoveryError,
         ),
     ):
-        err_console.print(f"\n{err}\n")
+        err_console.print(f"\n{escape(str(err))}\n")
         raise typer.Exit(code=1)
     if isinstance(
         err,
@@ -461,6 +463,40 @@ def _render_rich_status(status: ProjectStatus) -> None:
         console.print(f"  Completed   {task.progress.completed}")
         console.print(f"  Remaining   {task.progress.remaining}")
         console.print(f"  Issues      {task.progress.issues}\n")
+
+    if status.latest_session is not None:
+        session = status.latest_session
+        console.print(
+            f"Last recorded Session  {_provider_label(str(session.provider_id))} "
+            f"({session.id}, {session.status.value})"
+        )
+        if session.resumed_from_session_id:
+            console.print(
+                f"  Exact native resume requested from {session.resumed_from_session_id}."
+            )
+        elif session.continued_from_session_id:
+            console.print(f"  Fresh conversation continuing {session.continued_from_session_id}.")
+        if session.handoff_status is not None:
+            console.print(f"  Recorded handoff status  {session.handoff_status.value}")
+        _print_objective_receipt(session.objective_retrieval)
+    if status.workspace_busy is None:
+        console.print("Workspace activity could not be checked.")
+    elif status.workspace_busy:
+        console.print("Workspace is busy. Wait for the provider or retained work to finish.")
+    elif status.unfinalized_sessions:
+        console.print(
+            f"{status.unfinalized_sessions} Session(s) have no recorded end. "
+            "Check cortexshift recover --dry-run."
+        )
+
+
+def _print_objective_receipt(receipt: ObjectiveRetrieval) -> None:
+    if receipt == ObjectiveRetrieval.COMPLETE:
+        console.print("MCP served the complete Task objective.")
+    elif receipt == ObjectiveRetrieval.PARTIAL:
+        console.print("MCP served part of the Task objective. Full retrieval is unconfirmed.")
+    elif receipt == ObjectiveRetrieval.UNCONFIRMED:
+        console.print("Task objective retrieval is unconfirmed.")
 
 
 @app.command(name="status")
@@ -1373,7 +1409,9 @@ def run_command(
 
 @app.command("resume")
 def resume_command(
-    provider: Annotated[str, typer.Argument(help="Provider to resume exactly.")],
+    provider: Annotated[
+        str | None, typer.Argument(help="Provider to resume exactly. Omit to continue recent work.")
+    ] = None,
     session_id: Annotated[
         str | None, typer.Option("--session", help="Source CortexShift Session ID.")
     ] = None,
@@ -1381,15 +1419,46 @@ def resume_command(
         bool, typer.Option("--dry-run", help="Preview without side effects.")
     ] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Requires --dry-run.")] = False,
+    new_session: Annotated[
+        bool, typer.Option("--new-session", help="Continue the Task in a fresh conversation.")
+    ] = False,
 ) -> None:
-    """Resume a known native conversation on the active task, without a handoff."""
+    """Continue recent work on the active Task."""
     if json_output and not dry_run:
         err_console.print("[red]Error:[/red] --json is only supported with --dry-run.")
         raise typer.Exit(code=1)
+    plan: ResumeDryRunResult | None = None
+
+    def announce(preview: ResumeDryRunResult) -> None:
+        nonlocal plan
+        plan = preview
+        mode = (
+            "Requesting exact native resume"
+            if preview.native_session_known
+            else "Starting a fresh conversation with the same Task"
+        )
+        console.print(
+            f"{mode} in {escape(preview.display_name)} for "
+            f"{escape(preview.project_name)} / {escape(preview.task_title)} ({preview.task_id})."
+        )
+        if preview.automatic_context:
+            console.print("Prepared automatic Task context.")
+        else:
+            console.print("Automatic Task refresh is unavailable for this resume.")
+
     try:
-        result = ResumeService().resume(provider, session_id, dry_run=dry_run)
-    except Exception as err:
+        result = ResumeService().resume(
+            provider, session_id, dry_run=dry_run, new_session=new_session, on_launch=announce
+        )
+    except CortexShiftError as err:
         _handle_error(err)
+        return
+    except Exception:
+        _handle_error(
+            NativeResumeError(
+                "The native provider could not launch. Check cortexshift doctor and retry resume."
+            )
+        )
         return
     if isinstance(result, ResumeDryRunResult):
         if json_output:
@@ -1401,12 +1470,18 @@ def resume_command(
                 grid.add_row(key, escape(str(value)))
             console.print(grid)
         return
-    console.print(f"\nSession {result.id}: {result.status.value}.")
+    if plan is not None:
+        _print_objective_receipt(objective_retrieval(result, plan.objective_length))
+    console.print(f"\nSession {result.id} {result.status.value}.")
     if result.status == SessionStatus.FAILED:
-        console.print(
-            "Exact native resume failed. Provider-owned state may no longer exist. "
-            "The historical ID is preserved; no fresh session was started."
-        )
+        if result.resumed_from_session_id:
+            console.print(
+                "Exact native resume failed and no fresh session was started. "
+                f"To continue with fresh Task context where supported, run cortexshift resume "
+                f"{result.provider_id} --new-session."
+            )
+        else:
+            console.print("The Task remains available. Check the native provider and retry resume.")
         raise typer.Exit(code=result.exit_code or 1)
 
 
@@ -1932,7 +2007,8 @@ def switch_command(
         grid.add_column(style="bold cyan", justify="left")
         grid.add_column(style="default", justify="left")
         grid.add_row("Handoff", handoff.id)
-        grid.add_row("Task", escape(handoff.payload.task_title))
+        grid.add_row("Project", escape(handoff.payload.project_name))
+        grid.add_row("Task", f"{escape(handoff.payload.task_title)} ({handoff.task_id})")
         grid.add_row("From", _provider_label(str(handoff.source_provider_id)))
         grid.add_row("To", _provider_label(str(handoff.target_provider_id)))
         grid.add_row("Git Snapshot", handoff.git_snapshot_id or "— (Git state unavailable)")
@@ -1947,21 +2023,26 @@ def switch_command(
         ):
             console.print(f"Full historical handoff: cortexshift handoff show {handoff.id} --json")
 
-        adapter = service._registry.get(provider)
-        if adapter is not None and adapter.bootstrap_model_turn_required:
+        if handoff.payload.source_session.status in UNFINALIZED_SESSION_STATUSES:
+            console.print(
+                "The source Session has no recorded end. "
+                "Review it with cortexshift recover --dry-run after this invocation."
+            )
+        if handoff.metadata.get("delivery_strategy") in (
+            HandoffDeliveryStrategy.READ_ONLY_BOOTSTRAP_THEN_RESUME.value,
+            HandoffDeliveryStrategy.PLAN_BOOTSTRAP_THEN_RESUME.value,
+        ):
             console.print(
                 "\n[dim]Delivering the handoff in a read-only bootstrap model turn...[/dim]"
             )
 
     def _on_launch(_spec: LaunchSpecification, session: Session) -> None:
-        adapter = service._registry.get(provider)
-        if adapter is not None and adapter.bootstrap_model_turn_required:
-            console.print(
-                "\nThe provider reported a completed read-only bootstrap turn.\n"
-                "Opening the same conversation in the native TUI.\n"
-                "Review the prepared continuation plan and continue from there."
-            )
-        console.print(f"\n[dim]Session {session.id} — launching native provider...[/dim]\n")
+        mode = (
+            "requesting exact native resume"
+            if session.resumed_from_session_id
+            else ("opening a fresh conversation with the same Task")
+        )
+        console.print(f"\nSession {session.id} {mode}.\n")
 
     try:
         result = service.switch(
@@ -1973,22 +2054,47 @@ def switch_command(
             on_prepared=_on_prepared,
             on_launch=_on_launch,
         )
-    except Exception as err:
+    except HandoffDeliveryError as err:
+        _handle_error(
+            HandoffDeliveryError(
+                err.failure_code,
+                f"{err} The Task is preserved. Check the destination and retry switch.",
+            )
+        )
+        return
+    except CortexShiftError as err:
         _handle_error(err)
+        return
+    except Exception:
+        _handle_error(
+            NativeResumeError(
+                "The destination provider could not launch. "
+                "Check cortexshift doctor and retry switch."
+            )
+        )
         return
 
     session = result.target_session
+    if result.bootstrap_performed:
+        console.print("The provider reported a completed read-only bootstrap turn.")
+    elif result.handoff.status == HandoffStatus.DELIVERED:
+        console.print("MCP served the prepared handoff.")
     if result.handoff.status == HandoffStatus.PREPARED:
         console.print(
             f"Retrieval of handoff {result.handoff.id} is unconfirmed. "
             f"Inspect it with cortexshift handoff show {result.handoff.id} --json."
         )
+    receipt = objective_retrieval(session, len(result.handoff.payload.original_objective))
+    _print_objective_receipt(receipt)
+    if receipt == ObjectiveRetrieval.NOT_REQUESTED:
+        console.print("Automatic full Task retrieval is unavailable for this provider.")
     if session.status == SessionStatus.COMPLETED:
         console.print("\nSession completed.")
     elif session.status == SessionStatus.INTERRUPTED:
         console.print("\nSession interrupted.")
     else:
         console.print("\nSession failed.")
+        console.print("The Task is preserved. Check the native provider before continuing.")
         if session.exit_code:
             raise typer.Exit(code=session.exit_code)
         raise typer.Exit(code=1)
@@ -2537,7 +2643,7 @@ def tui_command() -> None:
     """
 
     def _announce(message: str) -> None:
-        console.print(f"\n[dim]{message}[/dim]\n")
+        console.print(f"\n[dim]{escape(message)}[/dim]\n")
 
     coordinator = TuiCoordinator(announce=_announce)
 

@@ -26,6 +26,7 @@ from cortexshift.application.native_session import (
     native_capabilities,
     select_native_session,
 )
+from cortexshift.application.recovery_service import RecoveryService
 from cortexshift.application.resume_service import ResumeDryRunResult, ResumeService
 from cortexshift.application.run_service import RunService
 from cortexshift.application.switch_service import ProviderHandoffRegistry, SwitchService
@@ -33,16 +34,25 @@ from cortexshift.cli.app import app
 from cortexshift.domain.errors import (
     HandoffDeliveryError,
     NativeResumeError,
+    NoSourceSessionError,
     SessionNotFoundError,
+    SessionRecoveryError,
     SessionTaskMismatchError,
+    TaskTerminalError,
     TerminalRequiredError,
     WorkspaceLockedError,
 )
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.mcp_binding import ENV_INVOCATION_TOKEN, McpSessionBinding
 from cortexshift.domain.provider import PROVIDER_CLAUDE, PROVIDER_CODEX, ProviderId
-from cortexshift.domain.session import Session, SessionExitReason
-from cortexshift.domain.task import Task
+from cortexshift.domain.session import (
+    CONTINUED_FROM_SESSION_KEY,
+    PROVIDER_GUARDED_KEY,
+    Session,
+    SessionExitReason,
+    SessionStatus,
+)
+from cortexshift.domain.task import Task, TaskStatus
 from cortexshift.ports.headless_runner import HeadlessResult
 from tests.cli_runner import AnsiFreeCliRunner, unwrapped
 from tests.factories import (
@@ -495,3 +505,132 @@ def test_codex_plain_prompt_does_not_bootstrap(
         "USER-PROMPT",
     ]
     assert not codex_bootstrap.invocations
+
+
+def test_bare_resume_follows_latest_provider_and_refreshes_context(tmp_path: Path) -> None:
+    _, task = seed_project(tmp_path)
+    known(tmp_path, task.id, "claude")
+    recent = known(tmp_path, task.id, "codex", "codex-recent")
+    process = FakeProcessRunner()
+
+    result = resume_service(process).resume(start_dir=tmp_path)
+
+    assert isinstance(result, Session)
+    assert result.resumed_from_session_id == recent.id
+    assert result.native_session_id == recent.native_session_id
+    assert process.invocations[0]["argv"][-3:-1] == ["resume", recent.native_session_id]
+    assert "get_task_objective" in process.invocations[0]["argv"][-1]
+
+
+def test_bare_resume_continues_latest_without_an_id(tmp_path: Path) -> None:
+    _, task = seed_project(tmp_path)
+    known(tmp_path, task.id)
+    recent = seed_session(tmp_path, task.id, provider_id=PROVIDER_CODEX)
+    process = FakeProcessRunner()
+
+    preview = resume_service(process).resume(start_dir=tmp_path, dry_run=True)
+    assert isinstance(preview, ResumeDryRunResult)
+    assert preview.source_session_id == recent.id
+    assert preview.mode == "task_continuation"
+    assert not preview.native_session_known
+
+    result = resume_service(process).resume(start_dir=tmp_path)
+    assert isinstance(result, Session)
+    assert result.provider_id == PROVIDER_CODEX
+    assert result.task_id == task.id
+    assert result.resumed_from_session_id is None
+    assert result.native_session_id is None
+    assert "get_task_objective" in process.invocations[0]["argv"][-1]
+
+
+def test_explicit_resume_pins_an_older_session_with_the_same_start_time(tmp_path: Path) -> None:
+    _, task = seed_project(tmp_path)
+    first = known(tmp_path, task.id)
+    second = first.model_copy(update={"id": "sess_later", "native_session_id": "native-B"})
+    with store_at(tmp_path) as store:
+        store.save_session(second)
+    service = resume_service()
+    latest = service.resume(start_dir=tmp_path, dry_run=True)
+    earlier = service.resume(session_id=first.id, start_dir=tmp_path, dry_run=True)
+    assert isinstance(latest, ResumeDryRunResult) and latest.source_session_id == second.id
+    assert (
+        isinstance(earlier, ResumeDryRunResult)
+        and earlier.native_session_id == first.native_session_id
+    )
+
+
+def test_recovered_invocation_can_continue_without_inventing_exit_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "cortexshift.application.recovery_service.provider_guard_supported", lambda: True
+    )
+    _, task = seed_project(tmp_path)
+    source = known(tmp_path, task.id)
+    source = source.model_copy(
+        update={
+            "status": SessionStatus.RUNNING,
+            "ended_at": None,
+            "exit_reason": None,
+            "exit_code": None,
+            "metadata": {PROVIDER_GUARDED_KEY: True},
+        }
+    )
+    with store_at(tmp_path) as store:
+        store.save_session(source)
+    service = resume_service()
+    with pytest.raises(SessionRecoveryError, match="recover --dry-run"):
+        service.resume(start_dir=tmp_path)
+
+    report = RecoveryService(inspector=FakeInspector()).recover(start_dir=tmp_path)
+    assert report.reconciled_session_ids == [source.id] and report.checkpoint_id
+    resumed = service.resume(start_dir=tmp_path)
+    assert isinstance(resumed, Session)
+    assert resumed.resumed_from_session_id is None
+    assert resumed.metadata[CONTINUED_FROM_SESSION_KEY] == source.id
+    assert resumed.native_session_id != source.native_session_id
+    with store_at(tmp_path) as store:
+        recovered = store.get_session(source.id)
+        assert recovered is not None and recovered.ended_at is None
+        assert recovered.native_session_id == source.native_session_id
+        assert recovered.exit_reason == SessionExitReason.UNEXPECTED_TERMINATION
+
+
+@pytest.mark.parametrize("status", [TaskStatus.COMPLETED, TaskStatus.CANCELLED])
+def test_resume_refuses_terminal_task_even_with_an_active_pointer(
+    tmp_path: Path, status: TaskStatus
+) -> None:
+    _, task = seed_project(tmp_path)
+    first = known(tmp_path, task.id)
+    with store_at(tmp_path) as store:
+        store.save_task(task.model_copy(update={"status": status}))
+    with pytest.raises(TaskTerminalError, match=status.value):
+        resume_service().resume(start_dir=tmp_path)
+    with store_at(tmp_path) as store:
+        assert store.list_sessions() == [first]
+
+
+def test_resume_without_history_and_unsupported_automatic_antigravity(tmp_path: Path) -> None:
+    _, task = seed_project(tmp_path)
+    service = resume_service()
+    with pytest.raises(NoSourceSessionError):
+        service.resume(start_dir=tmp_path)
+    first = known(tmp_path, task.id, "antigravity")
+    exact = service.resume(start_dir=tmp_path, dry_run=True)
+    assert (
+        isinstance(exact, ResumeDryRunResult) and exact.native_session_id == first.native_session_id
+    )
+    assert not exact.automatic_context
+    with pytest.raises(NativeResumeError, match="cannot start a fresh conversation"):
+        service.resume(start_dir=tmp_path, new_session=True)
+
+
+def test_bare_resume_can_request_known_id_after_a_provider_crash(tmp_path: Path) -> None:
+    _, task = seed_project(tmp_path)
+    source = known(tmp_path, task.id)
+    crashed = resume_service(FakeProcessRunner(exit_code=42)).resume(start_dir=tmp_path)
+    assert isinstance(crashed, Session) and crashed.exit_reason == SessionExitReason.PROCESS_CRASHED
+    resumed = resume_service().resume(start_dir=tmp_path)
+    assert isinstance(resumed, Session)
+    assert resumed.resumed_from_session_id == crashed.id
+    assert resumed.native_session_id == source.native_session_id

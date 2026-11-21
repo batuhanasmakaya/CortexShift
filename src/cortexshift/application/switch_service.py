@@ -24,28 +24,28 @@ from pydantic import BaseModel, ConfigDict
 
 from cortexshift.adapters.git.inspector import GitRepositoryInspector
 from cortexshift.adapters.process_runner import SubprocessInteractiveProcessRunner
-from cortexshift.adapters.providers.antigravity import (
-    ANTIGRAVITY_MCP_MISSING_NOTICE,
-    AntigravityHandoffAdapter,
-    is_antigravity_mcp_configured,
-)
+from cortexshift.adapters.providers.antigravity import AntigravityHandoffAdapter
 from cortexshift.adapters.providers.claude import ClaudeHandoffAdapter
 from cortexshift.adapters.providers.codex import CodexHandoffAdapter
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
 from cortexshift.adapters.workspace_lease import FileWorkspaceLeaseManager
 from cortexshift.application.checkpoint_service import CheckpointService
 from cortexshift.application.handoff_builder import HandoffBuilder, unique_checkpoint_decisions
-from cortexshift.application.handoff_renderer import HandoffRenderer, RenderedHandoffContext
+from cortexshift.application.handoff_renderer import (
+    OBJECTIVE_VIA_MCP_KEY,
+    HandoffRenderer,
+    RenderedHandoffContext,
+)
 from cortexshift.application.native_session import native_capabilities, select_native_session
 from cortexshift.application.run_service import ProviderRuntimeRegistry
 from cortexshift.application.session_launcher import ProviderSessionLauncher
 from cortexshift.application.source_session import select_source_session
+from cortexshift.application.task_service import TaskService
 from cortexshift.application.workspace import WorkspaceIdentity, WorkspaceStart, open_workspace
 from cortexshift.domain.errors import (
     GitProbeError,
     HandoffDeliveryError,
     NativeResumeError,
-    NoActiveTaskError,
     ProjectConflictError,
     ProviderNotFoundError,
     SameProviderSwitchError,
@@ -65,8 +65,7 @@ from cortexshift.domain.handoff import (
 from cortexshift.domain.identifiers import utc_now
 from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.project import Project
-from cortexshift.domain.provider import PROVIDER_ANTIGRAVITY
-from cortexshift.domain.session import Session, SessionExitReason
+from cortexshift.domain.session import STARTUP_OBJECTIVE_SERVED_KEY, Session, SessionExitReason
 from cortexshift.domain.task import Task
 from cortexshift.ports.handoff_delivery import ProviderHandoffAdapter
 from cortexshift.ports.process_runner import InteractiveProcessRunner
@@ -232,9 +231,10 @@ class SwitchService:
 
     def _resolve_context(
         self,
+        workspace: WorkspaceIdentity,
+        store: SQLiteStateStore,
         target_provider_name: str,
         from_session_id: str | None,
-        start_dir: WorkspaceStart,
         require_executable: bool = True,
     ) -> _SwitchContext:
         """Resolve and validate project, active task, source session, and target provider.
@@ -242,46 +242,32 @@ class SwitchService:
         The source provider's executable is deliberately never probed: a handoff must not
         depend on the outgoing agent still being installed or usable.
         """
-        workspace, store = open_workspace(start_dir)
-        project = workspace.project
-        try:
-            active_task_id = store.get_active_task_id(project.id)
-            if not active_task_id:
-                raise NoActiveTaskError()
+        task = TaskService(store).require_active_task(workspace.project.id)
+        adapter = self._registry.get(target_provider_name)
+        if adapter is None:
+            raise UnknownProviderError(target_provider_name, self._registry.list_supported_ids())
+        source_session = select_source_session(store, task, from_session_id)
+        if source_session.provider_id == adapter.provider_id:
+            raise SameProviderSwitchError(adapter.display_name)
 
-            task = store.get_task(active_task_id)
-            if task is None:
-                raise NoActiveTaskError()
-
-            adapter = self._registry.get(target_provider_name)
-            if adapter is None:
-                raise UnknownProviderError(
-                    target_provider_name, self._registry.list_supported_ids()
+        executable_path = ""
+        if require_executable:
+            resolved = self._which(adapter.executable)
+            if not resolved:
+                raise ProviderNotFoundError(
+                    f"{adapter.display_name} was not found in PATH. "
+                    "Install its native CLI and check cortexshift doctor before retrying."
                 )
+            executable_path = resolved
 
-            source_session = select_source_session(store, task, from_session_id)
-
-            if str(source_session.provider_id) == str(adapter.provider_id):
-                raise SameProviderSwitchError(adapter.display_name)
-
-            executable_path = ""
-            if require_executable:
-                resolved = self._which(adapter.executable)
-                if not resolved:
-                    raise ProviderNotFoundError(f"{adapter.display_name} was not found in PATH.")
-                executable_path = resolved
-
-            return _SwitchContext(
-                workspace=workspace,
-                task=task,
-                source_session=source_session,
-                adapter=adapter,
-                executable_path=executable_path,
-                store=store,
-            )
-        except Exception:
-            store.close()
-            raise
+        return _SwitchContext(
+            workspace=workspace,
+            task=task,
+            source_session=source_session,
+            adapter=adapter,
+            executable_path=executable_path,
+            store=store,
+        )
 
     def _select_target(
         self, context: _SwitchContext, new_session: bool, resume_session_id: str | None
@@ -341,6 +327,21 @@ class SwitchService:
 
     # --- Non-mutating operations ---
 
+    def _render_for_switch(
+        self, context: _SwitchContext, payload: HandoffPayload, handoff_id: str
+    ) -> RenderedHandoffContext:
+        overhead = context.adapter.context_overhead_bytes
+        try:
+            return self._renderer.render(payload, handoff_id, overhead_bytes=overhead)
+        except HandoffDeliveryError as err:
+            if err.failure_code != HandoffFailureCode.CONTEXT_TOO_LARGE or not isinstance(
+                context.adapter, ManagedMcpBinder
+            ):
+                raise
+        return self._renderer.render(
+            payload, handoff_id, overhead_bytes=overhead, objective_via_mcp=True
+        )
+
     def preview(
         self,
         target_provider_name: str,
@@ -354,13 +355,11 @@ class SwitchService:
         no long-lived workspace lease, runs no provider bootstrap, and consumes zero model
         quota.
         """
-        context = self._resolve_context(
-            target_provider_name,
-            from_session_id,
-            start_dir,
-            require_executable=False,
-        )
+        workspace, store = open_workspace(start_dir)
         try:
+            context = self._resolve_context(
+                workspace, store, target_provider_name, from_session_id, require_executable=False
+            )
             inspection = self._inspect(context)
             payload = self._build_payload(context, inspection, note)
             rendered = self._renderer.render(
@@ -383,7 +382,7 @@ class SwitchService:
                 context_omissions=[o.model_dump(mode="json") for o in rendered.omissions],
             )
         finally:
-            context.store.close()
+            store.close()
 
     def dry_run(
         self,
@@ -399,14 +398,14 @@ class SwitchService:
         Notably, a dry run of an Antigravity switch never performs the read-only plan
         bootstrap, so it consumes no model quota.
         """
-        context = self._resolve_context(target_provider_name, from_session_id, start_dir)
+        workspace, store = open_workspace(start_dir)
         try:
+            context = self._resolve_context(workspace, store, target_provider_name, from_session_id)
             self._select_target(context, new_session, resume_session_id)
             inspection = self._inspect(context)
             payload = self._build_payload(context, inspection, note)
-            rendered = self._renderer.render(
-                payload, overhead_bytes=context.adapter.context_overhead_bytes
-            )
+            # Include an ID-shaped label so preview and execution reserve the same space.
+            rendered = self._render_for_switch(context, payload, generate_handoff_id())
             snapshot = inspection.snapshot
 
             return SwitchDryRunResult(
@@ -442,7 +441,7 @@ class SwitchService:
                 context_omissions=[o.model_dump(mode="json") for o in rendered.omissions],
             )
         finally:
-            context.store.close()
+            store.close()
 
     # --- Executed switch ---
 
@@ -466,10 +465,9 @@ class SwitchService:
         Task progress is never mutated: `switch` changes only handoff, session, and Git
         snapshot orchestration state.
         """
-        context = self._resolve_context(target_provider_name, from_session_id, start_dir)
-        store = context.store
-
+        workspace, store = open_workspace(start_dir)
         try:
+            context = self._resolve_context(workspace, store, target_provider_name, from_session_id)
             if not self._is_tty():
                 raise TerminalRequiredError(
                     "Handing off to an interactive provider requires a terminal (TTY).\n\n"
@@ -483,6 +481,10 @@ class SwitchService:
                 raise WorkspaceLockedError(lock_path=lease.lock_path)
 
             try:
+                # A previous invocation may have completed before we acquired the lease.
+                context = self._resolve_context(
+                    workspace, store, target_provider_name, from_session_id
+                )
                 self._select_target(context, new_session, resume_session_id)
                 inspection = self._inspect(context)
                 context.workspace.revalidate()
@@ -492,11 +494,7 @@ class SwitchService:
                 payload = self._build_payload(context, inspection, note, snapshot_id)
 
                 handoff_id = generate_handoff_id()
-                rendered = self._renderer.render(
-                    payload,
-                    handoff_id=handoff_id,
-                    overhead_bytes=context.adapter.context_overhead_bytes,
-                )
+                rendered = self._render_for_switch(context, payload, handoff_id)
                 handoff = HandoffRecord(
                     id=handoff_id,
                     protocol_version=HANDOFF_PROTOCOL_VERSION,
@@ -512,16 +510,13 @@ class SwitchService:
                     metadata={
                         "delivery_strategy": context.adapter.delivery_strategy.value,
                         "context_max_bytes": rendered.max_bytes,
+                        OBJECTIVE_VIA_MCP_KEY: any(
+                            omission.section == "original_objective"
+                            for omission in rendered.omissions
+                        ),
                     },
                 )
-                with store.write_transaction():
-                    if snapshot is not None:
-                        store.save_snapshot(snapshot)
-                    store.save_handoff(handoff)
-                if on_prepared:
-                    on_prepared(handoff, rendered)
-
-                return self._deliver(context, handoff, rendered, on_launch)
+                return self._deliver(context, handoff, rendered, snapshot, on_prepared, on_launch)
             finally:
                 lease.release()
         finally:
@@ -544,6 +539,8 @@ class SwitchService:
         context: _SwitchContext,
         handoff: HandoffRecord,
         rendered: RenderedHandoffContext,
+        snapshot: GitSnapshot | None,
+        on_prepared: Callable[[HandoffRecord, RenderedHandoffContext], None] | None,
         on_launch: Callable[[LaunchSpecification, Session], None] | None,
     ) -> SwitchResult:
         """Deliver the rendered context through the target provider's strategy."""
@@ -554,24 +551,34 @@ class SwitchService:
             checkpoint_service=self._checkpoint_service,
             workspace=context.workspace,
         )
+        binder = context.adapter if isinstance(context.adapter, ManagedMcpBinder) else None
+        session_metadata: dict[str, str | int] = {"handoff_id": handoff.id}
+        if binder is not None:
+            session_metadata[STARTUP_OBJECTIVE_SERVED_KEY] = 0
 
         # Persist both bindings before any provider work can request the handoff.
         with store.write_transaction():
+            task = TaskService(store).require_active_task(context.project.id)
+            if task.id != context.task.id:
+                raise NativeResumeError("The active Task changed during switch. Retry the switch.")
+            if snapshot is not None:
+                store.save_snapshot(snapshot)
             target_session = launcher.start_session(
                 task_id=context.task.id,
                 provider_id=context.adapter.provider_id,
-                metadata={"handoff_id": handoff.id},
+                metadata=session_metadata,
                 resumed_from_session_id=context.prior_target.id if context.prior_target else None,
                 native_session_id=(
                     context.prior_target.native_session_id if context.prior_target else None
                 ),
             )
 
-            store.update_handoff_delivery(
-                handoff.id, status=HandoffStatus.PREPARED, target_session_id=target_session.id
-            )
+            handoff = handoff.model_copy(update={"target_session_id": target_session.id})
+            store.save_handoff(handoff)
 
         try:
+            if on_prepared:
+                on_prepared(handoff, rendered)
             preparation = context.adapter.prepare_delivery(
                 executable_path=context.executable_path,
                 project_root=context.workspace.root,
@@ -613,19 +620,12 @@ class SwitchService:
                 delivered_at=utc_now(),
             )
 
-        if str(context.adapter.provider_id) == str(
-            PROVIDER_ANTIGRAVITY
-        ) and not is_antigravity_mcp_configured(context.workspace.root):
-            sys.stderr.write(f"\n{ANTIGRAVITY_MCP_MISSING_NOTICE}\n\n")
-
         try:
             target_session = launcher.run(
                 target_session,
                 preparation.launch_spec,
                 on_launch=on_launch,
-                mcp_binder=(
-                    context.adapter if isinstance(context.adapter, ManagedMcpBinder) else None
-                ),
+                mcp_binder=binder,
             )
         except ProjectConflictError:
             raise

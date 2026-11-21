@@ -43,6 +43,7 @@ HELP_PAGES = [
     (["init", "--help"], ["--name"]),
     (["run", "--help"], ["--prompt", "--dry-run", "--json"]),
     (["start", "--help"], ["--file", "--stdin", "--objective", "--task", "--replace-active"]),
+    (["resume", "--help"], ["--session", "--new-session", "--dry-run", "--json"]),
     (["session", "show", "--help"], ["--json"]),
     (["switch", "--help"], ["--from-session", "--note", "--dry-run", "--json"]),
 ]

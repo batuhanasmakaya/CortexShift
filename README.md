@@ -83,22 +83,28 @@ To install a candidate globally without an editable checkout: `uv build`, then
 A virtualenv/pip alternative is in [Getting Started][getting-started].
 Homebrew is pending publication of a custom tap.
 
-## Your first handoff
+## Switch and resume
 
 ```bash
 cortexshift checkpoint create -d "Preserve existing API compatibility" \
   -t "Targeted tests passed (operator report)"
-cortexshift handoff preview codex
-cortexshift switch codex --dry-run
 cortexshift switch codex
+cortexshift resume
+cortexshift switch claude
 ```
 
-Preview and dry-run launch no model and persist nothing. Actual Codex and
-Antigravity handoffs each use one read-only bootstrap model turn before native
-resume, which may consume provider usage. Claude Code retrieves the handoff through
-the CortexShift MCP tool in its interactive session. Handoffs keep the objective and
-constraints complete and show which optional context was omitted to fit 48,000 UTF-8 bytes.
-An objective that fits through paged startup can still exceed the handoff limit.
+Exit the native agent before each switch or resume. Bare `resume` follows the
+most recent managed Session on the active Task. Claude Code and Codex can open
+a fresh conversation with automatic Task context when the selected Session has
+no eligible native ID. Use `cortexshift resume claude --session ID` to request
+an exact earlier conversation, or `cortexshift resume codex --new-session` to
+continue in a fresh conversation deliberately.
+
+`cortexshift switch codex --dry-run` previews the switch without launching a
+provider or saving records. Actual Codex and Antigravity switches use one
+read-only bootstrap turn and may consume provider usage. Switches to Claude
+Code and Codex automatically request the full objective through MCP, including
+when the 48,000 UTF-8 byte handoff uses an excerpt.
 
 ## Terminal control center
 
@@ -112,9 +118,9 @@ An open dashboard holds no workspace lease and may observe a running agent.
 
 Claude and Codex receive MCP configuration automatically. Antigravity requires
 explicit workspace setup: `cortexshift mcp setup antigravity`.
-Inspect integration with `cortexshift mcp status`. Live `start` invocations add
-the paged objective tool to the managed MCP tools. Unmanaged and expired
-bindings expose four read tools at startup.
+Inspect integration with `cortexshift mcp status`. Live managed launches with
+automatic Task context expose the paged objective and Task history tools.
+Unmanaged and expired bindings expose four basic read tools at startup.
 See [Provider Support][provider-support] for identity, resume, and
 validation limits.
 
@@ -133,9 +139,9 @@ See [Security][security-policy] for boundaries and safe reporting.
 
 ## Limitations
 
-External provider CLIs can change. Legacy or plain Codex/Antigravity runs may
-have no native ID; those sessions cannot be exact-resumed. Deleted native
-conversations are not silently replaced. There is no automatic quota switching,
+External provider CLIs can change. Fresh interactive Codex and Antigravity runs
+may have no recorded native ID. An exact resume requires a recorded eligible ID.
+There is no automatic quota switching,
 embedded provider TUI, GUI, cloud agent, secret manager, or terminal multiplexer.
 Provider accounts, subscriptions, and usage costs are governed by each provider.
 Internal Python modules are not a stable library API.

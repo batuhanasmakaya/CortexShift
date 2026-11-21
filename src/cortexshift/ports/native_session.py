@@ -14,7 +14,12 @@ class ProviderNativeSessionAdapter(Protocol):
         ...
 
     def build_exact_resume(
-        self, project_root: Path, executable_path: str, native_session_id: str
+        self,
+        project_root: Path,
+        executable_path: str,
+        native_session_id: str,
+        *,
+        prompt: str | None = None,
     ) -> LaunchSpecification:
         """Build an exact native resume, without a model turn or process launch."""
         ...

@@ -12,8 +12,10 @@ what has actually been exercised against real, authenticated provider CLIs.
 | Interactive run | Direct terminal | Direct terminal | Direct terminal |
 | Automatic Task context with `start` | Native initial instruction and managed MCP | Native initial instruction and managed MCP | Unsupported |
 | Canonical handoff | Invocation-bound MCP retrieval | Read-only stdin bootstrap with JSONL output, then resume | Plan-mode stream-JSON bootstrap over stdin, then resume |
+| Full objective on switch | Paged managed MCP | Paged managed MCP in the interactive session | Full objective must fit in the handoff |
 | Managed native identity | Preallocated UUID on start/run/switch | ID captured during managed handoff | ID captured during managed handoff |
-| Exact resume | Known ID required | Known ID required | Known ID required |
+| Exact resume | Known ID and automatic Task refresh | Known ID and automatic Task refresh | Known ID with native context |
+| Fresh continuation with `resume` | Automatic Task context | Automatic Task context | Use the manual `run` workflow |
 | Return to provider | Same ID + fresh handoff | Same ID + fresh bootstrap | Same ID + fresh plan bootstrap |
 | MCP | Automatic inline configuration | Automatic config overrides | Explicit workspace setup |
 | Bootstrap model cost | None | One turn per handoff | One turn per handoff |
@@ -23,18 +25,32 @@ ID. No transcript/cache inspection or “last session” guessing is used. Nativ
 conversations can be deleted outside CortexShift; a stale ID fails without
 silently substituting a new conversation. Every resume records a new invocation.
 
-Claude Code and Codex use their interactive initial-prompt argument and existing
-per-launch MCP configuration. The short instruction tells the agent to retrieve
-all objective pages before working. The Codex `start` path opens a fresh
-interactive session without the headless model turn used by `switch`. CortexShift
-does not learn an exact Codex session ID through this path.
-[Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) ·
-[Codex TUI prompt argument](https://github.com/openai/codex/blob/main/codex-rs/tui/src/cli.rs)
+Claude Code supplies a fresh UUID with `--session-id` and requests exact resume
+with `--resume ID`. Claude Code and Codex accept a short interactive instruction
+when resuming. It requests the full paged objective, current Task fields, and
+historical context through the managed MCP binding. Native trust and permissions
+govern retrieval. [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
 
-Antigravity supports the separate `task start` and `run antigravity` commands.
+Codex switch captures `thread.started.thread_id` from `codex exec --json` and
+requires a successfully completed read-only turn before opening
+`codex resume ID`. A returning switch checks that the emitted ID matches the
+requested thread. Fresh interactive launches keep the native ID unknown. Codex
+CLI 0.153.4 help exposes `codex resume [SESSION_ID] [PROMPT]` and reserves JSONL
+events for `exec`. The documented `SessionStart` hook includes a session ID
+and requires hook review and trust. CortexShift keeps that trust boundary and
+uses Task continuation for fresh interactive sessions without an ID.
+[Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode) ·
+[Codex hooks](https://learn.chatgpt.com/docs/hooks)
+
+Antigravity captures the exact conversation ID from a successful plan-mode
+switch bootstrap. Plain `resume` with an eligible Antigravity ID reopens that
+conversation with its existing native context. New Task context can be sent
+when switching from another provider. Antigravity also supports the separate
+`task start` and `run antigravity` commands.
 Use `cortexshift mcp setup antigravity` to prepare `.agents/mcp_config.json`.
-That workspace configuration cannot provide the invocation-specific MCP delivery
-required by `start`. Native trust and permissions apply to all three providers.
+Workspace MCP setup provides the basic read tools. Automatic per-invocation
+context refresh and full-objective paging are unavailable for this adapter.
+[Antigravity headless mode](https://antigravity.google/docs/cli/headless/)
 
 ## Validation status
 
@@ -47,9 +63,9 @@ MCP workflows. These run in CI on Linux, macOS, and Windows across CPython
 3.12–3.14 and consume no model quota. Fake-provider coverage proves CortexShift's
 own logic, not a native CLI's behavior.
 
-The authenticated checks below predate the bounded handoff transport and
-`start`. Both startup paths have fake-provider coverage over real local MCP stdio,
-including retrieval of an objective larger than the handoff budget.
+The authenticated checks below predate the bounded handoff transport, `start`,
+and DX2. Automated coverage uses real local MCP stdio for startup, switching,
+and resume, including retrieval of an objective larger than the handoff budget.
 
 **Prior authenticated validation: Claude Code and Codex.** Both were exercised against
 authenticated, installed CLIs by a maintainer. In each case the managed MCP

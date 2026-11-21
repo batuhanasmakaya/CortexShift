@@ -9,7 +9,12 @@ from cortexshift.application.handoff_service import serve_bound_handoff
 from cortexshift.application.mcp_invocation import require_active_invocation
 from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.task_service import TaskService
-from cortexshift.application.task_startup_context import TaskObjectivePage, serve_task_objective
+from cortexshift.application.task_startup_context import (
+    TaskHistory,
+    TaskObjectivePage,
+    read_task_history,
+    serve_task_objective,
+)
 from cortexshift.application.workspace import open_workspace
 from cortexshift.domain.checkpoint import (
     CHECKPOINT_TRIGGER_DECISION,
@@ -222,6 +227,12 @@ class McpApplicationFacade:
         """Serve the next page and record retrieval for a live Task startup."""
         self._ensure_can_mutate()
         return serve_task_objective(self._store, self._require_active_invocation, offset)
+
+    def get_task_history(self) -> TaskHistory:
+        """Return historical observations scoped to the live managed Task."""
+        self._ensure_can_mutate()
+        _, task = self._require_active_invocation()
+        return read_task_history(task, self._store, self._store)
 
     def get_current_task(self, include_objective: bool = True) -> dict[str, Any]:
         """Return the canonical bound Task, optionally omitting the objective."""

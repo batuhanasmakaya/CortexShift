@@ -23,7 +23,7 @@ from cortexshift.ports.handoff_delivery import (
     ProviderHandoffAdapter,
     validate_delivery_context,
 )
-from cortexshift.ports.provider import ProviderRuntimeAdapter
+from cortexshift.ports.provider import CONTINUATION_PROMPT, ProviderRuntimeAdapter
 
 _VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?(?:[-.][a-zA-Z0-9]+)?)")
 
@@ -231,7 +231,12 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
         )
 
     def build_exact_resume(
-        self, project_root: Path, executable_path: str, native_session_id: str
+        self,
+        project_root: Path,
+        executable_path: str,
+        native_session_id: str,
+        *,
+        prompt: str | None = None,
     ) -> LaunchSpecification:
         if not valid_native_id(native_session_id):
             raise NativeResumeError("Invalid native session identifier.")
@@ -246,8 +251,10 @@ class ClaudeRuntimeAdapter(ProviderRuntimeAdapter):
                 mcp_config,
                 "--resume",
                 native_session_id,
+                *([prompt] if prompt else []),
             ],
             native_session_id=native_session_id,
+            prompt_supplied=bool(prompt),
         )
 
     def bind_managed_mcp(
@@ -309,6 +316,7 @@ CLAUDE_HANDOFF_PROMPT = (
     "CortexShift prepared a fresh handoff for this session. Call the CortexShift MCP "
     "tool get_handoff_context before acting, and follow its verification steps. "
     "If the tool is unavailable, ask the operator for the handoff before continuing."
+    " " + CONTINUATION_PROMPT
 )
 
 
@@ -359,13 +367,7 @@ class ClaudeHandoffAdapter(ProviderHandoffAdapter):
         validate_delivery_context(rendered_context)
         if native_session_id is not None:
             launch_spec = self._runtime.build_exact_resume(
-                project_root, executable_path, native_session_id
-            )
-            launch_spec = launch_spec.model_copy(
-                update={
-                    "argv": [*launch_spec.argv, CLAUDE_HANDOFF_PROMPT],
-                    "prompt_supplied": True,
-                }
+                project_root, executable_path, native_session_id, prompt=CLAUDE_HANDOFF_PROMPT
             )
         else:
             launch_spec = self._runtime.build_launch_spec(

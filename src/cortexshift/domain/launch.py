@@ -25,6 +25,7 @@ class LaunchSpecification(BaseModel):
     interactive: bool = True
     initial_prompt_supported: bool = True
     prompt_supplied: bool = False
+    workspace_notice: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     env: dict[str, str] = Field(default_factory=dict)
 

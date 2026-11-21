@@ -17,16 +17,7 @@ from cortexshift.domain.errors import (
 )
 from cortexshift.domain.session import STARTUP_OBJECTIVE_SERVED_KEY, Session
 from cortexshift.domain.task import Task
-from cortexshift.ports.provider import ManagedMcpBinder
-
-STARTUP_PROMPT = (
-    "Before working on the CortexShift Task, call the cortexshift MCP tool "
-    "get_task_objective starting at offset 0. Follow each next_offset until it "
-    "is null and read the pages in order as one objective. Then call get_current_task "
-    "with include_objective=false for requirements, constraints and progress. "
-    "Verify against the live workspace before acting. If context cannot be retrieved, "
-    "tell the operator and wait."
-)
+from cortexshift.ports.provider import STARTUP_PROMPT, ManagedMcpBinder
 
 
 @dataclass(frozen=True)

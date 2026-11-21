@@ -17,3 +17,4 @@
 - [ADR-0015 — Bounded handoff delivery](ADR-0015-bounded-handoff-delivery.md) — Accepted
 - [ADR-0016 — Project-wide recovery and historical test evidence](ADR-0016-project-recovery-and-test-evidence.md) — Accepted
 - [ADR-0017 — Managed Task startup](ADR-0017-managed-task-startup.md) — Accepted
+- [ADR-0018 — Switch and resume the active Task](ADR-0018-switch-and-resume.md) — Accepted

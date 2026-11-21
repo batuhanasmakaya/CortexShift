@@ -74,13 +74,23 @@ def cli(*args: str, env: dict[str, str] | None = None, success: bool = True) -> 
     return result.stdout
 
 
-async def mcp_check(env: dict[str, str], writable: bool) -> None:
+async def mcp_check(env: dict[str, str], writable: bool, automatic_context: bool = False) -> None:
     params = StdioServerParameters(command=str(CLI), args=["mcp", "serve"], env=env)
     async with stdio_client(params) as (read, write), ClientSession(read, write) as client:
         await client.initialize()
         tools = {tool.name for tool in (await client.list_tools()).tools}
-        assert len(tools) == (11 if writable else 4)
+        assert len(tools) == (11 if writable else 4) + (2 if automatic_context else 0)
         assert ("get_handoff_context" in tools) == writable
+        assert {"get_task_objective", "get_task_history"}.issubset(tools) == automatic_context
+        if automatic_context:
+            objective = await client.call_tool("get_task_objective", {"offset": 0})
+            assert not objective.is_error and objective.structured_content is not None
+            assert objective.structured_content["text"] == "Validate installed CortexShift."
+            assert objective.structured_content["next_offset"] is None
+            history = await client.call_tool("get_task_history", {})
+            assert not history.is_error and history.structured_content is not None
+            evidence = history.structured_content["historical_test_evidence"]
+            assert evidence["status"]["provenance"] == "reported"
         result = await client.call_tool("get_current_task")
         assert not result.is_error
         if writable:
@@ -126,7 +136,9 @@ class FakeInteractive(InteractiveProcessRunner):
         assert declared["CORTEXSHIFT_TASK_ID"] == env["CORTEXSHIFT_TASK_ID"]
         assert declared["CORTEXSHIFT_PROVIDER_ID"] == env["CORTEXSHIFT_PROVIDER_ID"]
         assert declared["CORTEXSHIFT_MCP_READ_ONLY"] == "0"
-        asyncio.run(mcp_check(sanitized_provider_env(declared), True))
+        asyncio.run(
+            mcp_check(sanitized_provider_env(declared), True, "get_task_history" in argv[-1])
+        )
         return 0
 
 
@@ -262,7 +274,7 @@ def main() -> None:
         **common,
     ).switch("codex", start_dir=ROOT)
     assert result.target_session.native_session_id
-    resumed = ResumeService(**common).resume("codex", start_dir=ROOT)
+    resumed = ResumeService(**common).resume(start_dir=ROOT)
     assert resumed.native_session_id == result.target_session.native_session_id
     assert resumed.resumed_from_session_id == result.target_session.id
     database = ROOT / ".cortexshift/state.sqlite3"

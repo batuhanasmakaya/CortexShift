@@ -175,16 +175,25 @@ class AntigravityRuntimeAdapter(ProviderRuntimeAdapter):
         )
 
     def build_exact_resume(
-        self, project_root: Path, executable_path: str, native_session_id: str
+        self,
+        project_root: Path,
+        executable_path: str,
+        native_session_id: str,
+        *,
+        prompt: str | None = None,
     ) -> LaunchSpecification:
         if not valid_native_id(native_session_id):
             raise NativeResumeError("Invalid native session identifier.")
+        if prompt:
+            raise UnsupportedPromptError("Antigravity exact resume cannot attach a fresh prompt.")
         return LaunchSpecification(
             provider_id=self.provider_id,
             executable=executable_path,
             cwd=project_root,
             argv=[executable_path, "--conversation", native_session_id],
             native_session_id=native_session_id,
+            initial_prompt_supported=False,
+            workspace_notice=_mcp_notice(project_root),
         )
 
     def build_launch_spec(
@@ -212,6 +221,7 @@ class AntigravityRuntimeAdapter(ProviderRuntimeAdapter):
             interactive=True,
             initial_prompt_supported=False,
             prompt_supplied=False,
+            workspace_notice=_mcp_notice(project_root),
         )
 
 
@@ -383,20 +393,10 @@ class AntigravityHandoffAdapter(ProviderHandoffAdapter):
                 "Antigravity returned a different conversation; refusing continuity fallback.",
             )
 
-        launch_spec = LaunchSpecification(
-            provider_id=self.provider_id,
-            executable=executable_path,
-            cwd=project_root,
-            argv=[executable_path, "--conversation", conversation_id],
-            native_session_id=conversation_id,
-            interactive=True,
-            initial_prompt_supported=False,
-            prompt_supplied=False,
-            metadata={"resumed_conversation": True},
-        )
-
         return HandoffDeliveryPreparation(
-            launch_spec=launch_spec,
+            launch_spec=self._runtime.build_exact_resume(
+                project_root, executable_path, conversation_id
+            ),
             native_session_id=conversation_id,
             bootstrap_performed=True,
         )
@@ -435,6 +435,10 @@ def is_antigravity_mcp_configured(project_root: Path) -> bool:
         )
     except Exception:
         return False
+
+
+def _mcp_notice(project_root: Path) -> str | None:
+    return None if is_antigravity_mcp_configured(project_root) else ANTIGRAVITY_MCP_MISSING_NOTICE
 
 
 def setup_antigravity_mcp(
