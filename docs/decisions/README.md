@@ -18,3 +18,4 @@
 - [ADR-0016 — Project-wide recovery and historical test evidence](ADR-0016-project-recovery-and-test-evidence.md) — Accepted
 - [ADR-0017 — Managed Task startup](ADR-0017-managed-task-startup.md) — Accepted
 - [ADR-0018 — Switch and resume the active Task](ADR-0018-switch-and-resume.md) — Accepted
+- [ADR-0019 — Desktop workspace browser](ADR-0019-desktop-foundation.md) — Accepted

@@ -7,7 +7,7 @@ from cortexshift.application.locator import (
     ProjectLocator,
 )
 from cortexshift.application.task_startup_context import objective_retrieval
-from cortexshift.application.workspace import WorkspaceStart, open_workspace
+from cortexshift.application.workspace import WorkspaceIdentity, WorkspaceStart, open_workspace
 from cortexshift.domain.session import CONTINUED_FROM_SESSION_KEY, UNFINALIZED_SESSION_STATUSES
 from cortexshift.domain.status import (
     ActiveTaskSummary,
@@ -29,6 +29,13 @@ class ProjectStatusService:
         self.locator = locator
         self._leases = lease_manager or FileWorkspaceLeaseManager()
 
+    def workspace_activity(self, workspace: WorkspaceIdentity) -> bool | None:
+        """Probe ownership for the workspace without attributing it to a Session."""
+        try:
+            return self._leases.get_lease(workspace.root).is_locked()
+        except OSError:
+            return None
+
     def get_status(self, start_path: WorkspaceStart = None) -> ProjectStatus:
         """Inspect the project root for the given path and return structured status.
 
@@ -46,10 +53,7 @@ class ProjectStatusService:
         workspace, store = open_workspace(start_path, locator=self.locator)
         project = workspace.project
         with store:
-            try:
-                workspace_busy = self._leases.get_lease(workspace.root).is_locked()
-            except OSError:
-                workspace_busy = None
+            workspace_busy = self.workspace_activity(workspace)
             schema_version = store.get_schema_version()
             active_id = store.get_active_task_id(project.id)
 

@@ -29,7 +29,11 @@ from threading import RLock
 from typing import Any, Literal
 from urllib.parse import quote, quote_from_bytes
 
-from cortexshift.adapters.sqlite.migrations import get_current_schema_version, run_migrations
+from cortexshift.adapters.sqlite.migrations import (
+    CURRENT_SCHEMA_VERSION,
+    get_current_schema_version,
+    run_migrations,
+)
 from cortexshift.domain.checkpoint import (
     CheckpointKind,
     CheckpointPayload,
@@ -41,6 +45,8 @@ from cortexshift.domain.checkpoint import (
 )
 from cortexshift.domain.errors import (
     DatabaseStateError,
+    SchemaUpgradeRequiredError,
+    StateBusyError,
     StateCorruptionError,
     UnsupportedSchemaVersionError,
 )
@@ -103,6 +109,7 @@ class SQLiteStateStore(
         *,
         _mode: Literal["ro", "rw", "rwc"] = "rwc",
         _immutable: bool = False,
+        _timeout: float = 5.0,
         _validate: Callable[["SQLiteStateStore"], None] | None = None,
     ) -> None:
         """Open state, validating an existing workspace before configuring or migrating it."""
@@ -117,7 +124,7 @@ class SQLiteStateStore(
             uri += "&immutable=1"
 
         try:
-            self._conn = sqlite3.connect(uri, uri=True, timeout=5.0, check_same_thread=False)
+            self._conn = sqlite3.connect(uri, uri=True, timeout=_timeout, check_same_thread=False)
         except sqlite3.Error as err:
             msg = f"Failed to open SQLite database at {self.db_path}: {err}"
             raise DatabaseStateError(msg) from err
@@ -177,6 +184,31 @@ class SQLiteStateStore(
         # Verify again on the connection that will be used by the application. No journal
         # configuration or migration runs if the record changed since the read-only check.
         return cls(db_path, auto_migrate=auto_migrate, _mode="rw", _validate=validate)
+
+    @classmethod
+    @contextmanager
+    def read_existing(cls, db_path: Path) -> Iterator["SQLiteStateStore"]:
+        """Read a consistent WAL snapshot without configuring or migrating the database."""
+        try:
+            with cls(db_path, auto_migrate=False, _mode="ro", _timeout=0.25) as store:
+                store._conn.execute("PRAGMA trusted_schema = OFF")
+                store._conn.execute("BEGIN")
+                version = store.get_schema_version()
+                if version > CURRENT_SCHEMA_VERSION:
+                    raise UnsupportedSchemaVersionError(version, CURRENT_SCHEMA_VERSION)
+                if version != CURRENT_SCHEMA_VERSION:
+                    raise SchemaUpgradeRequiredError()
+                yield store
+        except (DatabaseStateError, sqlite3.Error) as exc:
+            cause: BaseException | None = exc
+            while cause is not None:
+                code = getattr(cause, "sqlite_errorcode", 0)
+                if code & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                    raise StateBusyError() from exc
+                cause = cause.__cause__
+            if isinstance(exc, sqlite3.Error):
+                raise StateCorruptionError("Could not read the project.") from exc
+            raise
 
     def _configure_connection(self) -> None:
         """Configure SQLite pragmas for safety and performance."""
@@ -429,6 +461,35 @@ class SQLiteStateStore(
             msg = f"Failed to list tasks for project '{project_id}': {err}"
             raise StateCorruptionError(msg) from err
 
+    def list_task_previews(
+        self,
+        project_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        """Read bounded summaries without deserializing objectives or Task JSON."""
+        rows = self._fetch_rows(
+            """
+            SELECT t.id, substr(t.title, 1, 241) AS title, t.status, t.created_at,
+                   t.updated_at, substr(t.objective, 1, 321) AS objective_preview,
+                   (SELECT count(*) FROM sessions s WHERE s.task_id = t.id) AS session_count
+            FROM tasks t WHERE t.project_id = ?
+            ORDER BY t.created_at DESC, t.rowid DESC LIMIT ? OFFSET ?;
+            """,
+            (project_id, limit, offset),
+        )
+        return [dict(row) for row in rows]
+
+    def get_objective_slice(
+        self, project_id: str, task_id: str, *, offset: int, limit: int
+    ) -> str | None:
+        row = self._fetch_row(
+            "SELECT substr(objective, ?, ?) FROM tasks WHERE project_id = ? AND id = ?;",
+            (offset + 1, limit, project_id, task_id),
+        )
+        return str(row[0]) if row is not None else None
+
     def _row_to_task(self, row: sqlite3.Row) -> Task:
         """Convert a database row into a Task domain entity."""
         return Task(
@@ -661,6 +722,7 @@ class SQLiteStateStore(
         limit: int | None = 20,
         *,
         statuses: tuple[SessionStatus, ...] | None = None,
+        offset: int = 0,
     ) -> list[Session]:
         """List sessions, ordered newest first."""
         try:
@@ -689,14 +751,24 @@ class SQLiteStateStore(
                 JOIN tasks t ON s.task_id = t.id
                 {where_clause}
                 ORDER BY s.started_at DESC, s.rowid DESC
-                LIMIT ?;
+                LIMIT ? OFFSET ?;
             """
-            params.append(-1 if limit is None else max(1, limit))
+            params.extend((-1 if limit is None else max(1, limit), offset))
             rows = self._fetch_rows(query, params)
             return [self._row_to_session(row) for row in rows]
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             msg = f"Failed to list sessions: {err}"
             raise StateCorruptionError(msg) from err
+
+    def count_sessions_by_status(self, project_id: str, statuses: tuple[SessionStatus, ...]) -> int:
+        placeholders = ", ".join("?" for _ in statuses)
+        row = self._fetch_row(
+            "SELECT count(*) FROM sessions s JOIN tasks t ON s.task_id = t.id "
+            f"WHERE t.project_id = ? AND s.status IN ({placeholders});",
+            (project_id, *statuses),
+        )
+        assert row is not None
+        return int(row[0])
 
     def count_reconciled_sessions(self, project_id: str) -> int:
         """Count prior reconciliations without loading historical Session payloads."""
@@ -1047,6 +1119,44 @@ class SQLiteStateStore(
             created_at=_parse_utc_datetime(row["created_at"]),
             metadata=json.loads(row["metadata"]),
         )
+
+    def list_checkpoint_references(
+        self,
+        project_id: str,
+        *,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        limit: int,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        rows = self._fetch_rows(
+            """
+            SELECT id, kind, created_at, task_id, session_id FROM checkpoints
+            WHERE project_id = ? AND (? IS NULL OR task_id = ?)
+              AND (? IS NULL OR session_id = ?)
+            ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?;
+            """,
+            (project_id, task_id, task_id, session_id, session_id, limit, offset),
+        )
+        return [dict(row) for row in rows]
+
+    def list_handoff_references(
+        self,
+        project_id: str,
+        *,
+        task_id: str | None = None,
+        limit: int,
+        offset: int,
+    ) -> list[dict[str, Any]]:
+        rows = self._fetch_rows(
+            """
+            SELECT id, task_id, source_provider_id, target_provider_id, status, created_at
+            FROM handoffs WHERE project_id = ? AND (? IS NULL OR task_id = ?)
+            ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?;
+            """,
+            (project_id, task_id, task_id, limit, offset),
+        )
+        return [dict(row) for row in rows]
 
     def get_latest_checkpoint_reference(
         self, project_id: str, task_id: str

@@ -86,6 +86,14 @@ class UnsupportedSchemaVersionError(DatabaseStateError):
         self.max_supported_version = max_supported_version
 
 
+class StateBusyError(DatabaseStateError):
+    """A concurrent process temporarily prevents a state read."""
+
+
+class SchemaUpgradeRequiredError(DatabaseStateError):
+    """Read-only consumers require the current project schema."""
+
+
 class StateCorruptionError(DatabaseStateError):
     """Raised when database state is corrupted, malformed, or unreadable."""
 
