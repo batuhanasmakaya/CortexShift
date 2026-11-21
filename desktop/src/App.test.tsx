@@ -23,21 +23,35 @@ const session = {
 const content = (items: string[] = []) => ({ items, total: items.length, truncated: false });
 const overview = {
   ...alpha, name: 'Alpha workspace', schema_version: 6, active_task: task,
-  latest_session: session, workspace_busy: null, unfinalized_sessions: 1,
+  latest_session: session, active_has_sessions: true, workspace_busy: null, unfinalized_sessions: 1,
   current_work: 'Read state', completed: content(['Verified identity']), issues: content(), checkpoint,
 };
 const pages = { items: [checkpoint], next: null };
 let entries: (typeof alpha)[];
 let openChoice: typeof alpha | null;
 let queryError: string | null;
+let overviewResult: typeof overview | (Omit<typeof overview, 'workspace_busy' | 'latest_session'> &
+  { workspace_busy: boolean; latest_session: typeof session | null });
+let pickedObjective: { name: string; text: string } | null;
+let actionOutcome: object | null;
+let submitFailed: boolean;
 const objective = '# Objective\n\n<iframe src="https://example.org">unsafe</iframe>\n' + '🧪'.repeat(8_100);
 
 beforeEach(() => {
   vi.stubGlobal('localStorage', jsdom.window.localStorage);
+  // jsdom does not implement the native modal methods used by WKWebView and WebView2.
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true; } },
+    close: { configurable: true, value(this: HTMLDialogElement) { this.open = false; } },
+  });
   window.localStorage.clear();
   entries = [];
   openChoice = alpha;
   queryError = null;
+  overviewResult = overview;
+  pickedObjective = null;
+  actionOutcome = null;
+  submitFailed = false;
   tauri.invoke.mockReset();
   tauri.invoke.mockImplementation(async (command: string, input?: { request?: { op: string; root?: string; offset?: number } }) => {
     if (command === 'library') return entries.slice();
@@ -49,12 +63,24 @@ beforeEach(() => {
       entries = entries.filter(entry => entry.root !== (input as { root?: string } | undefined)?.root);
       return entries;
     }
+    if (command === 'pick_objective') return pickedObjective;
+    if (command === 'create_task') return { id: task.id, active: true };
     if (queryError) throw { message: queryError };
     const request = input?.request;
     switch (request?.op) {
+      case 'action_status': return { action: actionOutcome, workspace_busy: overviewResult.workspace_busy };
+      case 'providers': return { terminal: true, providers: [
+        { id: 'claude', installed: true, managed: true },
+        { id: 'codex', installed: true, managed: true },
+      ] };
+      case 'plan': return { provider: 'codex', mode: 'task_continuation', source: session.id, target: null, bootstrap_turn: false };
+      case 'submit':
+        if (submitFailed) throw { code: 'bridge_timeout' };
+        return { action: actionOutcome };
+      case 'session': return { ...session, objective_receipt: { state: 'partial', served: 4_000, total: 8_100 } };
       case 'hello': return { protocol: 1, core_version: '0.1.0' };
       case 'overview': return request.root === beta.root
-        ? { ...overview, ...beta, name: 'Beta workspace', active_task: null } : overview;
+        ? { ...overview, ...beta, name: 'Beta workspace', active_task: null } : overviewResult;
       case 'tasks': return { items: [{ ...task, objective_preview: 'Stored objective preview', session_count: 1 }], next: null };
       case 'task': return { ...task, requirements: content(['Read canonical data']), constraints: content(),
         completed: content(), current_work: null, remaining: content(), issues: content(), decisions: content(['Use WAL']) };
@@ -171,4 +197,60 @@ it('keeps onboarding when the native picker is cancelled', async () => {
   await user.click(await screen.findByRole('button', { name: 'Open Project' }));
   expect(screen.getByRole('heading', { level: 1 }).textContent).toMatch(/Keep the context/);
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('opens New Task from the keyboard, handles picker cancellation and keeps the Markdown source exact', async () => {
+  const user = userEvent.setup();
+  entries = [alpha];
+  overviewResult = { ...overview, workspace_busy: false, unfinalized_sessions: 0 };
+  render(<App />);
+  const button = await screen.findByRole('button', { name: 'New Task' });
+  button.focus();
+  await user.keyboard('{Enter}');
+  const dialog = screen.getByRole('dialog', { name: 'New Task' });
+  const title = within(dialog).getByRole('textbox', { name: 'Title' });
+  expect(document.activeElement).toBe(title);
+  await user.type(title, 'Markdown continuity');
+  await user.click(within(dialog).getByRole('button', { name: 'Choose Markdown file' }));
+  expect(within(dialog).getByRole('textbox', { name: 'Objective' })).toBeTruthy();
+  pickedObjective = { name: 'Objective.md', text: '  # Unicode 🧪\r\n  ' };
+  await user.click(within(dialog).getByRole('button', { name: 'Choose Markdown file' }));
+  expect(await within(dialog).findByText('Objective.md')).toBeTruthy();
+  expect(dialog.querySelector('pre')?.textContent).toBe(pickedObjective.text);
+  await user.click(within(dialog).getByRole('checkbox', { name: 'Make active' }));
+  const submit = within(dialog).getByRole('button', { name: 'Create Task' });
+  expect((submit as HTMLButtonElement).disabled).toBe(true);
+  await user.click(within(dialog).getByRole('checkbox', { name: /keep the previous Task/ }));
+  await user.click(submit);
+  await screen.findByText('Task saved.');
+  expect(tauri.invoke).toHaveBeenCalledWith('create_task', { request: expect.objectContaining({
+    root: alpha.root, title: 'Markdown continuity', objective: pickedObjective.text,
+    activate: true, expected_active: task.id,
+  }) });
+});
+
+it('displays the core fresh-continuation plan and gives an indeterminate launch a safe next step', async () => {
+  const user = userEvent.setup();
+  entries = [alpha];
+  submitFailed = true;
+  overviewResult = { ...overview, workspace_busy: false, unfinalized_sessions: 0 };
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'Resume' }));
+  const dialog = screen.getByRole('dialog', { name: 'Resume work' });
+  expect(await within(dialog).findByText('Continue the Task in a fresh conversation')).toBeTruthy();
+  await user.click(within(dialog).getByRole('button', { name: 'Open terminal' }));
+  expect(await screen.findByText(/bridge lost contact during submission/)).toBeTruthy();
+  expect(tauri.invoke.mock.calls.filter(([, input]) => input?.request?.op === 'submit')).toHaveLength(1);
+});
+
+it('shows the objectively served prefix for a Session reached from the action receipt', async () => {
+  const user = userEvent.setup();
+  entries = [alpha];
+  actionOutcome = { id: 'job_a', phase: 'running', provider: 'codex', mode: 'start', session_id: session.id };
+  render(<App />);
+  const receipt = await screen.findByText('Codex · Native provider launched');
+  expect(receipt).toBeTruthy();
+  await user.click(await screen.findByRole('button', { name: 'View Session' }));
+  expect(await screen.findByText('MCP served part of objective')).toBeTruthy();
+  expect(screen.getByText('4000 of 8100 Unicode characters served')).toBeTruthy();
 });

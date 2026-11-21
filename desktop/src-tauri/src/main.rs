@@ -4,9 +4,11 @@
 )]
 
 mod bridge;
+mod control;
 mod library;
 
 use bridge::{Bridge, BridgeError};
+use control::{ControlRequest, CreateTask};
 use library::{Library, Project};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -48,6 +50,10 @@ enum Query {
         root: String,
         task_id: Option<String>,
         offset: u32,
+    },
+    Session {
+        root: String,
+        record_id: String,
     },
     Checkpoint {
         root: String,
@@ -120,6 +126,63 @@ fn invalid_path() -> BridgeError {
 }
 
 #[tauri::command]
+async fn create_task(
+    request: CreateTask,
+    bridge: State<'_, Bridge>,
+    store: State<'_, Library>,
+) -> Result<Value, BridgeError> {
+    let project = store.get(&request.root)?;
+    control::create_task(&bridge, project, request).await
+}
+
+#[tauri::command]
+async fn agent_control(
+    request: ControlRequest,
+    app: tauri::AppHandle,
+    bridge: State<'_, Bridge>,
+    store: State<'_, Library>,
+) -> Result<Value, BridgeError> {
+    let project = store.get(request.root())?;
+    let directory = app.path().app_local_data_dir().map_err(|_| {
+        BridgeError::new(
+            "state_unavailable",
+            "Desktop action storage is unavailable.",
+        )
+    })?;
+    control::dispatch(&bridge, project, request, &directory.join("actions")).await
+}
+
+#[tauri::command]
+async fn pick_objective(
+    app: tauri::AppHandle,
+    picker: State<'_, Picker>,
+) -> Result<Option<control::ObjectiveFile>, BridgeError> {
+    let _permit = picker
+        .0
+        .try_acquire()
+        .map_err(|_| BridgeError::new("picker_open", "A native file picker is already open."))?;
+    let (sender, receiver) = oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Choose a Markdown objective")
+        .add_filter("Markdown", &["md", "markdown"])
+        .pick_file(move |path| {
+            let _ = sender.send(path);
+        });
+    let Some(path) = receiver
+        .await
+        .map_err(|_| BridgeError::new("picker_closed", "The file picker closed unexpectedly."))?
+    else {
+        return Ok(None);
+    };
+    let path = path.into_path().map_err(|_| control::invalid_file())?;
+    tauri::async_runtime::spawn_blocking(move || control::read_objective(&path))
+        .await
+        .map_err(|_| control::invalid_file())?
+        .map(Some)
+}
+
+#[tauri::command]
 async fn query(
     request: Query,
     bridge: State<'_, Bridge>,
@@ -166,6 +229,7 @@ async fn query(
             root,
             json!({ "task_id": task_id, "offset": offset }),
         ),
+        Query::Session { root, record_id } => ("session", root, json!({ "record_id": record_id })),
         Query::Checkpoint { root, record_id } => {
             ("checkpoint", root, json!({ "record_id": record_id }))
         }
@@ -192,7 +256,10 @@ fn main() {
             library,
             open_project,
             remove_project,
-            query
+            query,
+            create_task,
+            agent_control,
+            pick_objective
         ])
         .setup(|app| {
             app.manage(Library::new(

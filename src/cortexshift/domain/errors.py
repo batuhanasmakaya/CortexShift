@@ -50,6 +50,14 @@ class ActiveTaskExistsError(CortexShiftError):
     """Raised when creation requires an empty active Task pointer."""
 
 
+class ActiveTaskChangedError(CortexShiftError):
+    """The active Task no longer matches the operator's selection."""
+
+
+class TaskCreationConflictError(CortexShiftError):
+    """A previous creation used this Task identity with different input."""
+
+
 class TaskStartupError(CortexShiftError):
     """A managed Task startup could not be prepared or launched."""
 

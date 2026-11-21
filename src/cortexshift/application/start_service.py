@@ -42,6 +42,7 @@ class StartService(RunService):
         replace_active: bool = False,
         start_dir: WorkspaceStart = None,
         on_launch: Callable[[str, Path, bool], None] | None = None,
+        on_prepared: Callable[[Session], None] | None = None,
     ) -> StartResult:
         if (objective is None) == (task_id is None):
             raise TaskStartupError("Supply an objective or an existing Task ID.")
@@ -89,7 +90,9 @@ class StartService(RunService):
                     self._runner, store, self._checkpoint_service, workspace
                 )
 
-                def notify_launch(*_: object) -> None:
+                def notify_launch(_: object, session: Session) -> None:
+                    if on_prepared is not None:
+                        on_prepared(session)
                     if on_launch is not None:
                         on_launch(adapter.display_name, workspace.root, objective is not None)
 

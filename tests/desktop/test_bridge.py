@@ -180,3 +180,38 @@ def test_persisted_records_round_trip_over_stdio(
     assert replies[3]["result"]["items"][0]["id"] == checkpoint_id
     assert replies[4]["result"]["items"] == []
     assert result.stderr == b""
+
+
+def test_streamed_creation_is_idempotent_and_checks_active_pointer(
+    workspace: tuple[Path, dict[str, str], str, str, str],
+) -> None:
+    from io import BytesIO
+
+    from cortexshift.desktop.bridge import serve
+
+    _, project, previous, _, _ = workspace
+    objective = ("  # Title 🧪\r\n\n" * 9000 + "  ").encode()
+    params = {
+        "version": 1,
+        "id": 1,
+        "op": "create_task",
+        **project,
+        "task_id": "task_0123456789abcdef0123456789abcdef",
+        "title": "Desktop objective",
+        "activate": True,
+        "expected_active": previous,
+        "objective_bytes": len(objective),
+    }
+
+    def create(**updates: Any) -> dict[str, Any]:
+        source = BytesIO(json.dumps(params | updates).encode() + b"\n" + objective)
+        sink = BytesIO()
+        serve(source, sink)
+        return dict(json.loads(sink.getvalue()))
+
+    assert create(expected_active=None)["error"]["code"] == "active_task_changed"
+    first = create()["result"]
+    assert create()["result"] == first
+    stored = request(Bridge(), "objective", **project, task_id=first["id"])
+    assert stored["result"]["text"] == objective.decode()[:8192]
+    assert request(Bridge(), "task", **project, task_id=previous)["result"]["id"] == previous

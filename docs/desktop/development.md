@@ -20,10 +20,9 @@ For a new project, initialize it explicitly in a terminal.
 ```sh
 cd /path/to/project
 cortexshift init
-cortexshift task start "Review workspace continuity" --objective "Inspect the project state."
 ```
 
-Select **Open Project** and choose the initialized root. Open **Tasks**, select the Task, and open **Sessions** or **Checkpoints & handoffs** to inspect records associated with it. A new Task has an empty history until managed work or explicit checkpoints are recorded.
+Select **Open Project**, choose the initialized root, and use **New Task** to save an objective. Use a disposable workspace and fake provider executables for launch testing. Start the development application with the fake executable directory on its PATH, outside the test workspace. Confirm native terminal input, close the Desktop window while an invocation runs, and reopen Desktop to check its final Session receipt. The automated Desktop integration exercises Task creation, fake Claude and Codex switching, real MCP paging and write authority, and native resume.
 
 ## Checks
 
@@ -33,6 +32,7 @@ From the repository root:
 uv run --locked pytest --no-cov tests/desktop
 uv run --locked pytest -W error
 uv run --locked ruff check .
+uv run --locked ruff format --check .
 uv run --locked mypy src
 ```
 
@@ -61,4 +61,9 @@ See [packaging](packaging.md) for a local app or installer build.
 | Bridge unavailable in development | Run `uv sync --locked --python 3.12` in the source checkout and check the bridge with `uv run --locked python -I -m cortexshift.desktop.bridge` and a `hello` frame. |
 | Sidecar fails after packaging | Verify the bridge sits beside the installed native executable and matches its architecture. Check **Settings & diagnostics** for the protocol status. |
 | Port 1420 is in use | Stop the other development server and rerun Tauri. |
-| Session is marked ownership uncertain | Review the live workspace lock observation and recorded Session state. Use the CLI's recovery workflow when appropriate. |
+| Session is marked ownership uncertain | Review the live workspace lock observation and recorded Session state. Use **Review recovery** to preview eligible Sessions. If ownership remains uncertain, finish or check the provider through its usual controls before proceeding. |
+| Provider unavailable or setup incomplete | Install the native CLI and make it available to Desktop. Relaunch Desktop with the intended PATH if your shell adds provider install directories. Use **Check setup** in the launch dialog or sign in through the native CLI. Windows launch expects native executables. |
+| Terminal remains pending | Check whether a terminal opened. Use **Cancel pending launch** before retrying if the worker has not claimed it. |
+| Task saved, launch failed | Open the saved Task and choose **Start agent**. Use Session history to check the failure and retry the existing Task. |
+| Bridge timed out while submitting | Refresh action status and inspect canonical Tasks or Sessions. Use the same creation ID from the open New Task dialog to check or retry a Task write. |
+| Native resume rejected | Inspect the provider terminal and Session record. If the conversation is unavailable, use **Continue Task fresh** for an eligible Session. |

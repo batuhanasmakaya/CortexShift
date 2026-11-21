@@ -16,8 +16,8 @@ on a separate maintainer checklist.
 
 ## CortexShift Desktop
 
-The native Desktop companion opens initialized workspaces and displays Tasks, managed
-Sessions, checkpoints, and handoff history. [Desktop overview and setup](docs/desktop/README.md)
+The native Desktop companion creates Tasks, starts managed Claude Code and Codex Sessions,
+switches providers, and resumes work from the same workspace history. [Desktop overview and setup](docs/desktop/README.md)
 
 ## How it works
 

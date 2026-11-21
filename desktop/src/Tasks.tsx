@@ -1,5 +1,7 @@
 import { ArrowLeft, ArrowRight, Check, Files } from 'lucide-react';
 import { useCallback, useState } from 'react';
+import { agentAction, managed } from './AgentControl';
+import type { AgentAction, Task } from './ipc';
 import { date, desktop } from './ipc';
 import { useRead } from './read';
 import { Details, Empty, Fact, Pager, ReadView, SectionHeading, Status, TextList } from './ui';
@@ -7,16 +9,23 @@ import { Details, Empty, Fact, Pager, ReadView, SectionHeading, Status, TextList
 const PAGE_SIZE = 20;
 const OBJECTIVE_SIZE = 8192;
 
-export function Tasks({ root, taskId, openTask, openSessions, openRecords }: {
+export function Tasks({ root, taskId, openTask, openSessions, openRecords, active, verified, blocked, launch, activate, revision }: {
   root: string;
   taskId: string | null;
   openTask: (id: string | null) => void;
   openSessions: (id: string) => void;
   openRecords: (id: string) => void;
+  active: Task | null;
+  verified: boolean;
+  blocked: string | null;
+  launch: (action: AgentAction) => void;
+  activate: (task: Task) => void;
+  revision: number;
 }) {
   const [offset, setOffset] = useState(0);
-  const tasks = useRead(useCallback(() => desktop.query('tasks', { root, offset }), [root, offset]));
+  const tasks = useRead(useCallback(() => desktop.query('tasks', { root, offset }), [root, offset]), revision);
   if (taskId) return <TaskInspector key={taskId} root={root} taskId={taskId}
+    active={active} verified={verified} blocked={blocked} launch={launch} activate={activate} revision={revision}
     back={() => openTask(null)} openSessions={() => openSessions(taskId)} openRecords={() => openRecords(taskId)} />;
   return <>
     <SectionHeading title="Tasks" subtitle="Objectives and progress recorded in this workspace." />
@@ -32,24 +41,35 @@ export function Tasks({ root, taskId, openTask, openSessions, openRecords }: {
       </div>
       <Pager previous={offset > 0 ? offset - PAGE_SIZE : null} next={data.next} onPage={setOffset} />
     </> : <>
-      <Empty title="No Tasks on this page">Tasks created in the CortexShift CLI appear here.</Empty>
+      <Empty title="No Tasks on this page">Use New Task to add an objective to this workspace.</Empty>
       <Pager previous={offset > 0 ? offset - PAGE_SIZE : null} next={null} onPage={setOffset} />
     </>}</ReadView>
   </>;
 }
 
-function TaskInspector({ root, taskId, back, openSessions, openRecords }: {
+function TaskInspector({ root, taskId, back, openSessions, openRecords, active, verified, blocked, launch, activate, revision }: {
   root: string;
   taskId: string;
   back: () => void;
   openSessions: () => void;
   openRecords: () => void;
+  active: Task | null;
+  verified: boolean;
+  blocked: string | null;
+  launch: (action: AgentAction) => void;
+  activate: (task: Task) => void;
+  revision: number;
 }) {
-  const task = useRead(useCallback(() => desktop.query('task', { root, task_id: taskId }), [root, taskId]));
+  const task = useRead(useCallback(() => desktop.query('task', { root, task_id: taskId }), [root, taskId]), revision);
   return <>
     <button className="back text-button" onClick={back}><ArrowLeft /> All Tasks</button>
     <ReadView read={task}>{data => <>
       <SectionHeading title={data.title} subtitle={data.id}>
+        {!['completed', 'cancelled'].includes(data.status) && (active?.id === taskId
+          ? <button className="button primary" disabled={Boolean(blocked)} title={blocked ?? undefined}
+            onClick={() => launch(agentAction('start', taskId, managed[0]))}>Start agent</button>
+          : <button className="button" disabled={!verified || Boolean(blocked && !blocked.includes('unfinalized'))}
+            onClick={() => activate(data)}>Make active</button>)}
         <button className="button" onClick={openSessions}>Sessions <ArrowRight /></button>
         <button className="button" onClick={openRecords}>Checkpoints &amp; handoffs <ArrowRight /></button>
       </SectionHeading>

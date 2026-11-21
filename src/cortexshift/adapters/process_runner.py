@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import BinaryIO
@@ -19,8 +20,11 @@ from cortexshift.ports.process_runner import InteractiveProcessRunner
 class SubprocessInteractiveProcessRunner(InteractiveProcessRunner):
     """Executes native provider processes interactively inheriting terminal streams."""
 
-    def __init__(self, terminal_stdin: BinaryIO | None = None) -> None:
+    def __init__(
+        self, terminal_stdin: BinaryIO | None = None, *, on_spawn: Callable[[], None] | None = None
+    ) -> None:
         self._terminal_stdin = terminal_stdin
+        self._on_spawn = on_spawn
 
     def run_interactive(
         self,
@@ -58,6 +62,9 @@ class SubprocessInteractiveProcessRunner(InteractiveProcessRunner):
                         shell=False,
                         pass_fds=pass_fds,
                     )
+                    if self._on_spawn is not None:
+                        with suppress(Exception):
+                            self._on_spawn()
                     return proc.wait()
                 except KeyboardInterrupt:
                     if proc is not None:

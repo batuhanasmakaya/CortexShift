@@ -222,3 +222,39 @@ select { min-height: 2rem; background: var(--surface); border: 1px solid var(--c
   button { transition: background-color 120ms ease, border-color 120ms ease; }
 }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+.agent-controls { margin-bottom: 1rem; }
+.agent-controls .muted, .session-actions .muted { margin-top: .65rem; }
+.session-actions { margin: .85rem 0; }
+.action-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+.control-dialog {
+  position: fixed; inset: 0; margin: auto; width: min(35rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem); overflow: auto; padding: 1.3rem;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--surface); color: var(--text); box-shadow: 0 1rem 4rem #0005;
+}
+.control-dialog::backdrop { background: #080d19a0; }
+.control-dialog > p + p { margin-top: .65rem; }
+.dialog-heading, .objective-tools { display: flex; align-items: center; justify-content: space-between; gap: .65rem; }
+.dialog-heading { margin-bottom: .95rem; }
+.dialog-heading h2 { font-size: 1.3rem; }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+.control-form, .control-field { display: grid; gap: .55rem; }
+.control-form { gap: .78rem; }
+.control-field, .field-label { font-weight: 620; }
+.control-field input, .control-dialog textarea {
+  width: 100%; border: 1px solid var(--control-line); border-radius: 7px;
+  padding: .55rem .65rem; background: var(--bg); color: var(--text); font-weight: 450;
+}
+.control-dialog textarea { min-height: 6rem; resize: vertical; }
+.control-check { display: flex; align-items: flex-start; gap: .55rem; }
+.control-check input { margin-top: .18rem; accent-color: var(--accent); }
+.control-dialog > .control-check { margin: .85rem 0; }
+.control-columns { display: grid; grid-template-columns: 1fr auto; gap: 1rem; align-items: end; }
+.control-columns .control-check { padding-bottom: .38rem; }
+.active-task-choice, .file-preview, .plan-summary {
+  display: grid; gap: .4rem; padding: .7rem .8rem;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--bg);
+}
+.plan-summary { margin-top: .85rem; }
+.file-preview pre { max-height: 8rem; overflow: auto; white-space: pre-wrap; font: .8rem/1.5 var(--mono); }

@@ -87,7 +87,16 @@ impl Default for Bridge {
 }
 
 impl Bridge {
-    pub async fn request(&self, op: &str, mut params: Value) -> Outcome<Value> {
+    pub async fn request(&self, op: &str, params: Value) -> Outcome<Value> {
+        self.request_with_payload(op, params, &[]).await
+    }
+
+    pub async fn request_with_payload(
+        &self,
+        op: &str,
+        mut params: Value,
+        payload: &[u8],
+    ) -> Outcome<Value> {
         let mut closing = self.closing.subscribe();
         if *closing.borrow() {
             return Err(BridgeError::shutdown());
@@ -113,7 +122,7 @@ impl Bridge {
                 let hello = json!({"version": PROTOCOL, "id": 1, "op": "hello"});
                 let result = tokio::select! {
                     _ = closing.changed() => Err(BridgeError::shutdown()),
-                    result = timeout(STARTUP_DEADLINE, worker.exchange(1, hello)) => {
+                    result = timeout(STARTUP_DEADLINE, worker.exchange(1, hello, &[])) => {
                         result.unwrap_or_else(|_| Err(BridgeError::timed_out()))
                     }
                 };
@@ -133,12 +142,17 @@ impl Bridge {
             }
         };
 
+        let exchange_deadline = if op == "provider_setup" {
+            Duration::from_secs(12)
+        } else {
+            DEADLINE
+        };
         match tokio::select! {
             _ = closing.changed() => {
                 worker.stop().await;
                 return Err(BridgeError::shutdown());
             },
-            result = timeout(DEADLINE, worker.exchange(id, params)) => {
+            result = timeout(exchange_deadline, worker.exchange(id, params, payload)) => {
                 result.unwrap_or_else(|_| Err(BridgeError::timed_out()))
             }
         } {
@@ -189,7 +203,7 @@ impl Worker {
         })
     }
 
-    async fn exchange(&mut self, id: u64, frame: Value) -> Outcome<Outcome<Value>> {
+    async fn exchange(&mut self, id: u64, frame: Value, payload: &[u8]) -> Outcome<Outcome<Value>> {
         let bytes = serde_json::to_vec(&frame).map_err(|_| BridgeError::protocol())?;
         if bytes.len() > REQUEST_LIMIT {
             return Ok(Err(BridgeError::new(
@@ -203,6 +217,10 @@ impl Worker {
             .map_err(|_| BridgeError::exited())?;
         self.input
             .write_all(b"\n")
+            .await
+            .map_err(|_| BridgeError::exited())?;
+        self.input
+            .write_all(payload)
             .await
             .map_err(|_| BridgeError::exited())?;
         self.input
@@ -311,6 +329,26 @@ mod tests {
             bridge.request("hello", json!({})).await.unwrap_err().code,
             "shutdown"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_timed_out_worker_is_discarded_without_replaying_the_request() {
+        let bridge = Bridge::default();
+        let python = bridge_command().unwrap();
+        let mut command = Command::new(python.as_std().get_program());
+        command.args(["-I", "-c", "import time; time.sleep(60)"]);
+        *bridge.worker.lock().await = Some(Worker::spawn(command).unwrap());
+
+        assert_eq!(
+            bridge.request("hello", json!({})).await.unwrap_err().code,
+            "bridge_timeout"
+        );
+        assert!(bridge.worker.lock().await.is_none());
+        assert_eq!(
+            bridge.request("hello", json!({})).await.unwrap()["protocol"],
+            1
+        );
+        bridge.shutdown().await;
     }
 
     #[tokio::test(flavor = "current_thread")]
