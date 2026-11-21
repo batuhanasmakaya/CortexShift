@@ -119,6 +119,18 @@ class RunService:
     def _check_tty() -> bool:
         return sys.stdin.isatty() and sys.stdout.isatty()
 
+    def _get_adapter(self, provider_name: str) -> ProviderRuntimeAdapter:
+        adapter = self._registry.get(provider_name)
+        if adapter is None:
+            raise UnknownProviderError(provider_name, self._registry.list_supported_ids())
+        return adapter
+
+    def _resolve_executable(self, adapter: ProviderRuntimeAdapter) -> str:
+        executable = self._which(adapter.executable)
+        if not executable:
+            raise ProviderNotFoundError(f"{adapter.display_name} was not found in PATH.")
+        return executable
+
     def _resolve_context(
         self,
         provider_name: str,
@@ -136,14 +148,8 @@ class RunService:
             if task is None:
                 raise NoActiveTaskError()
 
-            adapter = self._registry.get(provider_name)
-            if adapter is None:
-                raise UnknownProviderError(provider_name, self._registry.list_supported_ids())
-
-            resolved_executable = self._which(adapter.executable)
-            if not resolved_executable:
-                raise ProviderNotFoundError(f"{adapter.display_name} was not found in PATH.")
-
+            adapter = self._get_adapter(provider_name)
+            resolved_executable = self._resolve_executable(adapter)
             return workspace, task, adapter, resolved_executable, store
         except Exception:
             store.close()

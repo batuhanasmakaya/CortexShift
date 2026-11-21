@@ -9,6 +9,8 @@ Initial public alpha; no publication date has been assigned.
 
 ### Added
 
+- `cortexshift start` creates a Task from Markdown, UTF-8 stdin, or a short inline
+  objective and launches Claude Code or Codex with automatic Task context via MCP.
 - Project-local SQLite tasks with objectives, requirements, structured progress,
   known issues, and durable history.
 - Passive discovery and native terminal orchestration for Claude Code, Codex,

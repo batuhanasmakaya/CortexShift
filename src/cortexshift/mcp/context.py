@@ -24,6 +24,7 @@ from cortexshift.domain.mcp_binding import (
     ENV_TASK_ID,
 )
 from cortexshift.domain.provider import ProviderId
+from cortexshift.domain.session import STARTUP_OBJECTIVE_SERVED_KEY
 
 __all__ = [
     "ENV_MCP_READ_ONLY",
@@ -49,6 +50,7 @@ class McpExecutionContext(BaseModel):
     provider_id: ProviderId | None = None
     managed_session: bool = False
     read_only: bool = False
+    task_startup: bool = False
     invocation_token: SecretStr | None = Field(default=None, exclude=True, repr=False)
 
     def can_mutate(self) -> bool:
@@ -173,6 +175,7 @@ def _bind_context(
             managed_session=True,
             read_only=invocation_token is None,
             invocation_token=invocation_token,
+            task_startup=STARTUP_OBJECTIVE_SERVED_KEY in session.metadata,
         )
     else:
         # Unmanaged invocation: strictly read-only

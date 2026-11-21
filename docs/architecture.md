@@ -328,13 +328,13 @@ RunService (Application)
 ```
 
 ### Runtime Invariants & Design Principles:
-- **Direct Terminal Passthrough & Strict TTY Contract**: Inherits raw terminal stdio directly without pipe wrapping, buffering, or TUI scraping, allowing coding agents to present rich TUIs and receive keyboard inputs natively. Interactive launch strictly requires both `stdin.isatty()` and `stdout.isatty()`. Non-TTY environments can safely simulate launch via `--dry-run`.
+- **Direct terminal passthrough.** Native agents receive terminal input and output directly. `start --stdin` reopens the terminal input device after reading the redirected objective. Interactive launch checks both terminal streams. `run --dry-run` supports noninteractive previews.
 - **Strictly `shell=False`**: Process execution uses explicitly tokenized argument arrays (`argv: list[str]`). Zero shell expansion; immune to command injection.
 - **Canonical Same-Working-Tree Execution**: Irrespective of which subdirectory invoked the command, the native provider process is launched with `cwd = project_root`.
-- **Workspace lease and provider guard.** Run, resume, switch, and recovery take the OS advisory lease on `.cortexshift/agent.lock` before probing for retained provider work. On macOS and Linux, a provider or descendant that retains the inherited descriptor holds the guard even after reparenting. Other activity remains unknown. Stale Session rows and unlocked files do not block the lease. See [ADR-0014](decisions/ADR-0014-provider-and-mcp-invocation-lifecycles.md).
-- **Active Task Prerequisite**: Launch strictly requires an active Task; CortexShift never creates or activates tasks implicitly.
+- **Workspace lease and provider guard.** Start, run, resume, switch, and recovery take the OS advisory lease on `.cortexshift/agent.lock` before probing for retained provider work. On macOS and Linux, a provider or descendant that retains the inherited descriptor holds the guard even after reparenting. Other activity remains unknown. Stale Session rows and unlocked files do not block the lease. See [ADR-0014](decisions/ADR-0014-provider-and-mcp-invocation-lifecycles.md).
+- **Active Task prerequisite.** `run` uses the active Task. `start` can explicitly create and activate a new one from the supplied objective.
 - **Dry-Run Simulation**: `--dry-run` and `--dry-run --json` display launch parameters without executing processes, requiring a TTY, or mutating session tables; prompts are always redacted as `<prompt>`.
-- **Zero Prompt, Transcript, or Credential Storage**: Database never stores prompt texts, conversation transcripts, or API keys. Native provider authentication is preserved intact.
+- **Local Task state and native authentication.** SQLite stores canonical objective text and structured Session metadata. Rendered provider prompts, transcripts, and API keys stay outside CortexShift storage.
 - **Durable Session State (Schema v3)**: Tracks session lifecycle (`running`, `completed`, `failed`, `interrupted`), exit codes, and timestamps. Generic non-zero exits strictly map to `process_crashed`; spawn failures map to `spawn_failed` and immediately release the lease. Phase 4 never infers `quota_exhausted` or `rate_limited` from generic non-zero exits.
 
 ---
@@ -684,3 +684,18 @@ lease for native runs. The initial public alpha is distributed as a Python
 wheel/sdist, primarily through pipx. Schema v6 and Handoff/Checkpoint Protocol v1
 remain unchanged. Published migrations and protocol meanings are immutable.
 See [ADR-0011](decisions/ADR-0011-release-and-distribution.md).
+
+## Managed Task startup (DX1)
+
+`cortexshift start` reads a UTF-8 objective in the CLI and delegates verified
+workspace resolution, provider preflight, and launch to `StartService`.
+Under the workspace lease, `TaskService` commits creation and activation together.
+`ProviderSessionLauncher` owns native execution, invocation authority, and finalization.
+
+Supported runtime adapters pass a fixed native startup instruction and stamp the
+managed MCP binding for the new Session. MCP pages the canonical objective and
+records the served prefix under the same writer ordering as Session finalization.
+The Task remains the source of objective text. The startup receipt describes
+local transport, and historical switch handoffs continue to use their
+48,000 UTF-8 byte rendered budget.
+[ADR-0017](decisions/ADR-0017-managed-task-startup.md)

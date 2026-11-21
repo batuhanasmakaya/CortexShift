@@ -5,9 +5,15 @@
 | Provider not found in PATH | Install the native CLI separately, reopen the shell, and run `cortexshift doctor`. |
 | Provider unauthenticated | Authenticate through that provider's native CLI; CortexShift cannot log in for you. |
 | Project not initialized | Change to the intended project and run `cortexshift init`. |
-| No active Task | Run `cortexshift task start --title "Work" --objective "Describe the objective"`, or activate an existing task with `cortexshift task activate ID`. |
+| No active Task | Run `cortexshift start claude --file prompt.md`, or select an existing Task with `cortexshift task activate ID`. |
+| An active Task already exists | Use `cortexshift start claude --task ID` to continue it in a fresh session. Add `--replace-active` to a new-objective command to activate a new Task and keep the previous one. |
+| Invalid or missing objective | Supply one UTF-8 file, a UTF-8 stdin stream, or a short nonblank inline objective. Relative file paths are relative to the invocation directory. |
+| Piped startup requires an attached terminal | Run from an interactive terminal with terminal stdout. Supply a UTF-8 pipe that closes on completion, or use `--file prompt.md`. |
+| Startup failed after saving the Task | Use the printed `cortexshift start <provider> --task ID` command to retry the same Task. If it is no longer active, select it with `cortexshift task activate ID` first. |
+| Objective retrieval was incomplete or unobserved | Check the native provider's MCP and trust messages for denied or failed CortexShift tool calls. Retry the existing Task with `--task ID` after resolving the provider issue. |
+| Objective exceeds the handoff budget | `start` can serve the original objective in pages. Use an explicit `start <provider> --task ID` to open a fresh Claude Code or Codex session for that Task. This path delivers current Task fields and skips the historical switch handoff. |
 | Workspace unavailable after provider exit | Let the active provider or known background work finish. Use the job's usual controls if you want to stop it, then retry. Keep `agent.lock` and `provider.lock` in place. |
-| Managed MCP writes report expired authority | Use the MCP integration from the current CortexShift `run`, `resume`, or `switch` invocation. An older binding can serve read tools. |
+| Managed MCP writes report expired authority | Use the MCP integration from the current CortexShift `start`, `run`, `resume`, or `switch` invocation. An older binding can serve the existing read tools. |
 | Native session unavailable | Inspect `cortexshift session list`. Null IDs cannot resume; deleted native conversations require an intentional new run/switch with `--new-session` on switch. |
 | Antigravity MCP missing | Preview `cortexshift mcp setup antigravity --dry-run`, then run setup. Review conflicts rather than blindly forcing replacement. |
 | Git missing | Install Git for repository context. Core init/tasks work without it; repository status honestly reports unavailable context. |

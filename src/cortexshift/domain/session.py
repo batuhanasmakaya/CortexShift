@@ -13,6 +13,10 @@ from cortexshift.domain.provider import ProviderId
 # retains the inherited descriptor after the CortexShift launcher exits.
 PROVIDER_GUARDED_KEY = "provider_guarded"
 
+# Presence identifies a managed Task startup. The value is the contiguous
+# prefix served by MCP, measured in Unicode characters.
+STARTUP_OBJECTIVE_SERVED_KEY = "startup_objective_chars_served"
+
 
 class SessionStatus(StrEnum):
     """Execution status of an individual agent session.

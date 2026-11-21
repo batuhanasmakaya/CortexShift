@@ -5,6 +5,7 @@ import subprocess
 import sys
 from contextlib import suppress
 from pathlib import Path
+from typing import BinaryIO
 
 from cortexshift.adapters.advisory_lock import is_locked
 from cortexshift.adapters.workspace_lease import (
@@ -17,6 +18,9 @@ from cortexshift.ports.process_runner import InteractiveProcessRunner
 
 class SubprocessInteractiveProcessRunner(InteractiveProcessRunner):
     """Executes native provider processes interactively inheriting terminal streams."""
+
+    def __init__(self, terminal_stdin: BinaryIO | None = None) -> None:
+        self._terminal_stdin = terminal_stdin
 
     def run_interactive(
         self,
@@ -48,7 +52,7 @@ class SubprocessInteractiveProcessRunner(InteractiveProcessRunner):
                         argv,
                         cwd=str(cwd),
                         env=full_env,
-                        stdin=None,
+                        stdin=self._terminal_stdin,
                         stdout=None,
                         stderr=None,
                         shell=False,

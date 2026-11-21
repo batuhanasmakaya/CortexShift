@@ -11,6 +11,7 @@ provider process.
 import json
 import sys
 import tomllib
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,9 @@ class InMemorySessionStore(SessionStore):
 
     def __init__(self) -> None:
         self.sessions: dict[str, Session] = {}
+
+    def write_transaction(self) -> AbstractContextManager[None]:
+        return nullcontext()
 
     def save_session(self, session: Session) -> None:
         self.sessions[session.id] = session
