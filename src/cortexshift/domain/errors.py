@@ -46,6 +46,14 @@ class NoActiveTaskError(CortexShiftError):
         super().__init__(message)
 
 
+class ActiveTaskExistsError(CortexShiftError):
+    """Raised when creation requires an empty active Task pointer."""
+
+
+class TaskStartupError(CortexShiftError):
+    """A managed Task startup could not be prepared or launched."""
+
+
 class TaskNotActivatableError(CortexShiftError):
     """Raised when attempting to activate a task in an ineligible or terminal state."""
 

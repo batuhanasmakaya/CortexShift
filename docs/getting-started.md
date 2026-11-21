@@ -41,15 +41,33 @@ wheel path. Use `python -m pip install --upgrade cortexshift` to upgrade and
 cd my-project
 cortexshift doctor
 cortexshift init
+echo "Preserve existing APIs while adding authentication." > prompt.md
+cortexshift start claude --file prompt.md
+```
+
+`start` also accepts `codex`. The native session receives an instruction to
+retrieve the objective and Task fields through CortexShift MCP. Keep your
+provider's normal trust and permission settings. The [CLI reference](cli-reference.md)
+describes input options and recovery when launch or retrieval fails.
+
+`doctor` checks availability, version, and authentication where known without
+sending prompts. `cortexshift mcp status` shows integration details. Initialization
+works without Git. Add `.cortexshift/` to your project's `.gitignore` if needed.
+
+## Create and run in separate steps
+
+Use the separate commands to choose a title, provide structured requirements
+and constraints up front, or launch Antigravity after configuring its workspace MCP.
+
+```bash
 cortexshift task start --title "Add authentication" \
   --objective "Preserve existing APIs while adding authentication."
 cortexshift run claude
 ```
 
-`doctor` safely reports availability, version, and authentication where known;
-it does not send prompts. `cortexshift mcp status` shows integration details.
-Initialization does not require Git. Add `.cortexshift/` to your project's
-`.gitignore` yourself if needed.
+For Claude Code or Codex, use `cortexshift start <provider> --task ID` to open an
+existing active Task with automatic context retrieval. Find its ID with
+`cortexshift task list`.
 
 ## Record a milestone and switch
 

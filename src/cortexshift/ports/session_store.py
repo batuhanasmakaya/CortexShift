@@ -1,5 +1,6 @@
 """Port defining persistence boundaries for CortexShift agent sessions."""
 
+from contextlib import AbstractContextManager
 from typing import Protocol, runtime_checkable
 
 from cortexshift.domain.session import Session, SessionStatus
@@ -26,4 +27,8 @@ class SessionStore(Protocol):
         statuses: tuple[SessionStatus, ...] | None = None,
     ) -> list[Session]:
         """List sessions, ordered newest first."""
+        ...
+
+    def write_transaction(self) -> AbstractContextManager[None]:
+        """Serialize Session reads and writes within the same transaction."""
         ...

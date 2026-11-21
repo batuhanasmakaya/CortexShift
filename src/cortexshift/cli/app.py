@@ -14,6 +14,7 @@ from rich.markup import escape
 from rich.table import Table
 
 from cortexshift import __version__
+from cortexshift.adapters.process_runner import SubprocessInteractiveProcessRunner
 from cortexshift.adapters.providers.antigravity import (
     ANTIGRAVITY_MCP_CONFIG_REL_PATH,
     is_antigravity_mcp_configured,
@@ -32,10 +33,12 @@ from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.resume_service import ResumeDryRunResult, ResumeService
 from cortexshift.application.run_service import ProviderRuntimeRegistry, RunService
 from cortexshift.application.session_service import SessionService
+from cortexshift.application.start_service import StartService
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.switch_service import SwitchService
 from cortexshift.application.task_service import TaskService
 from cortexshift.application.workspace import open_workspace, resolve_workspace
+from cortexshift.cli.start_input import interactive_stdin, read_objective
 from cortexshift.domain.checkpoint import CheckpointKind, CheckpointRecord
 from cortexshift.domain.doctor import AuthenticationStatus, DoctorReport
 from cortexshift.domain.errors import (
@@ -63,6 +66,7 @@ from cortexshift.domain.errors import (
     TaskAlreadyCompletedError,
     TaskNotActivatableError,
     TaskNotFoundError,
+    TaskStartupError,
     TerminalRequiredError,
     UnsupportedPromptError,
     UnsupportedSchemaVersionError,
@@ -1187,6 +1191,80 @@ def repo_show(
 
 
 # --- Provider Run Command ---
+
+
+@app.command("start")
+def start_command(
+    provider: Annotated[
+        str, typer.Argument(help="Native provider to start, such as claude or codex.")
+    ],
+    file: Annotated[Path | None, typer.Option("--file", help="Read a UTF-8 Markdown file.")] = None,
+    from_stdin: Annotated[
+        bool, typer.Option("--stdin", help="Read a UTF-8 objective from redirected standard input.")
+    ] = False,
+    objective: Annotated[
+        str | None, typer.Option("--objective", help="Use short inline objective text.")
+    ] = None,
+    task_id: Annotated[
+        str | None, typer.Option("--task", help="Open a fresh session for this active Task ID.")
+    ] = None,
+    replace_active: Annotated[
+        bool,
+        typer.Option("--replace-active", help="Activate a new Task and keep the previous one."),
+    ] = False,
+) -> None:
+    """Create a Task and launch a native provider with automatic access to its context."""
+    if sum((file is not None, from_stdin, objective is not None, task_id is not None)) != 1:
+        raise typer.BadParameter("Choose exactly one of --file, --stdin, --objective, or --task.")
+
+    def announce(display_name: str, root: Path, created: bool) -> None:
+        console.print(
+            "Task created and activated." if created else "Using the existing active Task."
+        )
+        console.print(
+            f"Prepared Task context. Starting {display_name} in {_format_safe_path(str(root))}."
+        )
+
+    try:
+        objective = read_objective(file, from_stdin, objective)
+        with interactive_stdin(piped=from_stdin) as terminal:
+            service = StartService(
+                process_runner=SubprocessInteractiveProcessRunner(terminal_stdin=terminal),
+                is_tty_fn=(lambda: True) if terminal is not None else None,
+            )
+            result = service.start(
+                provider,
+                objective=objective,
+                task_id=task_id,
+                replace_active=replace_active,
+                on_launch=announce,
+            )
+    except TaskStartupError as err:
+        err_console.print(escape(str(err)))
+        raise typer.Exit(code=1) from None
+    except Exception as err:
+        _handle_error(err)
+        return
+
+    if result.objective_chars_served == result.objective_length:
+        console.print("CortexShift MCP served the complete Task objective.")
+    elif result.objective_chars_served:
+        console.print("CortexShift MCP served part of the Task objective.")
+    else:
+        console.print("Task objective retrieval was not observed.")
+
+    session = result.session
+    if session.status == SessionStatus.COMPLETED:
+        console.print("Native session completed.")
+    elif session.status == SessionStatus.INTERRUPTED:
+        console.print("Native session interrupted. The Task was kept.")
+        raise typer.Exit(code=130)
+    else:
+        console.print("Native session failed. The Task was kept.")
+        console.print(
+            f"Retry with cortexshift start {session.provider_id} --task {session.task_id}."
+        )
+        raise typer.Exit(code=session.exit_code or 1)
 
 
 @app.command("run", no_args_is_help=False)

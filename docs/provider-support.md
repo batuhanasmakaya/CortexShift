@@ -10,8 +10,9 @@ what has actually been exercised against real, authenticated provider CLIs.
 | Passive discovery/version | Yes | Yes | Yes |
 | Passive authentication | Native auth status | Native login status | Unknown |
 | Interactive run | Direct terminal | Direct terminal | Direct terminal |
+| Automatic Task context with `start` | Native initial instruction and managed MCP | Native initial instruction and managed MCP | Unsupported |
 | Canonical handoff | Invocation-bound MCP retrieval | Read-only stdin bootstrap with JSONL output, then resume | Plan-mode stream-JSON bootstrap over stdin, then resume |
-| Managed native identity | Preallocated UUID on run/switch | ID captured during managed handoff | ID captured during managed handoff |
+| Managed native identity | Preallocated UUID on start/run/switch | ID captured during managed handoff | ID captured during managed handoff |
 | Exact resume | Known ID required | Known ID required | Known ID required |
 | Return to provider | Same ID + fresh handoff | Same ID + fresh bootstrap | Same ID + fresh plan bootstrap |
 | MCP | Automatic inline configuration | Automatic config overrides | Explicit workspace setup |
@@ -22,9 +23,18 @@ ID. No transcript/cache inspection or “last session” guessing is used. Nativ
 conversations can be deleted outside CortexShift; a stale ID fails without
 silently substituting a new conversation. Every resume records a new invocation.
 
-Antigravity setup uses `cortexshift mcp setup antigravity` to prepare
-`.agents/mcp_config.json`. Native CLI changes may require adapter updates.
-CortexShift never bypasses native permissions or embeds provider terminal UIs.
+Claude Code and Codex use their interactive initial-prompt argument and existing
+per-launch MCP configuration. The short instruction tells the agent to retrieve
+all objective pages before working. The Codex `start` path opens a fresh
+interactive session without the headless model turn used by `switch`. CortexShift
+does not learn an exact Codex session ID through this path.
+[Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference) ·
+[Codex TUI prompt argument](https://github.com/openai/codex/blob/main/codex-rs/tui/src/cli.rs)
+
+Antigravity supports the separate `task start` and `run antigravity` commands.
+Use `cortexshift mcp setup antigravity` to prepare `.agents/mcp_config.json`.
+That workspace configuration cannot provide the invocation-specific MCP delivery
+required by `start`. Native trust and permissions apply to all three providers.
 
 ## Validation status
 
@@ -37,8 +47,9 @@ MCP workflows. These run in CI on Linux, macOS, and Windows across CPython
 3.12–3.14 and consume no model quota. Fake-provider coverage proves CortexShift's
 own logic, not a native CLI's behavior.
 
-The authenticated checks below predate the bounded handoff transport. Current
-Claude MCP retrieval and Codex stdin delivery have fake-provider coverage.
+The authenticated checks below predate the bounded handoff transport and
+`start`. Both startup paths have fake-provider coverage over real local MCP stdio,
+including retrieval of an objective larger than the handoff budget.
 
 **Prior authenticated validation: Claude Code and Codex.** Both were exercised against
 authenticated, installed CLIs by a maintainer. In each case the managed MCP

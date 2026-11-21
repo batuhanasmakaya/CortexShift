@@ -43,13 +43,14 @@ pipx install cortexshift
 cd my-project
 cortexshift doctor
 cortexshift init
-cortexshift task start --title "Implement authentication" \
-  --objective "Add authentication without breaking existing APIs."
-cortexshift run claude
-# After the provider exits:
-cortexshift switch codex
-cortexshift tui
+echo "Add authentication without breaking existing APIs." > prompt.md
+cortexshift start claude --file prompt.md
 ```
+
+CortexShift saves the Markdown as the active Task and gives the native agent an
+initial instruction to retrieve it through managed MCP. Use `codex` in place of
+`claude` to start with Codex. See the [CLI Reference][cli-reference] for piped
+input, inline objectives, and the separate `task start` and `run` workflow.
 
 CortexShift does not bundle Git or any provider CLI. Install and authenticate
 native providers yourself. Git is recommended for repository-aware handoffs,
@@ -97,6 +98,7 @@ Antigravity handoffs each use one read-only bootstrap model turn before native
 resume, which may consume provider usage. Claude Code retrieves the handoff through
 the CortexShift MCP tool in its interactive session. Handoffs keep the objective and
 constraints complete and show which optional context was omitted to fit 48,000 UTF-8 bytes.
+An objective that fits through paged startup can still exceed the handoff limit.
 
 ## Terminal control center
 
@@ -110,8 +112,8 @@ An open dashboard holds no workspace lease and may observe a running agent.
 
 Claude and Codex receive MCP configuration automatically. Antigravity requires
 explicit workspace setup: `cortexshift mcp setup antigravity`.
-Inspect integration with `cortexshift mcp status`. Managed sessions expose
-10 context-bound tools while the invocation is live. Unmanaged and expired
+Inspect integration with `cortexshift mcp status`. Live `start` invocations add
+the paged objective tool to the managed MCP tools. Unmanaged and expired
 bindings expose four read tools at startup.
 See [Provider Support][provider-support] for identity, resume, and
 validation limits.
@@ -119,7 +121,8 @@ validation limits.
 ## Privacy and trust
 
 CortexShift has no cloud account, telemetry, or paid model API key requirement.
-It does not copy provider credentials or persist prompts, provider responses,
+Objective input is kept in local canonical Task state. CortexShift does not copy
+provider credentials or persist rendered provider prompts, provider responses,
 transcripts, or full Git patches. Native provider permissions remain authoritative.
 Providers may send repository/context data to their own services under their
 configuration and terms; local orchestration does not change that behavior.
@@ -139,7 +142,7 @@ Internal Python modules are not a stable library API.
 
 ## Documentation and development
 
-- [Getting Started][getting-started] and [Troubleshooting][troubleshooting]
+- [Getting Started][getting-started], [CLI Reference][cli-reference], and [Troubleshooting][troubleshooting]
 - [Provider Support][provider-support]
 - [Architecture][architecture] and [Handoff Protocol][handoff-protocol]
 - [Contributing][contributing], [Releasing][releasing], and [Roadmap][roadmap]
@@ -159,6 +162,7 @@ uv run pytest
 affiliated with or endorsed by Anthropic, OpenAI, or Google.
 
 [getting-started]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/getting-started.md
+[cli-reference]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/cli-reference.md
 [provider-support]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/provider-support.md
 [architecture]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/architecture.md
 [handoff-protocol]: https://github.com/batuhanasmakaya/CortexShift/blob/main/docs/handoff-protocol.md

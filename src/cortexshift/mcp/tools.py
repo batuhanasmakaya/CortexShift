@@ -5,6 +5,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
+from cortexshift.application.task_startup_context import TaskObjectivePage
 from cortexshift.domain.errors import CortexShiftError
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
@@ -44,13 +45,14 @@ def register_tools(
     @server.tool(
         name="get_current_task",
         description=(
-            "Get the complete canonical task record currently bound to this session, "
-            "including objective, requirements, completed work, remaining work, and known issues."
+            "Get the canonical task record bound to this session, including requirements, "
+            "completed work, remaining work, and known issues. Set include_objective to false if "
+            "the objective was already read with get_task_objective."
         ),
     )
-    def get_current_task() -> dict[str, Any]:
+    def get_current_task(include_objective: bool = True) -> dict[str, Any]:
         try:
-            return facade.get_current_task()
+            return facade.get_current_task(include_objective=include_objective)
         except (CortexShiftError, ValueError) as err:
             raise ToolError(f"Failed to get current task: {err}") from err
 
@@ -86,6 +88,21 @@ def register_tools(
 
     if not context.can_mutate():
         return
+
+    if context.task_startup:
+
+        @server.tool(
+            name="get_task_objective",
+            description=(
+                "Read the exact canonical objective for this live Task startup. Start at offset 0 "
+                "and call again with each next_offset until it is null. Read the text in order."
+            ),
+        )
+        def get_task_objective(offset: int = 0) -> TaskObjectivePage:
+            try:
+                return facade.get_task_objective(offset)
+            except (CortexShiftError, ValueError) as err:
+                raise ToolError(f"Failed to get the Task objective: {err}") from err
 
     @server.tool(
         name="get_handoff_context",

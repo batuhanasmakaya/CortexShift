@@ -1,4 +1,4 @@
-"""Shared provider session lifecycle used by both `run` and `switch`.
+"""Shared provider session lifecycle used by `start`, `run`, `switch`, and `resume`.
 
 Extracted from ``RunService`` in Phase 5 so that launching a native provider and
 tracking its CortexShift Session lifecycle exists in exactly one place. The launcher
@@ -28,6 +28,7 @@ from cortexshift.domain.mcp_binding import (
 from cortexshift.domain.provider import ProviderId
 from cortexshift.domain.session import (
     PROVIDER_GUARDED_KEY,
+    STARTUP_OBJECTIVE_SERVED_KEY,
     Session,
     SessionExitReason,
     SessionStatus,
@@ -122,7 +123,7 @@ class ProviderSessionLauncher:
             session = self._execute(session, launch_spec, on_launch, mcp_binder, authority)
             if self._workspace is not None:
                 self._workspace.revalidate()
-            self._store.save_session(session)
+            session = self._finalize_invocation(session)
 
         # Internal checkpoint capture belongs to CortexShift after provider write authority ends.
         if self._checkpoint_service is not None and hasattr(
@@ -134,6 +135,23 @@ class ProviderSessionLauncher:
                     store=self._store,
                     workspace=self._workspace,
                 )
+        return session
+
+    def _finalize_invocation(self, session: Session) -> Session:
+        if STARTUP_OBJECTIVE_SERVED_KEY not in session.metadata:
+            self._store.save_session(session)
+            return session
+
+        # An authorized MCP page request may race the provider exit. Read its
+        # receipt and finalize under the same writer ordering as that request.
+        with self._store.write_transaction():
+            current = self._store.get_session(session.id)
+            if current is not None:
+                served = current.metadata.get(STARTUP_OBJECTIVE_SERVED_KEY, 0)
+                session = session.model_copy(
+                    update={"metadata": {**session.metadata, STARTUP_OBJECTIVE_SERVED_KEY: served}}
+                )
+            self._store.save_session(session)
         return session
 
     def _execute(
@@ -229,7 +247,7 @@ class ProviderSessionLauncher:
                     "exit_reason": SessionExitReason.SPAWN_FAILED,
                 }
             )
-            self._store.save_session(session)
+            self._finalize_invocation(session)
             raise
 
         return session

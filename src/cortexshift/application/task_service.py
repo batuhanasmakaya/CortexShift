@@ -3,6 +3,7 @@
 from collections.abc import Callable
 
 from cortexshift.domain.errors import (
+    ActiveTaskExistsError,
     NoActiveTaskError,
     TaskAlreadyCompletedError,
     TaskNotActivatableError,
@@ -27,6 +28,8 @@ class TaskService:
         requirements: list[str] | None = None,
         constraints: list[str] | None = None,
         set_active: bool = True,
+        *,
+        require_no_active: bool = False,
     ) -> Task:
         """Create a new task, persist it, and optionally set it as the active task.
 
@@ -37,6 +40,7 @@ class TaskService:
             requirements: Optional initial list of requirement strings.
             constraints: Optional initial list of constraint strings.
             set_active: Whether to set this task as active immediately (defaults to True).
+            require_no_active: Refuse creation if the project's active pointer is occupied.
 
         Returns:
             The created Task entity.
@@ -52,6 +56,8 @@ class TaskService:
         )
 
         with self._store.task_write_transaction():
+            if require_no_active and self._store.get_active_task_id(project_id) is not None:
+                raise ActiveTaskExistsError("An active Task already exists.")
             self._store.save_task(task)
             if set_active:
                 self._store.set_active_task_id(project_id, task.id)

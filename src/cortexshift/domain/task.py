@@ -66,13 +66,20 @@ class Task(BaseModel):
                 data["remaining_items"] = data.pop("remaining")
         return data
 
-    @field_validator("title", "objective")
+    @field_validator("title")
     @classmethod
     def validate_non_empty_strings(cls, v: str) -> str:
         stripped = v.strip()
         if not stripped:
             raise ValueError("Field cannot be empty or blank.")
         return stripped
+
+    @field_validator("objective")
+    @classmethod
+    def validate_objective(cls, objective: str) -> str:
+        if not objective or objective.isspace():
+            raise ValueError("Field cannot be empty or blank.")
+        return objective
 
     @computed_field  # type: ignore[prop-decorator]
     @property

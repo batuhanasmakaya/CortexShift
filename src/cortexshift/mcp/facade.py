@@ -9,6 +9,7 @@ from cortexshift.application.handoff_service import serve_bound_handoff
 from cortexshift.application.mcp_invocation import require_active_invocation
 from cortexshift.application.repository_service import RepositoryService
 from cortexshift.application.task_service import TaskService
+from cortexshift.application.task_startup_context import TaskObjectivePage, serve_task_objective
 from cortexshift.application.workspace import open_workspace
 from cortexshift.domain.checkpoint import (
     CHECKPOINT_TRIGGER_DECISION,
@@ -217,10 +218,15 @@ class McpApplicationFacade:
         self._ensure_can_mutate()
         return serve_bound_handoff(self._store, self._require_active_invocation)
 
-    def get_current_task(self) -> dict[str, Any]:
-        """Return the complete canonical bound Task."""
+    def get_task_objective(self, offset: int) -> TaskObjectivePage:
+        """Serve the next page and record retrieval for a live Task startup."""
+        self._ensure_can_mutate()
+        return serve_task_objective(self._store, self._require_active_invocation, offset)
+
+    def get_current_task(self, include_objective: bool = True) -> dict[str, Any]:
+        """Return the canonical bound Task, optionally omitting the objective."""
         task = self._get_bound_task()
-        return task.model_dump(mode="json")
+        return task.model_dump(mode="json", exclude=set() if include_objective else {"objective"})
 
     def get_latest_checkpoint(self) -> CheckpointResult:
         """Return the latest checkpoint for the bound task, or null."""
