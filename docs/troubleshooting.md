@@ -10,15 +10,16 @@
 | Invalid or missing objective | Supply one UTF-8 file, a UTF-8 stdin stream, or a short nonblank inline objective. Relative file paths are relative to the invocation directory. |
 | Piped startup requires an attached terminal | Run from an interactive terminal with terminal stdout. Supply a UTF-8 pipe that closes on completion, or use `--file prompt.md`. |
 | Startup failed after saving the Task | Use the printed `cortexshift start <provider> --task ID` command to retry the same Task. If it is no longer active, select it with `cortexshift task activate ID` first. |
-| Objective retrieval was incomplete or unobserved | Check the native provider's MCP and trust messages for denied or failed CortexShift tool calls. Retry the existing Task with `--task ID` after resolving the provider issue. |
-| Objective exceeds the handoff budget | `start` can serve the original objective in pages. Use an explicit `start <provider> --task ID` to open a fresh Claude Code or Codex session for that Task. This path delivers current Task fields and skips the historical switch handoff. |
+| Objective retrieval was incomplete or unobserved | Check the native provider's MCP and trust messages. Retry with `cortexshift resume` after resolving the provider issue. If the original launch never started, use `cortexshift start PROVIDER --task ID`. |
+| Objective exceeds the handoff budget | Use `cortexshift switch codex --dry-run` or `cortexshift switch claude --dry-run` to check the paged delivery plan. Antigravity and standalone `handoff preview` require the full objective to fit. |
 | Workspace unavailable after provider exit | Let the active provider or known background work finish. Use the job's usual controls if you want to stop it, then retry. Keep `agent.lock` and `provider.lock` in place. |
 | Managed MCP writes report expired authority | Use the MCP integration from the current CortexShift `start`, `run`, `resume`, or `switch` invocation. An older binding can serve the existing read tools. |
-| Native session unavailable | Inspect `cortexshift session list`. Null IDs cannot resume; deleted native conversations require an intentional new run/switch with `--new-session` on switch. |
+| Native session unavailable | Run `cortexshift resume` for recent work or `cortexshift resume codex --new-session` for an intentional fresh conversation. Use `cortexshift session list` if you want to choose a specific recorded ID. |
+| Destination failed to start | Confirm the provider is installed with `cortexshift doctor` and retry the same switch. CortexShift keeps the Task and records each failed attempt. |
 | Antigravity MCP missing | Preview `cortexshift mcp setup antigravity --dry-run`, then run setup. Review conflicts rather than blindly forcing replacement. |
 | Git missing | Install Git for repository context. Core init/tasks work without it; repository status honestly reports unavailable context. |
 | TUI requires terminal | Use a real terminal with stdin/stdout attached, after initialization. Piped output is not a TUI session. |
-| Unfinalized session after crash | Inspect `cortexshift recover --dry-run`; when no agent is active, run `cortexshift recover`. |
+| Session has no recorded end | Inspect `cortexshift status` and `cortexshift recover --dry-run`. Run `cortexshift recover` to reconcile eligible sessions once the workspace is free. Investigate any records that recovery reports as uncertain. |
 | Database needs migration | Stop active sessions, back up state safely, then rerun `cortexshift init`. Do not delete the database. |
 
 An unfinalized record alone does not prove a crash. Recovery does not undo source

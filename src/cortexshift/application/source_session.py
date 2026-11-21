@@ -6,16 +6,15 @@ consulted, and the outgoing provider is never contacted.
 """
 
 from cortexshift.domain.errors import (
+    NativeResumeError,
     NoSourceSessionError,
     SessionNotFoundError,
     SessionTaskMismatchError,
 )
+from cortexshift.domain.provider import ProviderId
 from cortexshift.domain.session import Session, SessionExitReason
 from cortexshift.domain.task import Task
 from cortexshift.ports.session_store import SessionStore
-
-# How far back to look for a meaningful prior session on the active task.
-_SOURCE_LOOKUP_LIMIT = 100
 
 
 def _is_meaningful(session: Session) -> bool:
@@ -31,6 +30,8 @@ def select_source_session(
     store: SessionStore,
     task: Task,
     explicit_session_id: str | None = None,
+    *,
+    provider_id: ProviderId | None = None,
 ) -> Session:
     """Resolve the source Session for a handoff on the given active task.
 
@@ -49,11 +50,23 @@ def select_source_session(
             raise SessionNotFoundError(explicit_session_id)
         if session.task_id != task.id:
             raise SessionTaskMismatchError(explicit_session_id, task.id)
+        if provider_id is not None and session.provider_id != provider_id:
+            raise NativeResumeError("The selected CortexShift Session belongs to another provider.")
         return session
 
-    sessions = store.list_sessions(task_id=task.id, limit=_SOURCE_LOOKUP_LIMIT)
+    sessions = [
+        session
+        for session in store.list_sessions(task_id=task.id, limit=None)
+        if provider_id is None or session.provider_id == provider_id
+    ]
     if not sessions:
-        raise NoSourceSessionError()
+        if provider_id is None:
+            raise NoSourceSessionError()
+        raise NoSourceSessionError(
+            f"No previous {provider_id} Session exists for the active Task. "
+            f"To start it with automatic context where supported, run "
+            f"cortexshift start {provider_id} --task {task.id}."
+        )
 
     for session in sessions:
         if _is_meaningful(session):

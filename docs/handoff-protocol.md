@@ -269,10 +269,14 @@ preamble. A preview uses unpersisted metadata, so the exact byte count can diffe
 from a later switch. The historical JSON record is a separate representation and can
 exceed 48,000 bytes.
 
-Task and workspace identity, the full objective, every requirement and constraint,
-provenance, and verification instructions must fit. CortexShift rejects a switch
-before starting any provider work if the essential text and required notices cannot
-fit. The complete Task remains available with `cortexshift task show`.
+Task and workspace identity, every requirement and constraint, provenance, and
+verification instructions must fit. When a switch to a managed Claude Code or
+Codex invocation cannot fit the full objective, the rendered text replaces it
+with an explicit omission notice and instructions for `get_task_objective`.
+The complete objective stays in the canonical Task and handoff payload. The
+standalone handoff preview and targets without invocation-bound paging still
+require the full objective to fit. Switch stops before provider work if the
+required content and notices exceed the budget.
 
 When all optional fields fit, the handoff includes them. Under pressure, the renderer
 selects whole entries in recorded order within each section and skips entries that

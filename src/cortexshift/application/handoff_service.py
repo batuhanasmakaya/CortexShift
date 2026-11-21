@@ -3,7 +3,7 @@
 from collections.abc import Callable
 
 from cortexshift.adapters.sqlite.store import SQLiteStateStore
-from cortexshift.application.handoff_renderer import HandoffRenderer
+from cortexshift.application.handoff_renderer import OBJECTIVE_VIA_MCP_KEY, HandoffRenderer
 from cortexshift.application.locator import ProjectLocator
 from cortexshift.application.workspace import WorkspaceStart, open_workspace
 from cortexshift.domain.errors import HandoffNotFoundError, McpContextError
@@ -83,7 +83,11 @@ def serve_bound_handoff(
         budget = handoff.metadata.get("context_max_bytes")
         if not isinstance(budget, int):
             raise McpContextError("The bound handoff has no valid UTF-8 budget.")
-        rendered = HandoffRenderer(max_bytes=budget).render(handoff.payload, handoff.id)
+        rendered = HandoffRenderer(max_bytes=budget).render(
+            handoff.payload,
+            handoff.id,
+            objective_via_mcp=handoff.metadata.get(OBJECTIVE_VIA_MCP_KEY) is True,
+        )
         if handoff.status == HandoffStatus.PREPARED:
             store.update_handoff_delivery(
                 handoff.id, status=HandoffStatus.DELIVERED, delivered_at=utc_now()

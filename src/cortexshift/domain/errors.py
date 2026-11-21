@@ -241,8 +241,8 @@ class SameProviderSwitchError(CortexShiftError):
         super().__init__(
             f"The latest task session already uses {provider_display_name}.\n\n"
             "CortexShift switch is intended for provider handoff.\n\n"
-            "Choose a different target provider, or select an explicit source session "
-            "with --from-session."
+            "Use cortexshift resume to continue, choose a different target provider, "
+            "or select an earlier source with --from-session."
         )
         self.provider_display_name = provider_display_name
 

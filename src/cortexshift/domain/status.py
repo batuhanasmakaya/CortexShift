@@ -1,7 +1,12 @@
 """Domain models representing project and task status."""
 
+from enum import StrEnum
+
 from pydantic import BaseModel, ConfigDict
 
+from cortexshift.domain.handoff import HandoffStatus
+from cortexshift.domain.provider import ProviderId
+from cortexshift.domain.session import SessionStatus
 from cortexshift.domain.task import TaskStatus
 
 
@@ -27,6 +32,23 @@ class ActiveTaskSummary(BaseModel):
     progress: ProgressSummary
 
 
+class ObjectiveRetrieval(StrEnum):
+    NOT_REQUESTED = "not_requested"
+    UNCONFIRMED = "unconfirmed"
+    PARTIAL = "partial"
+    COMPLETE = "complete"
+
+
+class InvocationSummary(BaseModel):
+    id: str
+    provider_id: ProviderId
+    status: SessionStatus
+    resumed_from_session_id: str | None = None
+    continued_from_session_id: str | None = None
+    handoff_status: HandoffStatus | None = None
+    objective_retrieval: ObjectiveRetrieval
+
+
 class ProjectStatus(BaseModel):
     """Comprehensive status of an initialized CortexShift project."""
 
@@ -38,3 +60,6 @@ class ProjectStatus(BaseModel):
     state_file: str
     schema_version: int
     active_task: ActiveTaskSummary | None = None
+    latest_session: InvocationSummary | None = None
+    workspace_busy: bool | None = None
+    unfinalized_sessions: int = 0

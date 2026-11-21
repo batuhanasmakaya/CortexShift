@@ -218,7 +218,7 @@ class TuiFacade:
                 latest_session=sessions[0] if sessions else None,
                 latest_checkpoint=checkpoints[0] if checkpoints else None,
                 latest_handoff=handoffs[0] if handoffs else None,
-                unfinalized_session_count=sum(1 for row in sessions if row.unfinalized),
+                unfinalized_session_count=status.unfinalized_sessions,
             ),
             loaded_at=utc_now(),
         )

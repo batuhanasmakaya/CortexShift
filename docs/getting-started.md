@@ -82,15 +82,18 @@ cortexshift checkpoint create -d "Keep existing API signatures" \
 After the running provider exits:
 
 ```bash
-cortexshift handoff preview codex
-cortexshift switch codex --dry-run
 cortexshift switch codex
 ```
 
 Actual Codex/Antigravity handoffs consume one bootstrap model turn and may
-consume further interactive usage. Preview/dry-run are free of model calls.
-Return with `cortexshift switch claude`; exact native resume without a handoff
-is available through `cortexshift resume claude` when an eligible ID exists.
+consume further interactive usage. `cortexshift switch codex --dry-run` previews
+the destination and context budget without model calls or saved records.
+
+After the native agent exits, run `cortexshift resume` to continue recent work
+or `cortexshift switch claude` to return to Claude Code. To pick an earlier
+conversation, use `cortexshift session list` and `cortexshift resume --session ID`.
+If the recorded conversation is unavailable, `cortexshift resume codex --new-session`
+opens a fresh Codex conversation with the active Task.
 
 ## Recover and inspect
 

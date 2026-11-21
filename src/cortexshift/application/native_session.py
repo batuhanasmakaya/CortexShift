@@ -43,7 +43,11 @@ def select_native_session(
         if session.provider_id != provider_id:
             raise NativeResumeError("The selected CortexShift Session belongs to another provider.")
         if not is_native_resumable(session, capabilities):
-            raise NativeResumeError("The selected CortexShift Session is not exactly resumable.")
+            raise NativeResumeError(
+                "The selected CortexShift Session is not exactly resumable. "
+                f"To continue the active Task in a fresh conversation where supported, "
+                f"use cortexshift resume {provider_id} --new-session."
+            )
         return session
 
     return next(

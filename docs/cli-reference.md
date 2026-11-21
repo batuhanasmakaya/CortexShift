@@ -56,9 +56,72 @@ Rendered switch handoffs retain the 48,000 UTF-8 byte limit.
 | `cortexshift task complete` | Complete the current Task and clear its active pointer. |
 | `cortexshift run PROVIDER` | Open the native provider on the active Task. The separate workflow also supports `antigravity`. |
 | `cortexshift handoff preview PROVIDER` / `cortexshift switch PROVIDER` | Preview a bounded historical handoff or switch the active Task to another provider. |
-| `cortexshift resume PROVIDER` | Resume an eligible native session with a known exact ID. |
+| `cortexshift resume [PROVIDER]` | Continue recent work or request an exact resume for a specific provider. |
 | `cortexshift session list` / `cortexshift mcp status` | Inspect Session history and MCP integration. |
 | `cortexshift recover --dry-run` / `cortexshift recover` | Preview or reconcile eligible interrupted work. |
 
-See [Provider Support](provider-support.md) for adapter capabilities and
-[Troubleshooting](troubleshooting.md) for common startup failures.
+## Switch providers
+
+```text
+cortexshift switch PROVIDER [--from-session ID] [--note TEXT] [--new-session | --resume-session ID]
+cortexshift switch PROVIDER --dry-run [--json]
+```
+
+Switch uses the verified workspace and active, nonterminal Task. The newest
+Session whose launch did not fail is the default source, with the newest
+recorded Session as the fallback when every launch failed. Use `--from-session`
+to select an earlier source on that Task. CortexShift takes the workspace lease
+before settling the source and preparing the destination. It includes the
+latest Task checkpoint and any distinct historical decisions and test evidence
+recorded for that Task.
+
+A return to a provider uses its newest eligible exact conversation on the Task
+when the adapter supports a fresh handoff for it. Use `--new-session` to start a
+new native conversation or `--resume-session ID` to pin a prior destination.
+A same-provider switch directs you to `cortexshift resume`. Switch leaves the
+canonical Task, objective, and progress intact.
+
+Claude Code retrieves the prepared handoff through managed MCP. Codex and
+Antigravity send the bounded handoff in a read-only bootstrap turn over stdin.
+Claude Code and Codex also receive a short interactive instruction to retrieve
+all objective pages, current Task fields, and historical decisions and evidence.
+For these managed targets, an objective that exceeds the rendered budget is
+explicitly marked for MCP retrieval. The full historical payload remains
+available through `cortexshift handoff show ID --json`.
+
+## Resume recent work
+
+```text
+cortexshift resume [PROVIDER] [--session ID | --new-session] [--dry-run [--json]]
+```
+
+- `cortexshift resume` selects the latest meaningful Session on the active Task.
+  Sessions are ordered by start time, with the most recently inserted record
+  first for equal timestamps. When that Session has an eligible native ID,
+  CortexShift requests exact native resume. Otherwise it can open a fresh
+  Claude Code or Codex conversation with the same Task.
+- `cortexshift resume claude` requests the newest eligible exact Claude Code
+  conversation on the active Task. A provider argument preserves exact-only
+  behavior unless `--new-session` is set.
+- `cortexshift resume --session ID` requests that exact Session and gets the
+  provider from its record. If you also supply a provider, it must match. Use
+  `cortexshift session list` to find IDs. The source must belong to the active Task.
+- `cortexshift resume codex --new-session` opens fresh Task context after prior
+  managed Codex work. Use `cortexshift start codex --task ID` for an active Task
+  without prior Codex work.
+- A Session without a recorded end calls for `cortexshift recover --dry-run`
+  once the workspace is free. After recovery, a reconciled Session without
+  recorded process-exit evidence supports fresh continuation where available.
+
+Resume always creates a new CortexShift Session. Exact resume links its source
+Session and sends the recorded ID to the provider. A provider can reject an
+expired or deleted native conversation. In that case, use `--new-session` to
+request a fresh conversation where supported.
+
+`cortexshift status` shows the last recorded Session on the active Task,
+workspace lock activity, and unfinalized Session counts. Handoff and objective
+receipts describe transport activity. A completed bootstrap records the
+provider's completion report. MCP receipts record the data CortexShift served.
+Use the dry-run commands with `--json` for machine-readable plans.
+
+See [Provider Support](provider-support.md) and [Troubleshooting](troubleshooting.md).

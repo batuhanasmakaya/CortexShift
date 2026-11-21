@@ -5,7 +5,7 @@ from typing import Any
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from cortexshift.application.task_startup_context import TaskObjectivePage
+from cortexshift.application.task_startup_context import TaskHistory, TaskObjectivePage
 from cortexshift.domain.errors import CortexShiftError
 from cortexshift.mcp.context import McpExecutionContext
 from cortexshift.mcp.facade import McpApplicationFacade
@@ -103,6 +103,19 @@ def register_tools(
                 return facade.get_task_objective(offset)
             except (CortexShiftError, ValueError) as err:
                 raise ToolError(f"Failed to get the Task objective: {err}") from err
+
+        @server.tool(
+            name="get_task_history",
+            description=(
+                "Read historical checkpoint, decision, test-evidence and handoff information "
+                "for the bound Task. Reported test evidence is unverified."
+            ),
+        )
+        def get_task_history() -> TaskHistory:
+            try:
+                return facade.get_task_history()
+            except (CortexShiftError, ValueError) as err:
+                raise ToolError(f"Failed to get Task history: {err}") from err
 
     @server.tool(
         name="get_handoff_context",

@@ -218,7 +218,7 @@ def test_flagship_claude_to_codex_to_antigravity(
     codex_call = process_runner.invocations[1]
     assert codex_call["argv"][0] == "/fake/bin/codex"
     assert "-c" in codex_call["argv"]
-    assert codex_call["argv"][-2:] == ["resume", "test-codex-native-id"]
+    assert codex_call["argv"][-3:-1] == ["resume", "test-codex-native-id"]
     assert codex_call["cwd"] == str(repo)
 
     context = codex_bootstrap.input_texts[-1]
@@ -606,7 +606,7 @@ def test_switch_argv_stays_inert_under_hostile_task_content(
     codex_argv = process_runner.invocations[1]["argv"]
     assert codex_argv[0] == "/fake/bin/codex"
     assert "-c" in codex_argv
-    assert codex_argv[-2:] == ["resume", "test-codex-native-id"]
+    assert codex_argv[-3:-1] == ["resume", "test-codex-native-id"]
     assert "$(touch" in codex_bootstrap.input_texts[-1]
 
     bootstrap_argv = headless_runner.invocations[0]["argv"]

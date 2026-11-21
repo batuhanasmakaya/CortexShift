@@ -9,6 +9,21 @@ from cortexshift.domain.mcp_binding import McpSessionBinding
 from cortexshift.domain.provider import ProviderCapabilities, ProviderId
 from cortexshift.domain.task import Task
 
+STARTUP_PROMPT = (
+    "Before working on the CortexShift Task, call the cortexshift MCP tool "
+    "get_task_objective starting at offset 0. Follow each next_offset until it "
+    "is null and read the pages in order as one objective. Then call get_current_task "
+    "with include_objective=false for requirements, constraints and progress. "
+    "Verify against the live workspace before acting. If context cannot be retrieved, "
+    "tell the operator and wait."
+)
+
+CONTINUATION_PROMPT = (
+    STARTUP_PROMPT + " Also call get_task_history for historical checkpoints, decisions, "
+    "test evidence and the latest handoff. Use current repository state and verified "
+    "results ahead of recorded or previous conversation state."
+)
+
 
 @runtime_checkable
 class ProviderAdapter(Protocol):

@@ -9,6 +9,7 @@ around the same workspace.
 
 import contextlib
 import secrets
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -166,6 +167,8 @@ class ProviderSessionLauncher:
         try:
             if on_launch:
                 on_launch(launch_spec, session)
+            if launch_spec.workspace_notice:
+                sys.stderr.write(f"\n{launch_spec.workspace_notice}\n\n")
 
             token = SecretStr(secrets.token_hex(32))
             verifier = invocation_verifier(token)

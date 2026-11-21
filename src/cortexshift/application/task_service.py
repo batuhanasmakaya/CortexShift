@@ -81,6 +81,14 @@ class TaskService:
             return None
         return self._store.get_task(active_id)
 
+    def require_active_task(self, project_id: str) -> Task:
+        """Select the active Task for a provider operation."""
+        task = self.get_active_task(project_id)
+        if task is None or task.project_id != project_id:
+            raise NoActiveTaskError()
+        self._require_nonterminal(task, "continue")
+        return task
+
     def list_tasks(self, project_id: str) -> list[Task]:
         """List all tasks associated with a project."""
         return self._store.list_tasks(project_id)

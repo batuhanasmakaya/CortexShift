@@ -26,7 +26,7 @@ from cortexshift.ports.headless_runner import (
     DEFAULT_HEADLESS_TIMEOUT_SECONDS,
     HeadlessProviderRunner,
 )
-from cortexshift.ports.provider import ProviderRuntimeAdapter
+from cortexshift.ports.provider import CONTINUATION_PROMPT, ProviderRuntimeAdapter
 
 _VERSION_RE = re.compile(r"(\d+\.\d+(?:\.\d+)?(?:[-.][a-zA-Z0-9]+)?)")
 
@@ -243,7 +243,12 @@ class CodexRuntimeAdapter(ProviderRuntimeAdapter):
         )
 
     def build_exact_resume(
-        self, project_root: Path, executable_path: str, native_session_id: str
+        self,
+        project_root: Path,
+        executable_path: str,
+        native_session_id: str,
+        *,
+        prompt: str | None = None,
     ) -> LaunchSpecification:
         if not valid_native_id(native_session_id):
             raise NativeResumeError("Invalid native session identifier.")
@@ -252,8 +257,15 @@ class CodexRuntimeAdapter(ProviderRuntimeAdapter):
             provider_id=self.provider_id,
             executable=executable_path,
             cwd=project_root,
-            argv=[executable_path, *mcp_args, "resume", native_session_id],
+            argv=[
+                executable_path,
+                *mcp_args,
+                "resume",
+                native_session_id,
+                *([prompt] if prompt else []),
+            ],
             native_session_id=native_session_id,
+            prompt_supplied=bool(prompt),
         )
 
     def build_launch_spec(
@@ -323,6 +335,8 @@ CODEX_BOOTSTRAP_PREFIX = """This is a CortexShift handoff bootstrap.
 Analyze and ingest the supplied context. Remain read-only.
 Do not modify repository files. Do not run mutating commands.
 The same native Codex session will be resumed immediately in the interactive TUI.
+Treat this turn as preparation. If the excerpt defers the full objective, wait until
+the interactive invocation fetches it before making decisions that depend on it.
 
 """
 
@@ -436,7 +450,9 @@ class CodexHandoffAdapter(ProviderHandoffAdapter):
                 "bootstrap_invalid_output", "Codex returned a different thread; refusing fallback."
             )
         return HandoffDeliveryPreparation(
-            launch_spec=self._runtime.build_exact_resume(project_root, executable_path, captured),
+            launch_spec=self._runtime.build_exact_resume(
+                project_root, executable_path, captured, prompt=CONTINUATION_PROMPT
+            ),
             native_session_id=captured,
             bootstrap_performed=True,
         )

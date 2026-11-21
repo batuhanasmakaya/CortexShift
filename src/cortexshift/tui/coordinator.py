@@ -18,12 +18,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cortexshift.application.handoff_renderer import RenderedHandoffContext
-from cortexshift.application.resume_service import ResumeService
+from cortexshift.application.resume_service import ResumeDryRunResult, ResumeService
 from cortexshift.application.run_service import RunService
 from cortexshift.application.switch_service import SwitchService
 from cortexshift.application.workspace import WorkspaceIdentity, resolve_workspace
 from cortexshift.domain.errors import ProjectConflictError, TerminalRequiredError
 from cortexshift.domain.handoff import HandoffRecord
+from cortexshift.domain.launch import LaunchSpecification
 from cortexshift.domain.session import Session
 from cortexshift.tui.actions import TuiExitAction, TuiExitRequest
 from cortexshift.tui.app import CortexShiftApp, build_app
@@ -171,6 +172,7 @@ class TuiCoordinator:
                 provider_name=request.provider,
                 session_id=request.selected_session_id,
                 start_dir=workspace,
+                on_launch=self._announce_resume,
             )
             return outcome if isinstance(outcome, Session) else None
 
@@ -182,8 +184,20 @@ class TuiCoordinator:
             note=request.note,
             start_dir=workspace,
             on_prepared=self._announce_handoff,
+            on_launch=self._announce_switch,
         )
         return switch_result.target_session
+
+    def _announce_resume(self, plan: ResumeDryRunResult) -> None:
+        self._announce(f"Requesting exact native resume in {plan.display_name}.")
+        if not plan.automatic_context:
+            self._announce("Automatic Task refresh is unavailable for this resume.")
+
+    def _announce_switch(self, spec: LaunchSpecification, session: Session) -> None:
+        if session.resumed_from_session_id:
+            self._announce(f"Requesting exact native resume in {spec.provider_id}.")
+        else:
+            self._announce(f"Opening a fresh conversation in {spec.provider_id} on the same Task.")
 
     def _announce_handoff(self, record: HandoffRecord, rendered: RenderedHandoffContext) -> None:
         """Expose the historical fallback after the dashboard releases the terminal."""

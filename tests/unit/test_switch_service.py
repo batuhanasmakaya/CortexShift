@@ -293,7 +293,7 @@ def test_switch_delivers_context_and_creates_target_session(
     argv = runner.invocations[0]["argv"]
     assert argv[0] == "/bin/codex"
     assert "-c" in argv
-    assert argv[-2:] == ["resume", "test-codex-native-id"]
+    assert argv[-3:-1] == ["resume", "test-codex-native-id"]
     context = codex_bootstrap.input_texts[-1]
     assert "CORTEXSHIFT HANDOFF PROTOCOL v1" in context
     assert task.objective in context
@@ -502,7 +502,7 @@ def test_command_injection_stays_inert(tmp_path: Path, codex_bootstrap: FakeCode
     argv = runner.invocations[0]["argv"]
     assert argv[0] == "/bin/codex"
     assert "-c" in argv
-    assert argv[-2:] == ["resume", "test-codex-native-id"]
+    assert argv[-3:-1] == ["resume", "test-codex-native-id"]
     assert "$(touch" in codex_bootstrap.input_texts[-1]
     assert not marker.exists()
 
@@ -658,7 +658,7 @@ def test_nonzero_target_exit_keeps_handoff_delivered(tmp_path: Path) -> None:
 def test_target_spawn_failure_marks_handoff_failed(tmp_path: Path) -> None:
     """Verify a receiving provider that never starts yields an honest failed handoff."""
     _, task = seed_project(tmp_path)
-    seed_session(tmp_path, task.id)
+    source = seed_session(tmp_path, task.id)
     runner = FakeProcessRunner(spawn_error=OSError("cannot exec"))
 
     with pytest.raises(OSError):
@@ -672,6 +672,18 @@ def test_target_spawn_failure_marks_handoff_failed(tmp_path: Path) -> None:
         target = store.get_session(str(handoffs[0].target_session_id))
         assert target is not None
         assert target.status == SessionStatus.FAILED
+        failed_handoff_id = handoffs[0].id
+
+    retried = _service().switch("codex", start_dir=tmp_path)
+    assert retried.handoff.source_session_id == source.id
+    assert retried.handoff.id != failed_handoff_id
+    assert retried.handoff.status == HandoffStatus.DELIVERED
+    assert retried.target_session.resumed_from_session_id is None
+    with _store(tmp_path) as store:
+        failed = store.get_handoff(failed_handoff_id)
+        assert failed is not None and failed.status == HandoffStatus.FAILED
+        assert len(store.list_handoffs()) == 2
+        assert len(store.list_sessions(task_id=task.id)) == 3
 
 
 def test_target_interrupt_records_interrupted_session(tmp_path: Path) -> None:
@@ -797,9 +809,11 @@ def test_unfit_objective_preserves_task_and_starts_no_delivery(
     runner = FakeProcessRunner()
     service = _service(process_runner=runner)
 
+    with pytest.raises(HandoffDeliveryError, match="Essential handoff context"):
+        service.preview("codex", start_dir=tmp_path)
     for operation in (service.preview, service.dry_run, service.switch):
         with pytest.raises(HandoffDeliveryError) as exc:
-            operation("codex", start_dir=tmp_path)
+            operation("antigravity", start_dir=tmp_path)
         assert exc.value.failure_code == HandoffFailureCode.CONTEXT_TOO_LARGE
 
     assert not runner.invocations

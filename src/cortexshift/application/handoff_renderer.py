@@ -23,6 +23,12 @@ from cortexshift.domain.handoff import MAX_HANDOFF_BYTES, HandoffFailureCode, Ha
 # Keep this import name available to callers of the original renderer. The byte
 # ceiling is also an upper bound on the number of Unicode code points.
 MAX_RENDERED_CONTEXT_CHARS = MAX_HANDOFF_BYTES
+OBJECTIVE_VIA_MCP_KEY = "objective_via_mcp"
+_PAGED_OBJECTIVE_NOTICE = (
+    "The original objective is omitted from this excerpt. Before coding, call the "
+    "CortexShift MCP tool get_task_objective at offset 0 in the managed interactive "
+    "session. Follow next_offset until it is null to retrieve the full objective."
+)
 
 # Escape terminal control characters and surrogate escapes from filesystem paths.
 # Tabs and newlines remain legal inside free-text fields.
@@ -154,6 +160,7 @@ class HandoffRenderer:
         handoff_id: str | None = None,
         *,
         overhead_bytes: int = 0,
+        objective_via_mcp: bool = False,
     ) -> RenderedHandoffContext:
         """Count the UTF-8 bytes of all emitted text, with room for a provider preamble."""
         limit = self._max_bytes - overhead_bytes
@@ -168,7 +175,7 @@ class HandoffRenderer:
                 "Review the complete Task with `cortexshift task show`.",
             )
 
-        if len(payload.original_objective) > limit:
+        if not objective_via_mcp and len(payload.original_objective) > limit:
             raise budget_error()
 
         optional = self._optional_sections(payload)
@@ -177,7 +184,8 @@ class HandoffRenderer:
             _Section("constraints", "constraints", payload.constraints),
         )
         sections = {section.key: section for section in (*required, *optional)}
-        parts = self._assemble(payload, handoff_id, sections)
+        objective = _PAGED_OBJECTIVE_NOTICE if objective_via_mcp else payload.original_objective
+        parts = self._assemble(payload, handoff_id, sections, objective)
         bodies = {
             section.key: section.empty for section in sections.values() if not section.entries
         }
@@ -196,6 +204,10 @@ class HandoffRenderer:
 
         populated = [section for section in optional if section.entries]
         omissions: list[ContextOmission] = []
+        if objective_via_mcp:
+            omissions.append(
+                ContextOmission(section="original_objective", omitted_items=1, total_items=1)
+            )
         footer = ""
         complete = self._complete_optional(populated, available)
         if complete is not None:
@@ -360,6 +372,7 @@ class HandoffRenderer:
         payload: HandoffPayload,
         handoff_id: str | None,
         sections: dict[str, _Section],
+        objective: str,
     ) -> list[str | _Section]:
         """Assemble the document as literal blocks interleaved with elastic sections."""
         source = payload.source_session
@@ -406,7 +419,7 @@ class HandoffRenderer:
             f"({sanitize_path(payload.task_id)}, {sanitize_path(payload.task_status)})\n"
             "\n"
             "## ORIGINAL OBJECTIVE\n"
-            f"{sanitize_text(payload.original_objective)}\n"
+            f"{sanitize_text(objective)}\n"
             "\n"
             "## REQUIREMENTS\n"
         )
