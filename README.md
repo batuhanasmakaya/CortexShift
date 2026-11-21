@@ -14,6 +14,11 @@ Python 3.12–3.14 is targeted, with required Linux/macOS/Windows CI on protecte
 Antigravity has automated coverage only, and interactive platform smokes remain
 on a separate maintainer checklist.
 
+## CortexShift Desktop
+
+The native Desktop companion opens initialized workspaces and displays Tasks, managed
+Sessions, checkpoints, and handoff history. [Desktop overview and setup](docs/desktop/README.md)
+
 ## How it works
 
 CortexShift stores objectives, requirements, progress, checkpoints, and session

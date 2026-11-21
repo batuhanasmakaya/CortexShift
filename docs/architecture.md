@@ -699,3 +699,11 @@ The Task remains the source of objective text. The startup receipt describes
 local transport, and historical switch handoffs continue to use their
 48,000 UTF-8 byte rendered budget.
 [ADR-0017](decisions/ADR-0017-managed-task-startup.md)
+
+## Desktop workspace reader
+
+Desktop is a peer interface adapter over CortexShift's canonical project state. Tauri owns
+native window and picker behavior and supervises a Python stdio bridge. A read-only
+application service uses the existing workspace identity rules, SQLite adapter, provider
+capabilities, and OS lock probe. Desktop can observe state while the CLI or a managed
+agent works in the same workspace. [Desktop architecture and IPC](desktop/ipc.md)

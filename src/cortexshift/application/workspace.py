@@ -1,6 +1,8 @@
 """Bind workspace operations to one verified root and its project-local state."""
 
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -186,3 +188,30 @@ def resolve_workspace(
     identity, store = open_workspace(start, exact_root=exact_root)
     store.close()
     return identity
+
+
+@contextmanager
+def read_workspace(
+    path: Path,
+    *,
+    expected_project_id: str | None = None,
+) -> Iterator[tuple[WorkspaceIdentity, SQLiteStateStore]]:
+    """Open the exact selected root in an observation-only transaction."""
+    if not path.is_absolute() or not path.is_dir():
+        raise ProjectNotInitializedError()
+    root = path.resolve(strict=True)
+    db_path = project_database_path(root)
+    if not db_path.is_file():
+        raise ProjectNotInitializedError()
+    directory_id = _file_identity(root)
+    database_id = _file_identity(db_path)
+    with SQLiteStateStore.read_existing(db_path) as store:
+        workspace, _ = open_project_state(root, store_override=store)
+        assert workspace is not None
+        if (directory_id, database_id) != (workspace._directory_id, workspace._database_id):
+            raise _layout_error(root, "The selected root or its database changed during opening.")
+        if expected_project_id is not None and (
+            path != workspace.root or workspace.project.id != expected_project_id
+        ):
+            raise _layout_error(root, "The registered Project record or root has changed.")
+        yield workspace, store

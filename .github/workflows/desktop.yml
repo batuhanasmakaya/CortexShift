@@ -1,0 +1,96 @@
+name: Desktop CI
+on:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'src/**'
+      - 'tests/desktop/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/desktop.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - 'src/**'
+      - 'tests/desktop/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  native:
+    name: Native build and bridge (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            bundles: app
+          - os: windows-2025
+            bundles: nsis
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.26'
+          enable-cache: true
+      - run: uv sync --locked --python 3.12
+      - run: uv run --locked pytest --no-cov tests/desktop
+      - run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
+      - run: rustup default 1.92.0
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-desktop-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('desktop/src-tauri/Cargo.lock') }}
+      - run: npm ci --ignore-scripts
+        working-directory: desktop
+      - run: cargo fmt --all -- --check
+        working-directory: desktop/src-tauri
+      - run: cargo clippy --locked --all-targets -- -D warnings
+        working-directory: desktop/src-tauri
+      - run: cargo test --locked
+        working-directory: desktop/src-tauri
+      - run: uv run --locked --with pyinstaller==6.17.0 python desktop/scripts/freeze_bridge.py
+      - run: npm run tauri -- build --ci --no-sign --config src-tauri/bundle.conf.json --bundles ${{ matrix.bundles }} -- --locked
+        working-directory: desktop
