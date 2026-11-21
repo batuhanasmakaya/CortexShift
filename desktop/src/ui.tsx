@@ -18,10 +18,24 @@ export function Empty({ title, children }: { title: string; children?: ReactNode
   return <div className="empty"><strong>{title}</strong>{children && <p>{children}</p>}</div>;
 }
 
-export function Status({ value, uncertain = false }: { value: string; uncertain?: boolean }) {
-  return <span className="status" data-tone={uncertain ? 'attention' : value === 'completed' || value === 'delivered' ? 'positive' : 'neutral'}>
-    <span className="status-dot" />{label(value)}
+type StatusTone = 'success' | 'warning' | 'danger';
+
+const lifecycleTones = new Map<string, StatusTone>([
+  ['completed', 'success'],
+  ['delivered', 'success'],
+  ['interrupted', 'warning'],
+  ['timed_out', 'warning'],
+  ['failed', 'danger'],
+]);
+
+export function StatusIndicator({ children, tone }: { children: ReactNode; tone?: StatusTone }) {
+  return <span className="status" data-tone={tone}>
+    <span className="status-dot" aria-hidden="true" />{children}
   </span>;
+}
+
+export function Status({ value, uncertain = false }: { value: string; uncertain?: boolean }) {
+  return <StatusIndicator tone={uncertain ? 'warning' : lifecycleTones.get(value)}>{label(value)}</StatusIndicator>;
 }
 
 export function TextList({ title, data, empty = 'None recorded' }: { title: string; data: TextItems; empty?: string }) {

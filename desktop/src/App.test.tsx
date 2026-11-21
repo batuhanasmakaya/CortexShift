@@ -118,7 +118,8 @@ it('pages long Markdown as inert text and opens Task-scoped Session checkpoint d
   expect(tauri.invoke).toHaveBeenCalledWith('query', { request: { op: 'sessions', root: alpha.root, task_id: task.id, offset: 0 } });
   await user.click(screen.getByRole('button', { name: 'Manual' }));
   expect(await screen.findByRole('heading', { name: 'Manual checkpoint' })).toBeTruthy();
-  expect(screen.getByText('Reported · Unverified')).toBeTruthy();
+  expect(screen.getByText('Reported · Unverified').getAttribute('data-tone')).toBe('warning');
+  expect(screen.getByText('Historical observation').closest('[data-tone]')).toBeNull();
 });
 
 it('shows persisted handoff details', async () => {
@@ -151,10 +152,16 @@ it('uses system appearance by default and persists an explicit theme', async () 
   expect(appearance.value).toBe('system');
   await user.selectOptions(appearance, 'dark');
   expect(document.documentElement.dataset.theme).toBe('dark');
-  expect(await screen.findByText('Ready · Local stdio')).toBeTruthy();
+  expect((await screen.findByText('Ready · Local stdio')).getAttribute('data-tone')).toBe('success');
   view.unmount();
   render(<App />);
   expect(document.documentElement.dataset.theme).toBe('dark');
+  await user.click(screen.getByRole('button', { name: 'Settings & diagnostics' }));
+  const savedAppearance = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Theme' });
+  await user.selectOptions(savedAppearance, 'light');
+  expect(document.documentElement.dataset.theme).toBe('light');
+  await user.selectOptions(savedAppearance, 'system');
+  expect(document.documentElement.dataset.theme).toBe('system');
 });
 
 it('keeps onboarding when the native picker is cancelled', async () => {

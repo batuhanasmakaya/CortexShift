@@ -1,7 +1,7 @@
 import { ArrowUpRight, FolderOpen, Workflow } from 'lucide-react';
 import type { Overview, Session } from './ipc';
 import { date, label, provider } from './ipc';
-import { Details, Empty, Fact, SectionHeading, Status, TextList } from './ui';
+import { Details, Empty, Fact, SectionHeading, Status, StatusIndicator, TextList } from './ui';
 
 export function continuity(session: Session) {
   if (session.native_resume) return 'Exact native resume recorded';
@@ -21,7 +21,7 @@ export function WorkspaceOverview({ data, openTask, openSessions, openCheckpoint
   return <>
     <SectionHeading title={data.name} subtitle="Workspace overview" />
     <div className="path"><FolderOpen /> <span>{data.root}</span></div>
-    {attention && <div className="notice" role="status">
+    {attention && <div className="notice" data-tone="warning" role="status">
       <strong>Recovery attention</strong>
       <p>{data.unfinalized_sessions} unfinalized {data.unfinalized_sessions === 1 ? 'Session' : 'Sessions'}. {data.workspace_busy === null ? 'Workspace ownership could not be verified.' : 'No managed workspace lock was observed.'} Review Session history before using CLI recovery.</p>
     </div>}
@@ -39,7 +39,7 @@ export function WorkspaceOverview({ data, openTask, openSessions, openCheckpoint
       <div className="overview-side">
         <section className="panel">
           <div className="panel-head"><h2>Workspace activity</h2><Workflow /></div>
-          <p className="activity"><span className="status-dot" data-active={data.workspace_busy === true} />{activity}</p>
+          <p className="activity"><StatusIndicator>{activity}</StatusIndicator></p>
           <Details>
             <Fact title="Last provider">{session ? provider(session.provider_id) : 'Unknown'}</Fact>
             <Fact title="Latest Session">{session ? <>

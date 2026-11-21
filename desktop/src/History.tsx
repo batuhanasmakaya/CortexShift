@@ -4,7 +4,7 @@ import type { Session } from './ipc';
 import { date, desktop, label, provider } from './ipc';
 import { continuity } from './Overview';
 import { useRead } from './read';
-import { Details, Empty, Fact, Pager, ReadView, SectionHeading, Status, TextList } from './ui';
+import { Details, Empty, Fact, Pager, ReadView, SectionHeading, Status, StatusIndicator, TextList } from './ui';
 
 export type RecordKind = 'checkpoint' | 'handoff';
 export type RecordLink = { kind: RecordKind; id: string };
@@ -138,8 +138,10 @@ function RecordDetail({ root, record: { kind, id }, back }: {
         </> : <Fact title="Source Session"><span className="id">{data.session_id ?? 'Unknown'}</span></Fact>}
       </Details>
       <section className="panel prose-text"><div className="panel-head"><h2>Test evidence</h2></div>
-        <p className="muted">{!data.test_status.known ? 'Unknown' : data.test_status.provenance === 'reported' ?
-          'Reported · Unverified' : data.test_status.provenance === 'verified' ? 'Verified at capture' : 'Historical test evidence'}</p>
+        <p><StatusIndicator tone={data.test_status.known && data.test_status.provenance === 'reported' ? 'warning' : undefined}>
+          {!data.test_status.known ? 'Unknown' : data.test_status.provenance === 'reported' ?
+            'Reported · Unverified' : data.test_status.provenance === 'verified' ? 'Verified at capture' : 'Historical test evidence'}
+        </StatusIndicator></p>
         <p>{data.test_status.summary}</p>
       </section>
       <div className="details-grid">

@@ -10,7 +10,7 @@ import type { Project } from './ipc';
 import { WorkspaceOverview } from './Overview';
 import { useRead } from './read';
 import { Tasks } from './Tasks';
-import { Details, Empty, ErrorNotice, Fact, ReadView, SectionHeading } from './ui';
+import { Details, Empty, ErrorNotice, Fact, ReadView, SectionHeading, StatusIndicator } from './ui';
 
 type View = 'overview' | 'tasks' | 'sessions' | 'records' | 'diagnostics';
 type Theme = 'system' | 'light' | 'dark';
@@ -136,7 +136,7 @@ export default function App() {
           <strong>{screen.view === 'diagnostics' ? 'Settings' : root ?
             navigation.find(item => item.view === screen.view)?.label : 'Welcome'}</strong></div>
         <div className="actions">
-          {root && <button className="icon-button" title="Remove project from library"
+          {root && <button className="icon-button danger" title="Remove project from library"
             aria-label="Remove project from library" disabled={pending}
             onClick={() => void manageProject(root)}><Trash2 /></button>}
           <button className="icon-button" aria-label="Refresh workspace" title="Refresh workspace"
@@ -202,7 +202,7 @@ function Diagnostics({ theme, setTheme, project, schema }: {
     <section className="panel settings">
       <div className="panel-head"><h2>Python bridge</h2></div>
       <ReadView read={bridge}>{value => <Details>
-        <Fact title="Connection">Ready · Local stdio</Fact>
+        <Fact title="Connection"><StatusIndicator tone="success">Ready · Local stdio</StatusIndicator></Fact>
         <Fact title="Protocol">{value.protocol}</Fact>
         <Fact title="Core version">{value.core_version}</Fact>
       </Details>}</ReadView>
