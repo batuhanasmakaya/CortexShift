@@ -5,6 +5,9 @@ fn main() {
             "open_project",
             "remove_project",
             "query",
+            "create_task",
+            "agent_control",
+            "pick_objective",
         ]),
     ))
     .expect("configure CortexShift desktop permissions");

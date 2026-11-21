@@ -1,6 +1,16 @@
-# External agent integration research
+# Managed providers and vendor integrations
 
-Documentation reviewed November 21, 2026. The matrix describes vendor capabilities for evaluating DX3B. DX3A reads local CortexShift records. Provider authentication and runtime actions remain with the existing CLI.
+Desktop launches the managed Claude Code and Codex CLIs in the native terminal. Authentication and permission prompts belong to the native provider.
+
+| Provider | Managed launch and switch | Resume |
+| --- | --- | --- |
+| Claude Code | Managed start and switch with per-invocation MCP context | Exact native resume with a recorded ID, or fresh Task continuation |
+| Codex | Managed start and switch. The existing fresh switch adapter may perform a read-only bootstrap turn before the interactive launch. | Exact native resume with a recorded ID. A fresh interactive start may leave the native ID unknown, in which case automatic Resume offers fresh Task continuation. |
+| Antigravity | Established CLI/TUI and workspace MCP integration. Desktop displays its records and can switch an eligible active Task from Antigravity to a managed destination. | Managed Desktop startup, destination switching, and resume are unavailable. |
+
+## First-party apps and SDKs
+
+The vendor documentation below was reviewed November 21, 2026. First-party app handoff and embedded provider interaction are separate vendor capabilities. DX3B ships the managed native CLI workflow.
 
 | Surface | External application or native handoff | Embedded integration | Context-only integration |
 | --- | --- | --- | --- |
@@ -16,10 +26,4 @@ Codex integration work should pin a tested CLI/App Server compatibility range. P
 
 Antigravity mechanisms have their own install, auth, protocol, and host requirements. Verify supported CLI identity and behavior against the actual installed provider before extending CortexShift's existing adapter. [Antigravity CLI](https://antigravity.google/docs/cli-features), [ACP](https://antigravity.google/docs/ide/extensions/acp), [Antigravity SDK](https://antigravity.google/docs/sdk/overview), [Antigravity MCP](https://antigravity.google/docs/mcp)
 
-## DX3B scope
-
-1. Add visual Task creation and selection backed by the canonical application services.
-2. Add managed startup, switch, and resume through provider adapters and the existing exclusive workspace lease.
-3. Expose invocation lineage, MCP retrieval and handoff delivery receipts with the same evidence rules as the CLI.
-4. Validate native Claude Desktop handoff and Codex app launch against supported versions and platform/auth requirements.
-5. Prototype App Server over stdio and evaluate Claude Agent SDK and Antigravity ACP separately for embedded operation. Keep context authorization invocation-scoped across all hosts.
+Open first-party apps through their documented controls when your provider version and sign-in support them. CortexShift ownership, recovery, and invocation receipts apply to launches started through the managed workflow.

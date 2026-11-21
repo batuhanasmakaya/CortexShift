@@ -700,10 +700,17 @@ local transport, and historical switch handoffs continue to use their
 48,000 UTF-8 byte rendered budget.
 [ADR-0017](decisions/ADR-0017-managed-task-startup.md)
 
-## Desktop workspace reader
+## Desktop workspace and agent control
 
 Desktop is a peer interface adapter over CortexShift's canonical project state. Tauri owns
 native window and picker behavior and supervises a Python stdio bridge. A read-only
 application service uses the existing workspace identity rules, SQLite adapter, provider
 capabilities, and OS lock probe. Desktop can observe state while the CLI or a managed
 agent works in the same workspace. [Desktop architecture and IPC](desktop/ipc.md)
+
+Desktop Task creation and activation use the same short write transactions as the core.
+A typed action plan pins the selected Task and Session. A private one-shot ticket starts a
+Python worker in the native terminal, where the existing application services hold the
+workspace lease and manage provider lifetime. The WebView observes durable action and
+canonical Session receipts through the separate request bridge.
+[Desktop control ADR](decisions/ADR-0020-desktop-agent-control.md)

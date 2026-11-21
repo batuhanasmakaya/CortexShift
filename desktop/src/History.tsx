@@ -1,6 +1,7 @@
 import { ArrowLeft, ArrowRight, GitCommitHorizontal, Layers3, Radio } from 'lucide-react';
 import { useCallback, useState } from 'react';
-import type { Session } from './ipc';
+import { SessionControls } from './AgentControl';
+import type { AgentAction, Session } from './ipc';
 import { date, desktop, label, provider } from './ipc';
 import { continuity } from './Overview';
 import { useRead } from './read';
@@ -10,23 +11,38 @@ export type RecordKind = 'checkpoint' | 'handoff';
 export type RecordLink = { kind: RecordKind; id: string };
 const PAGE_SIZE = 20;
 
-export function Sessions({ root, taskId, clearTask, openTask, openRecord }: {
+export function Sessions({ root, taskId, clearTask, openTask, openRecord, focusSession, activeId, blocked, launch, recover, revision }: {
   root: string;
   taskId: string | null;
   clearTask: () => void;
   openTask: (id: string) => void;
   openRecord: (record: RecordLink) => void;
+  focusSession?: string;
+  activeId: string | null;
+  blocked: string | null;
+  launch: (action: AgentAction) => void;
+  recover: () => void;
+  revision: number;
 }) {
   const [offset, setOffset] = useState(0);
-  const [selected, setSelected] = useState<string>();
+  const [selected, setSelected] = useState<string | undefined>(focusSession);
   const sessions = useRead(useCallback(
     () => desktop.query('sessions', { root, task_id: taskId, offset }), [root, taskId, offset],
-  ));
+  ), revision);
+  const strongFocus = selected === focusSession && Boolean(focusSession);
+  const focus = useRead(useCallback(
+    () => focusSession ? desktop.query('session', { root, record_id: focusSession }) : Promise.resolve(null),
+    [focusSession, root],
+  ), revision);
+  const controls = { activeId, blocked, launch, recover };
   return <>
     <SectionHeading title="Sessions" subtitle={taskId ? `Task ${taskId}` : 'Managed agent invocations and recorded continuity.'}>
       {taskId && <button className="button" onClick={clearTask}>All Sessions</button>}
     </SectionHeading>
-    <ReadView read={sessions}>{data => {
+    {strongFocus ? <ReadView read={focus}>{data => data && <>
+      <button className="back text-button" onClick={() => setSelected(undefined)}><ArrowLeft /> All Sessions</button>
+      <SessionDetail session={data} openTask={openTask} openRecord={openRecord} {...controls} />
+    </>}</ReadView> : <ReadView read={sessions}>{data => {
       const current = data.items.find(session => session.id === selected);
       return <>
         {data.items.length ? <div className={current ? 'history-split' : ''}>
@@ -40,24 +56,29 @@ export function Sessions({ root, taskId, clearTask, openTask, openRecord }: {
                 {session.ownership_uncertain && <small>Ownership uncertain</small>}</span><ArrowRight className="row-arrow" />
             </button>)}
           </div>
-          {current && <SessionDetail session={current} openTask={openTask} openRecord={openRecord} />}
+          {current && <SessionDetail session={current} openTask={openTask} openRecord={openRecord} {...controls} />}
         </div> : <Empty title="No Sessions on this page">Managed invocations appear here after CortexShift starts an agent.</Empty>}
         <Pager previous={offset > 0 ? offset - PAGE_SIZE : null} next={data.next} onPage={setOffset} />
       </>;
-    }}</ReadView>
+    }}</ReadView>}
   </>;
 }
 
-function SessionDetail({ session, openTask, openRecord }: {
+function SessionDetail({ session, openTask, openRecord, activeId, blocked, launch, recover }: {
   session: Session;
   openTask: (id: string) => void;
   openRecord: (record: RecordLink) => void;
+  activeId: string | null;
+  blocked: string | null;
+  launch: (action: AgentAction) => void;
+  recover: () => void;
 }) {
-  const { checkpoint, delivery } = session;
+  const { checkpoint, delivery, objective_receipt: objective } = session;
   return <section className="panel session-detail" aria-label="Session details">
     <div className="panel-head"><h2>{provider(session.provider_id)}</h2><Status value={session.status} uncertain={session.ownership_uncertain} /></div>
     <p className="id">{session.id}</p>
     <p className="muted">Last recorded Session state{session.ownership_uncertain && ' · Live process ownership is uncertain'}</p>
+    <SessionControls session={session} activeId={activeId} blocked={blocked} launch={launch} recover={recover} />
     <Details>
       <Fact title="Task"><button className="text-button id" onClick={() => openTask(session.task_id)}>{session.task_id} <ArrowRight /></button></Fact>
       <Fact title="Started">{date(session.started_at)}</Fact>
@@ -66,6 +87,12 @@ function SessionDetail({ session, openTask, openRecord }: {
       <Fact title="Exit reason">{session.exit_reason ? label(session.exit_reason) : 'Unknown'}</Fact>
       <Fact title="Native continuity">{continuity(session)}</Fact>
       {session.resumed_from_session_id && <Fact title="Resumed from"><span className="id">{session.resumed_from_session_id}</span></Fact>}
+      {session.continued_from_session_id && <Fact title="Task continued from"><span className="id">{session.continued_from_session_id}</span></Fact>}
+      {objective && <Fact title="Objective delivery">
+        {objective.state === 'complete' ? 'MCP served complete objective'
+          : objective.state === 'partial' ? 'MCP served part of objective' : 'Objective delivery unconfirmed'}
+        <small>{objective.served} of {objective.total} Unicode characters served</small>
+      </Fact>}
       <Fact title="Checkpoint">{checkpoint ?
         <button className="text-button" onClick={() => openRecord({ kind: 'checkpoint', id: checkpoint.id })}>{label(checkpoint.kind)} <ArrowRight /></button> :
         'None recorded'}</Fact>

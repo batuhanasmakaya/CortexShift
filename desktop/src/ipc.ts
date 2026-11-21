@@ -61,6 +61,8 @@ export interface Session {
   exit_reason: string | null;
   exit_code: number | null;
   ownership_uncertain: boolean;
+  continued_from_session_id?: string | null;
+  objective_receipt?: { state: 'unconfirmed' | 'partial' | 'complete'; served: number; total: number } | null;
   native_resume: boolean;
   task_continuation: boolean;
   checkpoint: Checkpoint | null;
@@ -71,6 +73,8 @@ export interface Overview extends Project {
   schema_version: number;
   active_task: Task | null;
   latest_session: Session | null;
+  active_has_sessions: boolean;
+  active_recent_provider?: string | null;
   checkpoint: Checkpoint | null;
   workspace_busy: boolean | null;
   unfinalized_sessions: number;
@@ -87,19 +91,79 @@ interface Operations {
   task: [{ root: string; task_id: string }, TaskDetail];
   objective: [{ root: string; task_id: string; offset: number }, { text: string; next: number | null }];
   sessions: [{ root: string; task_id: string | null; offset: number }, Page<Session>];
+  session: [{ root: string; record_id: string }, Session];
   checkpoints: [{ root: string; task_id: string | null; offset: number }, Page<Checkpoint>];
   handoffs: [{ root: string; task_id: string | null; offset: number }, Page<Handoff>];
   checkpoint: [{ root: string; record_id: string }, CheckpointDetail];
   handoff: [{ root: string; record_id: string }, HandoffDetail];
 }
 
+export type ManagedProvider = 'claude' | 'codex';
+export type AgentAction = {
+  kind: 'start' | 'switch' | 'resume' | 'continue';
+  task_id: string;
+  provider: ManagedProvider | null;
+  session_id: string | null;
+  fresh_target: boolean;
+};
+export type AgentPlan = {
+  provider: ManagedProvider;
+  mode: 'start' | 'native_resume' | 'task_continuation' | 'switch_native' | 'switch_fresh';
+  source: string | null;
+  target: string | null;
+  bootstrap_turn: boolean;
+};
+export type ActionPhase = 'pending' | 'starting' | 'context_prepared' | 'running' |
+  'completed' | 'failed' | 'interrupted' | 'unknown' | 'cancelled';
+export type ActionReceipt = {
+  spawned?: boolean;
+  objective_served?: number | null;
+  id: string;
+  phase: ActionPhase;
+  mode: AgentPlan['mode'];
+  provider: ManagedProvider;
+  session_id?: string | null;
+  message?: string | null;
+};
+export interface ObjectiveFile { name: string; text: string }
+export interface ProviderAvailability {
+  terminal: boolean;
+  providers: { id: string; installed: boolean; managed: boolean }[];
+}
+interface ControlOperations {
+  providers: [Record<string, never>, ProviderAvailability];
+  provider_setup: [{ provider: ManagedProvider }, { installed: boolean; authentication: string }];
+  plan: [{ action: AgentAction }, AgentPlan];
+  submit: [{ action: AgentAction; plan: AgentPlan; operation_id: string }, { action: ActionReceipt }];
+  action_status: [Record<string, never>, { action: ActionReceipt | null; workspace_busy: boolean | null }];
+  cancel_action: [{ action_id: string }, { action: ActionReceipt }];
+  activate_task: [{ task_id: string; expected_active: string | null }, { id: string }];
+  recover: [{ preview: boolean }, { eligible: number; reconciled: number; uncertain: number }];
+}
+
+export function operationId() {
+  return [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 export const desktop = {
   library: () => invoke<Project[]>('library'),
   openProject: () => invoke<Project | null>('open_project'),
   removeProject: (root: string) => invoke<Project[]>('remove_project', { root }),
+  pickObjective: () => invoke<ObjectiveFile | null>('pick_objective'),
+  createTask: (request: {
+    root: string; task_id: string; title: string; objective: string; activate: boolean; expected_active: string | null;
+  }) => invoke<{ id: string; active: boolean }>('create_task', { request }),
+  control: <K extends keyof ControlOperations>(op: K, root: string, params: ControlOperations[K][0]) =>
+    invoke<ControlOperations[K][1]>('agent_control', { request: { op, root, ...params } }),
   query: <K extends keyof Operations>(op: K, params: Operations[K][0]) =>
     invoke<Operations[K][1]>('query', { request: { op, ...params } }),
 };
+
+export function uncertainTransport(error: unknown) {
+  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+  return code === null || code === 'bridge_timeout' || code === 'bridge_exited' ||
+    code === 'bridge_protocol' || code === 'shutdown';
+}
 
 export function errorMessage(error: unknown) {
   if (typeof error === 'object' && error !== null && 'message' in error &&

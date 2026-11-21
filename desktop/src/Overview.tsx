@@ -1,5 +1,6 @@
 import { ArrowUpRight, FolderOpen, Workflow } from 'lucide-react';
-import type { Overview, Session } from './ipc';
+import { OverviewControls } from './AgentControl';
+import type { AgentAction, Overview, Session } from './ipc';
 import { date, label, provider } from './ipc';
 import { Details, Empty, Fact, SectionHeading, Status, StatusIndicator, TextList } from './ui';
 
@@ -8,11 +9,14 @@ export function continuity(session: Session) {
   return session.task_continuation ? 'Task-level continuation only' : 'Unknown';
 }
 
-export function WorkspaceOverview({ data, openTask, openSessions, openCheckpoint }: {
+export function WorkspaceOverview({ data, openTask, openSessions, openCheckpoint, launch, blocked, recover }: {
   data: Overview;
   openTask: (id: string) => void;
   openSessions: () => void;
   openCheckpoint: (id: string) => void;
+  launch: (action: AgentAction) => void;
+  blocked: string | null;
+  recover: () => void;
 }) {
   const { active_task: task, latest_session: session, checkpoint: checkpoint } = data;
   const activity = data.workspace_busy === null ? 'Ownership unknown' :
@@ -23,8 +27,10 @@ export function WorkspaceOverview({ data, openTask, openSessions, openCheckpoint
     <div className="path"><FolderOpen /> <span>{data.root}</span></div>
     {attention && <div className="notice" data-tone="warning" role="status">
       <strong>Recovery attention</strong>
-      <p>{data.unfinalized_sessions} unfinalized {data.unfinalized_sessions === 1 ? 'Session' : 'Sessions'}. {data.workspace_busy === null ? 'Workspace ownership could not be verified.' : 'No managed workspace lock was observed.'} Review Session history before using CLI recovery.</p>
+      <p>{data.unfinalized_sessions} unfinalized {data.unfinalized_sessions === 1 ? 'Session' : 'Sessions'}. {data.workspace_busy === null ? 'Workspace ownership could not be verified.' : 'No managed workspace lock was observed.'} Review Session history before reconciling.</p>
+      <button className="text-button" disabled={data.workspace_busy !== false} onClick={recover}>Review recovery <ArrowUpRight /></button>
     </div>}
+    <OverviewControls data={data} blocked={blocked} launch={launch} />
     <div className="overview-grid">
       <section className="panel task-panel">
         <div className="panel-head"><h2>Active Task</h2>{task && <Status value={task.status} />}</div>
