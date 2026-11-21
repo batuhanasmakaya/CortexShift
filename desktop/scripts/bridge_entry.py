@@ -1,8 +1,6 @@
-"""Entry point for the frozen desktop bridge."""
+"""Entry point for the frozen Desktop bridge and its native workers."""
 
-import sys
-
-from cortexshift.desktop.bridge import serve
+from cortexshift.desktop.bridge import main
 
 if __name__ == "__main__":
-    serve(sys.stdin.buffer, sys.stdout.buffer)
+    raise SystemExit(main())

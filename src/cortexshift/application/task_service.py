@@ -3,9 +3,11 @@
 from collections.abc import Callable
 
 from cortexshift.domain.errors import (
+    ActiveTaskChangedError,
     ActiveTaskExistsError,
     NoActiveTaskError,
     TaskAlreadyCompletedError,
+    TaskCreationConflictError,
     TaskNotActivatableError,
     TaskNotFoundError,
     TaskTerminalError,
@@ -30,6 +32,8 @@ class TaskService:
         set_active: bool = True,
         *,
         require_no_active: bool = False,
+        replace_active_id: str | None = None,
+        creation_id: str | None = None,
     ) -> Task:
         """Create a new task, persist it, and optionally set it as the active task.
 
@@ -41,6 +45,8 @@ class TaskService:
             constraints: Optional initial list of constraint strings.
             set_active: Whether to set this task as active immediately (defaults to True).
             require_no_active: Refuse creation if the project's active pointer is occupied.
+            replace_active_id: Compare the observed active pointer before replacing it.
+            creation_id: Stable identity for retrying an explicit Task creation.
 
         Returns:
             The created Task entity.
@@ -55,7 +61,19 @@ class TaskService:
             status=initial_status,
         )
 
+        if creation_id is not None:
+            task = task.model_copy(update={"id": creation_id})
         with self._store.task_write_transaction():
+            if creation_id is not None and (saved := self._store.get_task(creation_id)):
+                if (saved.project_id, saved.title, saved.objective) != (
+                    project_id,
+                    task.title,
+                    task.objective,
+                ):
+                    raise TaskCreationConflictError("Task creation identity is already in use.")
+                return saved
+            if set_active and replace_active_id is not None:
+                self._check_active(project_id, replace_active_id)
             if require_no_active and self._store.get_active_task_id(project_id) is not None:
                 raise ActiveTaskExistsError("An active Task already exists.")
             self._store.save_task(task)
@@ -93,12 +111,21 @@ class TaskService:
         """List all tasks associated with a project."""
         return self._store.list_tasks(project_id)
 
-    def activate_task(self, project_id: str, task_id: str) -> Task:
+    def _check_active(self, project_id: str, expected: str | None) -> None:
+        if self._store.get_active_task_id(project_id) != expected:
+            raise ActiveTaskChangedError(
+                "The active Task changed. Refresh and review your selection."
+            )
+
+    def activate_task(
+        self, project_id: str, task_id: str, *, expected_active: tuple[str | None] | None = None
+    ) -> Task:
         """Make an existing task the active task for the project.
 
         Args:
             project_id: Canonical ID of the owning project.
             task_id: Identifier of the task to activate.
+            expected_active: A supplied pointer observation, including an empty pointer.
 
         Returns:
             The newly activated Task entity.
@@ -108,6 +135,8 @@ class TaskService:
             TaskNotActivatableError: If the task is in a terminal status (completed/cancelled).
         """
         with self._store.task_write_transaction():
+            if expected_active is not None:
+                self._check_active(project_id, expected_active[0])
             task = self._get_project_task(project_id, task_id, "activate")
             if task.is_terminal:
                 raise TaskNotActivatableError(

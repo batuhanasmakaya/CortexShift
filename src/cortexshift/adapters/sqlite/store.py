@@ -490,6 +490,20 @@ class SQLiteStateStore(
         )
         return str(row[0]) if row is not None else None
 
+    def get_objective_length(self, project_id: str, task_id: str) -> int | None:
+        row = self._fetch_row(
+            # For embedded NULs SQLite's TEXT length stops at the first NUL.
+            "SELECT CASE WHEN instr(objective, char(0)) > 0 THEN NULL ELSE length(objective) "
+            "END FROM tasks WHERE project_id = ? AND id = ?;",
+            (project_id, task_id),
+        )
+        if row is None:
+            return None
+        if row[0] is not None:
+            return int(row[0])
+        task = self.get_task(task_id)
+        return len(task.objective) if task is not None else None
+
     def _row_to_task(self, row: sqlite3.Row) -> Task:
         """Convert a database row into a Task domain entity."""
         return Task(
@@ -696,7 +710,7 @@ class SQLiteStateStore(
         except sqlite3.Error as err:
             raise DatabaseStateError(f"Failed to save session '{session.id}': {err}") from err
 
-    def get_session(self, session_id: str) -> Session | None:
+    def get_session(self, session_id: str, *, project_id: str | None = None) -> Session | None:
         """Retrieve a Session by its unique identifier."""
         try:
             row = self._fetch_row(
@@ -704,9 +718,13 @@ class SQLiteStateStore(
                 SELECT id, task_id, provider_id, native_session_id, status,
                        started_at, ended_at, exit_reason, exit_code, metadata,
                        resumed_from_session_id, reconciled_at
-                FROM sessions WHERE id = ?;
+                FROM sessions s WHERE id = ? AND (
+                    ? IS NULL OR EXISTS (
+                        SELECT 1 FROM tasks t WHERE t.id = s.task_id AND t.project_id = ?
+                    )
+                );
                 """,
-                (session_id,),
+                (session_id, project_id, project_id),
             )
             if row is None:
                 return None
@@ -913,6 +931,19 @@ class SQLiteStateStore(
         except (sqlite3.Error, ValueError, json.JSONDecodeError) as err:
             msg = f"Failed to retrieve handoff '{handoff_id}': {err}"
             raise StateCorruptionError(msg) from err
+
+    def get_handoff_delivery(
+        self, project_id: str, task_id: str, session_id: str, handoff_id: str
+    ) -> dict[str, Any] | None:
+        """Read the bound transport receipt without loading the historical payload."""
+        row = self._fetch_row(
+            """
+            SELECT id, status, delivered_at, failure_code FROM handoffs
+            WHERE project_id = ? AND task_id = ? AND target_session_id = ? AND id = ?;
+            """,
+            (project_id, task_id, session_id, handoff_id),
+        )
+        return dict(row) if row is not None else None
 
     def list_handoffs(
         self,

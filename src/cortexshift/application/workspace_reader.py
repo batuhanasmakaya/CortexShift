@@ -9,13 +9,21 @@ from cortexshift.application.native_session import is_native_resumable, native_c
 from cortexshift.application.run_service import ProviderRuntimeRegistry
 from cortexshift.application.status_service import ProjectStatusService
 from cortexshift.application.task_service import TaskService
+from cortexshift.application.task_startup_context import objective_retrieval
 from cortexshift.application.workspace import WorkspaceIdentity, read_workspace
 from cortexshift.domain.errors import (
     CheckpointNotFoundError,
     HandoffNotFoundError,
+    SessionNotFoundError,
     TaskNotFoundError,
 )
-from cortexshift.domain.session import UNFINALIZED_SESSION_STATUSES, Session
+from cortexshift.domain.session import (
+    CONTINUED_FROM_SESSION_KEY,
+    STARTUP_OBJECTIVE_SERVED_KEY,
+    UNFINALIZED_SESSION_STATUSES,
+    Session,
+    SessionExitReason,
+)
 from cortexshift.domain.task import Task
 
 PAGE_SIZE = 20
@@ -62,15 +70,26 @@ class WorkspaceReader:
         with read_workspace(root) as (identity, _):
             return self._project(identity)
 
+    def workspace_activity(self, workspace: WorkspaceIdentity) -> bool | None:
+        return self._status.workspace_activity(workspace)
+
     def overview(self, root: Path, project_id: str) -> dict[str, Any]:
         with read_workspace(root, expected_project_id=project_id) as (identity, store):
             task = TaskService(store).get_active_task(project_id)
             sessions = store.list_sessions(project_id=project_id, limit=1)
+            active_sessions = (
+                store.list_sessions(project_id=project_id, task_id=task.id, limit=1) if task else []
+            )
+            active_source = active_sessions[0] if active_sessions else None
             checkpoints = store.list_checkpoint_references(project_id, limit=1)
             return {
                 **self._project(identity),
                 "schema_version": store.get_schema_version(),
                 "active_task": self._task_summary(task) if task else None,
+                "active_has_sessions": bool(active_sessions),
+                "active_recent_provider": active_source.provider_id
+                if active_source and active_source.exit_reason != SessionExitReason.SPAWN_FAILED
+                else None,
                 "latest_session": self._session(store, project_id, sessions[0])
                 if sessions
                 else None,
@@ -153,28 +172,47 @@ class WorkspaceReader:
             project_id, session_id=session.id, task_id=session.task_id, limit=1
         )
         handoff_id = session.metadata.get("handoff_id")
-        handoff = store.get_handoff(handoff_id) if isinstance(handoff_id, str) else None
-        if handoff and (
-            handoff.project_id != project_id
-            or handoff.task_id != session.task_id
-            or handoff.target_session_id != session.id
-        ):
-            handoff = None
+        delivery = (
+            store.get_handoff_delivery(project_id, session.task_id, session.id, handoff_id)
+            if isinstance(handoff_id, str)
+            else None
+        )
+        length = (
+            store.get_objective_length(project_id, session.task_id)
+            if STARTUP_OBJECTIVE_SERVED_KEY in session.metadata
+            else None
+        )
+        continued = session.metadata.get(CONTINUED_FROM_SESSION_KEY)
         return {
             **session.model_dump(mode="json", exclude={"metadata", "native_session_id"}),
+            "objective_receipt": {
+                "state": objective_retrieval(session, length).value,
+                "served": session.metadata[STARTUP_OBJECTIVE_SERVED_KEY],
+                "total": length,
+            }
+            if length is not None
+            and type(session.metadata.get(STARTUP_OBJECTIVE_SERVED_KEY)) is int
+            else None,
+            "continued_from_session_id": continued if isinstance(continued, str) else None,
             "native_resume": is_native_resumable(session, capabilities),
             "task_continuation": capabilities.supports_managed_new_session,
             "ownership_uncertain": session.status in UNFINALIZED_SESSION_STATUSES,
             "checkpoint": checkpoints[0] if checkpoints else None,
-            "delivery": {
-                "id": handoff.id,
-                "status": handoff.status,
-                "delivered_at": handoff.delivered_at.isoformat() if handoff.delivered_at else None,
-                "failure_code": handoff.failure_code,
-            }
-            if handoff
-            else None,
+            "delivery": delivery,
         }
+
+    def session(self, root: Path, project_id: str, session_id: str) -> dict[str, Any]:
+        with read_workspace(root, expected_project_id=project_id) as (_, store):
+            session = store.get_session(session_id, project_id=project_id)
+            if session is None:
+                raise SessionNotFoundError(session_id)
+            return self._session(store, project_id, session)
+
+    def session_objective_prefix(self, root: Path, project_id: str, session_id: str) -> int | None:
+        with read_workspace(root, expected_project_id=project_id) as (_, store):
+            session = store.get_session(session_id, project_id=project_id)
+            served = session.metadata.get(STARTUP_OBJECTIVE_SERVED_KEY) if session else None
+            return served if type(served) is int else None
 
     def sessions(
         self,

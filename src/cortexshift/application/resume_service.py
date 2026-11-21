@@ -12,6 +12,7 @@ from cortexshift.application.source_session import select_source_session
 from cortexshift.application.task_service import TaskService
 from cortexshift.application.workspace import WorkspaceIdentity, WorkspaceStart, open_workspace
 from cortexshift.domain.errors import (
+    ActiveTaskChangedError,
     NativeResumeError,
     SessionRecoveryError,
     TerminalRequiredError,
@@ -55,7 +56,13 @@ class ResumeService(RunService):
         dry_run: bool = False,
         new_session: bool = False,
         on_launch: Callable[[ResumeDryRunResult], None] | None = None,
+        on_prepared: Callable[[Session], None] | None = None,
+        expected_task_id: str | None = None,
+        expected_plan: tuple[str, str] | None = None,
+        continuation_session_id: str | None = None,
     ) -> Session | ResumeDryRunResult:
+        if continuation_session_id is not None and (not new_session or session_id is not None):
+            raise NativeResumeError("Select a source for a fresh continuation only.")
         if new_session and session_id is not None:
             raise NativeResumeError("--new-session and --session are mutually exclusive.")
 
@@ -65,7 +72,13 @@ class ResumeService(RunService):
             task = tasks.require_active_task(workspace.project.id)
             if dry_run:
                 _, _, preview = self._plan(
-                    workspace, store, task, provider_name, session_id, new_session
+                    workspace,
+                    store,
+                    task,
+                    provider_name,
+                    session_id,
+                    new_session,
+                    continuation_session_id,
                 )
                 return preview
             if not self._is_tty():
@@ -80,9 +93,26 @@ class ResumeService(RunService):
             try:
                 with store.write_transaction():
                     task = tasks.require_active_task(workspace.project.id)
+                    if expected_task_id is not None and task.id != expected_task_id:
+                        raise ActiveTaskChangedError(
+                            "The active Task changed. Review the new plan."
+                        )
                     adapter, spec, plan = self._plan(
-                        workspace, store, task, provider_name, session_id, new_session
+                        workspace,
+                        store,
+                        task,
+                        provider_name,
+                        session_id,
+                        new_session,
+                        continuation_session_id,
                     )
+                    if expected_plan is not None and expected_plan != (
+                        plan.source_session_id,
+                        plan.mode,
+                    ):
+                        raise NativeResumeError(
+                            "The resume selection changed. Review the new plan."
+                        )
                     launcher = ProviderSessionLauncher(
                         self._runner, store, self._checkpoint_service, workspace
                     )
@@ -100,10 +130,17 @@ class ResumeService(RunService):
                         else None,
                         metadata=metadata,
                     )
+
+                def notify(_: LaunchSpecification, session: Session) -> None:
+                    if on_prepared is not None:
+                        on_prepared(session)
+                    if on_launch is not None:
+                        on_launch(plan)
+
                 return launcher.run(
                     invocation,
                     spec,
-                    on_launch=(lambda *_: on_launch(plan)) if on_launch else None,
+                    on_launch=notify,
                     mcp_binder=adapter if isinstance(adapter, ManagedMcpBinder) else None,
                 )
             finally:
@@ -117,10 +154,14 @@ class ResumeService(RunService):
         provider_name: str | None,
         session_id: str | None,
         new_session: bool,
+        continuation_session_id: str | None,
     ) -> tuple[ProviderRuntimeAdapter, LaunchSpecification, ResumeDryRunResult]:
         adapter = self._get_adapter(provider_name) if provider_name is not None else None
         recent = select_source_session(
-            store, task, session_id, provider_id=adapter.provider_id if adapter else None
+            store,
+            task,
+            continuation_session_id or session_id,
+            provider_id=adapter.provider_id if adapter else None,
         )
         if recent.status in UNFINALIZED_SESSION_STATUSES:
             raise SessionRecoveryError(

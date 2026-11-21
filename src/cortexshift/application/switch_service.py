@@ -43,6 +43,7 @@ from cortexshift.application.source_session import select_source_session
 from cortexshift.application.task_service import TaskService
 from cortexshift.application.workspace import WorkspaceIdentity, WorkspaceStart, open_workspace
 from cortexshift.domain.errors import (
+    ActiveTaskChangedError,
     GitProbeError,
     HandoffDeliveryError,
     NativeResumeError,
@@ -455,6 +456,8 @@ class SwitchService:
         resume_session_id: str | None = None,
         on_prepared: Callable[[HandoffRecord, RenderedHandoffContext], None] | None = None,
         on_launch: Callable[[LaunchSpecification, Session], None] | None = None,
+        expected_task_id: str | None = None,
+        expected_selection: tuple[str, str | None] | None = None,
     ) -> SwitchResult:
         """Hand the active task off to another provider and launch the receiving agent.
 
@@ -486,6 +489,13 @@ class SwitchService:
                     workspace, store, target_provider_name, from_session_id
                 )
                 self._select_target(context, new_session, resume_session_id)
+                if expected_task_id is not None and context.task.id != expected_task_id:
+                    raise ActiveTaskChangedError("The active Task changed. Review the new plan.")
+                if expected_selection is not None and expected_selection != (
+                    context.source_session.id,
+                    context.prior_target.id if context.prior_target else None,
+                ):
+                    raise NativeResumeError("The switch selection changed. Review the new plan.")
                 inspection = self._inspect(context)
                 context.workspace.revalidate()
                 snapshot = self._handoff_snapshot(inspection)
