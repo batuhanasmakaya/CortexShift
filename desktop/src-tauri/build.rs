@@ -8,6 +8,9 @@ fn main() {
             "create_task",
             "agent_control",
             "pick_objective",
+            "update_info",
+            "check_update",
+            "install_update",
         ]),
     ))
     .expect("configure CortexShift desktop permissions");

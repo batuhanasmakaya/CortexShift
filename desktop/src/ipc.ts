@@ -1,6 +1,8 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 
 export interface Project { project_id: string; root: string }
+export interface UpdateOffer { version: string; notes: string | null }
+export interface UpdateProgress { received: number; total: number | null }
 export interface Task {
   id: string;
   title: string;
@@ -146,6 +148,10 @@ export function operationId() {
 }
 
 export const desktop = {
+  updateInfo: () => invoke<{ version: string; available: boolean; restart_required: boolean }>('update_info'),
+  checkUpdate: () => invoke<UpdateOffer | null>('check_update'),
+  installUpdate: (onProgress: (event: UpdateProgress) => void) =>
+    invoke<void>('install_update', { progress: new Channel(onProgress) }),
   library: () => invoke<Project[]>('library'),
   openProject: () => invoke<Project | null>('open_project'),
   removeProject: (root: string) => invoke<Project[]>('remove_project', { root }),

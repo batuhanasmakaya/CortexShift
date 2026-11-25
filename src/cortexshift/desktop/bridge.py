@@ -18,7 +18,13 @@ from cortexshift.application.desktop_control import (
     verified,
 )
 from cortexshift.application.workspace_reader import WorkspaceReader
-from cortexshift.desktop.terminal import DesktopActionBlocked, Jobs, run_job, terminal_available
+from cortexshift.desktop.terminal import (
+    DesktopActionBlocked,
+    Jobs,
+    run_job,
+    terminal_available,
+    unresolved_jobs,
+)
 from cortexshift.domain.errors import (
     ActiveTaskChangedError,
     ActiveTaskExistsError,
@@ -136,6 +142,11 @@ class RecoveryRequest(WorkspaceRequest):
     preview: bool
 
 
+class UpdateGuardRequest(Request):
+    control_dir: Annotated[str, Field(min_length=1, max_length=8192)]
+    project_ids: Annotated[list[Identifier], Field(max_length=100)]
+
+
 OPERATIONS: dict[str, type[Request]] = {
     "hello": Request,
     "verify": RootRequest,
@@ -158,6 +169,7 @@ OPERATIONS: dict[str, type[Request]] = {
     "action_status": JobRequest,
     "cancel_action": CancelRequest,
     "recover": RecoveryRequest,
+    "update_guard": UpdateGuardRequest,
 }
 
 
@@ -284,6 +296,8 @@ class Bridge:
         op = request.op
         if op == "hello":
             return {"protocol": PROTOCOL, "core_version": __version__}
+        if isinstance(request, UpdateGuardRequest):
+            return {"busy": unresolved_jobs(Path(request.control_dir), set(request.project_ids))}
         assert isinstance(request, RootRequest)
         root = Path(request.root)
         if op == "verify":
