@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   validate:
-    if: ${{ !github.event.release.prerelease && !github.event.release.draft }}
+    if: ${{ startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease && !github.event.release.draft }}
     uses: ./.github/workflows/ci.yml
   build:
     needs: validate

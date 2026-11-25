@@ -59,6 +59,9 @@ def validate_artifacts(dist: Path, project: dict[str, Any]) -> list[Path]:
         validate_names(names)
         assert "cortexshift/tui/cortexshift.tcss" in names, "Missing installed stylesheet"
         prefix = f"cortexshift-{version}.dist-info/"
+        assert all(name.startswith(("cortexshift/", prefix)) for name in names), (
+            "Unexpected distribution payload outside the Python package"
+        )
         metadata = BytesParser().parsebytes(archive.read(prefix + "METADATA"))
         for key, expected in {
             "Name": "cortexshift",
@@ -94,6 +97,9 @@ def validate_artifacts(dist: Path, project: dict[str, Any]) -> list[Path]:
         names = source_archive.getnames()
         validate_names(names)
         prefix = f"cortexshift-{version}/"
+        assert not any(name.startswith(prefix + "desktop/") for name in names), (
+            "Desktop build sources must stay outside the PyPI source archive"
+        )
         for path in [
             "src/cortexshift/tui/cortexshift.tcss",
             "LICENSE",

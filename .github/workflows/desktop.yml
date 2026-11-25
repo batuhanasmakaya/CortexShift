@@ -18,6 +18,7 @@ on:
       - 'uv.lock'
       - '.github/workflows/desktop.yml'
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -47,6 +48,11 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.26'
+      - run: uv run --locked --python 3.12 python scripts/release.py
+      - run: uv run --locked --python 3.12 pytest --no-cov scripts/test_release.py
 
   native:
     name: Native build and bridge (${{ matrix.os }})
@@ -55,9 +61,13 @@ jobs:
       matrix:
         include:
           - os: macos-15
-            bundles: app
+            bundles: app,dmg
+            target: aarch64-apple-darwin
+            platform: macos-arm64
           - os: windows-2025
             bundles: nsis
+            target: x86_64-pc-windows-msvc
+            platform: windows-x64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
@@ -73,7 +83,7 @@ jobs:
         with:
           version: '0.11.26'
           enable-cache: true
-      - run: uv sync --locked --python 3.12
+      - run: uv sync --locked --python 3.12.13 --group desktop-build
       - run: uv run --locked pytest --no-cov tests/desktop
       - run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
       - run: rustup default 1.92.0
@@ -91,6 +101,26 @@ jobs:
         working-directory: desktop/src-tauri
       - run: cargo test --locked
         working-directory: desktop/src-tauri
-      - run: uv run --locked --with pyinstaller==6.17.0 python desktop/scripts/freeze_bridge.py
-      - run: npm run tauri -- build --ci --no-sign --config src-tauri/bundle.conf.json --bundles ${{ matrix.bundles }} -- --locked
+      - run: uv run --locked --group desktop-build python desktop/scripts/freeze_bridge.py
+      - run: npm run tauri -- build --ci --no-sign --target ${{ matrix.target }} --config src-tauri/bundle.conf.json --bundles ${{ matrix.bundles }} -- --locked
         working-directory: desktop
+      - name: Mount and exercise the unsigned macOS installer
+        if: runner.os == 'macOS'
+        run: |
+          bundle=desktop/src-tauri/target/aarch64-apple-darwin/release/bundle
+          uv run --locked --group desktop-build python desktop/scripts/qualify.py "$bundle"/dmg/*.dmg
+          uv run --locked python desktop/scripts/release.py --bundle "$bundle" --out desktop/dist-release --mac
+      - name: Install, exercise and uninstall the unsigned NSIS installer
+        if: runner.os == 'Windows'
+        run: |
+          $bundle = 'desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle'
+          $installer = Get-Item "$bundle/nsis/*-setup.exe"
+          uv run --locked --group desktop-build python desktop/scripts/qualify.py $installer.FullName
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv run --locked python desktop/scripts/release.py --bundle $bundle --out desktop/dist-release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-unsigned-${{ matrix.platform }}
+          path: desktop/dist-release/
+          if-no-files-found: error
+          retention-days: 7

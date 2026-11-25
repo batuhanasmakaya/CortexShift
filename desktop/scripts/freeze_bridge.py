@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -9,6 +10,10 @@ from pathlib import Path
 
 DESKTOP = Path(__file__).resolve().parents[1]
 TAURI = DESKTOP / "src-tauri"
+TARGETS = {
+    ("darwin", "arm64"): "aarch64-apple-darwin",
+    ("win32", "amd64"): "x86_64-pc-windows-msvc",
+}
 
 
 def main() -> None:
@@ -16,14 +21,21 @@ def main() -> None:
     host = next(
         line.removeprefix("host: ") for line in details.splitlines() if line.startswith("host: ")
     )
-    if not host.endswith(("-apple-darwin", "-pc-windows-msvc")):
-        raise SystemExit("Build the sidecar on its target macOS or Windows host.")
+    target = TARGETS.get((sys.platform, platform.machine().lower()))
+    if host != target:
+        raise SystemExit("Build with native Apple Silicon or Windows x64 Rust and Python.")
     suffix = ".exe" if sys.platform == "win32" else ""
     output = TAURI / "binaries"
     output.mkdir(parents=True, exist_ok=True)
     # Keep build scratch outside Vite's frontend output directory.
     build = TAURI / "target" / "bridge-build"
     build.mkdir(parents=True, exist_ok=True)
+    signing: list[str] = []
+    if sys.platform == "darwin":
+        signing = ["--target-arch", "arm64"]
+        if identity := os.environ.get("APPLE_SIGNING_IDENTITY"):
+            # Sign the rewritten Mach-O payloads before PyInstaller embeds them.
+            signing += ["--codesign-identity", identity]
     subprocess.run(
         [
             sys.executable,
@@ -43,6 +55,7 @@ def main() -> None:
             str(build),
             "--distpath",
             str(build / "out"),
+            *signing,
             str(Path(__file__).with_name("bridge_entry.py")),
         ],
         check=True,

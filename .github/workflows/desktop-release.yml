@@ -1,0 +1,263 @@
+name: Desktop distribution
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Expected Desktop tag (desktop-vX.Y.Z)
+        required: true
+        type: string
+      signed:
+        description: Request a signed release candidate from protected main
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-distribution-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Authorize the candidate source
+        env:
+          SIGNED: ${{ inputs.signed }}
+        run: |
+          if [[ "$SIGNED" == true ]]; then
+            test "$GITHUB_REPOSITORY" = batuhanasmakaya/CortexShift
+            test "$GITHUB_REF" = refs/heads/main
+            test "$GITHUB_REF_PROTECTED" = true
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.26'
+      - name: Verify source and version
+        id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          SIGNED: ${{ inputs.signed }}
+        run: |
+          flags=()
+          if [[ "$SIGNED" == true ]]; then flags+=(--require-tag); fi
+          uv sync --locked --python 3.12.13
+          tag=$(uv run --locked python desktop/scripts/release.py --require-clean --tag "$RELEASE_TAG" "${flags[@]}")
+          echo "version=${tag#desktop-v}" >> "$GITHUB_OUTPUT"
+      - run: uv run --locked pytest -W error
+      - run: uv run --locked ruff check . && uv run --locked ruff format --check . && uv run --locked mypy
+      - run: uv run --locked pytest --no-cov desktop/scripts/test_release.py && uv run --locked python scripts/security_audit.py
+      - name: Audit the locked Python runtime and freeze toolchain
+        run: |
+          uv export --locked --no-dev --group desktop-build --no-emit-project --output-file "$RUNNER_TEMP/python-requirements.txt"
+          uvx --from pip-audit==2.10.0 pip-audit --no-deps --disable-pip --require-hashes -r "$RUNNER_TEMP/python-requirements.txt"
+      - name: Audit frontend lockfile
+        working-directory: desktop
+        run: npm audit --audit-level=low
+      - name: Audit Rust lockfile and review warnings
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          cargo +1.92.0 install cargo-audit --locked --version 0.23.0
+          if ! cargo +1.92.0 audit --file desktop/src-tauri/Cargo.lock --json > "$RUNNER_TEMP/rustsec.json"; then
+            cat "$RUNNER_TEMP/rustsec.json"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/rustsec.json"
+          rustup default 1.92.0
+          uv run --locked python desktop/scripts/release.py --audit "$RUNNER_TEMP/rustsec.json" --verify-target-graphs
+
+  verification:
+    needs: preflight
+    uses: ./.github/workflows/desktop.yml
+
+  macos:
+    needs: [preflight, verification]
+    if: inputs.signed && github.repository == 'batuhanasmakaya/CortexShift' && github.ref == 'refs/heads/main' && github.ref_protected
+    environment: desktop-sign-macos
+    runs-on: macos-15
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.26'
+      - run: uv sync --locked --python 3.12.13 --no-dev --group desktop-build
+      - run: rustup toolchain install 1.92.0 --profile minimal && rustup default 1.92.0
+      - run: npm ci --ignore-scripts
+        working-directory: desktop
+      - name: Sign and notarize macOS bundles
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_API_ISSUER: ${{ vars.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ vars.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          DESKTOP_UPDATER_PUBLIC_KEY: ${{ vars.DESKTOP_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bash desktop/scripts/sign_macos.sh
+      - name: Verify signed DMG, contents and updater archive
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          TEAM: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          bundle=desktop/src-tauri/target/aarch64-apple-darwin/release/bundle
+          uv run --locked --no-dev --group desktop-build python desktop/scripts/qualify.py "$bundle"/dmg/*.dmg --team "$TEAM"
+          update="$bundle/macos/CortexShift.app.tar.gz"
+          cargo run --manifest-path desktop/src-tauri/Cargo.toml --locked --example verify_update -- "$RUNNER_TEMP/signing.json" "$update" "$update.sig" "$VERSION"
+          mkdir "$RUNNER_TEMP/updater-app"
+          tar -xzf "$update" -C "$RUNNER_TEMP/updater-app"
+          codesign --verify --deep --strict "$RUNNER_TEMP/updater-app/CortexShift.app"
+          xcrun stapler validate "$RUNNER_TEMP/updater-app/CortexShift.app"
+          uv run --locked --no-dev python desktop/scripts/release.py --bundle "$bundle" --out desktop/dist-release --mac --trusted-config "$RUNNER_TEMP/signing.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-signed-macos-arm64
+          path: desktop/dist-release/
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    needs: [preflight, verification]
+    if: inputs.signed && github.repository == 'batuhanasmakaya/CortexShift' && github.ref == 'refs/heads/main' && github.ref_protected
+    environment: desktop-sign-windows
+    runs-on: windows-2025
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.26'
+      - run: uv sync --locked --python 3.12.13 --no-dev --group desktop-build
+      - run: rustup toolchain install 1.92.0 --profile minimal && rustup default 1.92.0
+      - run: npm ci --ignore-scripts
+        working-directory: desktop
+      - name: Prepare pinned signing client
+        env:
+          SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          CERTIFICATE_PROFILE: ${{ vars.AZURE_SIGNING_CERTIFICATE_PROFILE }}
+        run: |
+          if ($env:SIGNING_ENDPOINT -notmatch '^https://[a-z0-9]+\.codesigning\.azure\.net/?$' -or
+              !$env:SIGNING_ACCOUNT -or !$env:CERTIFICATE_PROFILE) { throw 'Configure Artifact Signing first.' }
+          $client = "$env:RUNNER_TEMP/signing-client"
+          nuget install Microsoft.ArtifactSigning.Client -Version 1.0.151 -Source https://api.nuget.org/v3/index.json -OutputDirectory $client -NonInteractive
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $dlib = Get-Item "$client/Microsoft.ArtifactSigning.Client.1.0.151/bin/x64/Azure.CodeSigning.Dlib.dll"
+          "DESKTOP_AZURE_DLIB=$($dlib.FullName)" >> $env:GITHUB_ENV
+          $metadata = "$env:RUNNER_TEMP/signing-metadata.json"
+          @{
+            Endpoint = $env:SIGNING_ENDPOINT
+            CodeSigningAccountName = $env:SIGNING_ACCOUNT
+            CertificateProfileName = $env:CERTIFICATE_PROFILE
+            ExcludeCredentials = @('EnvironmentCredential', 'WorkloadIdentityCredential', 'ManagedIdentityCredential', 'SharedTokenCacheCredential', 'VisualStudioCredential', 'VisualStudioCodeCredential', 'AzurePowerShellCredential', 'AzureDeveloperCliCredential', 'InteractiveBrowserCredential', 'BrokerCredential')
+          } | ConvertTo-Json | Set-Content $metadata
+          "DESKTOP_AZURE_METADATA=$metadata" >> $env:GITHUB_ENV
+      - run: uv run --locked --no-dev --group desktop-build python desktop/scripts/freeze_bridge.py
+      - uses: azure/login@7ddb5af1ef8758cf1353cf3b42f940aee27ba21c # v3.0.2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and sign the NSIS installer and updater payload
+        env:
+          DESKTOP_UPDATER_PUBLIC_KEY: ${{ vars.DESKTOP_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (!$env:TAURI_SIGNING_PRIVATE_KEY -or !$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { throw 'Configure the updater key first.' }
+          $script = (Resolve-Path desktop/scripts/sign_windows.ps1).Path
+          uv run --locked --no-dev python desktop/scripts/release.py --signing-config "$env:RUNNER_TEMP/signing.json" --windows-signer $script
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File $script (Resolve-Path desktop/src-tauri/binaries/cortexshift-bridge-x86_64-pc-windows-msvc.exe).Path
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Set-Location desktop
+          npm run tauri -- build --ci --target x86_64-pc-windows-msvc --config src-tauri/bundle.conf.json --config "$env:RUNNER_TEMP/signing.json" --bundles nsis -- --locked
+      - name: Qualify Authenticode, installer and updater payload
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          SIGNER_SUBJECT: ${{ vars.WINDOWS_SIGNER_SUBJECT }}
+        run: |
+          if (!$env:SIGNER_SUBJECT) { throw 'Set the expected signing certificate subject.' }
+          $bundle = 'desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle'
+          $installer = (Get-Item "$bundle/nsis/*-setup.exe").FullName
+          uv run --locked --no-dev --group desktop-build python desktop/scripts/qualify.py $installer --windows-signer-subject $env:SIGNER_SUBJECT
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo run --manifest-path desktop/src-tauri/Cargo.toml --locked --example verify_update -- "$env:RUNNER_TEMP/signing.json" $installer "$installer.sig" $env:VERSION
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          uv run --locked --no-dev python desktop/scripts/release.py --bundle $bundle --out desktop/dist-release --trusted-config "$env:RUNNER_TEMP/signing.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-signed-windows-x64
+          path: desktop/dist-release/
+          if-no-files-found: error
+          retention-days: 14
+
+  stage:
+    needs: [preflight, macos, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: '0.11.26'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: desktop-signed-*
+          path: inputs/
+      - name: Verify hashes and prepare candidate metadata
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          mkdir candidate
+          for platform in inputs/desktop-signed-*; do
+            (cd "$platform" && sha256sum --strict --check SHA256SUMS)
+            for asset in "$platform"/CortexShift-Desktop-*; do cp "$asset" candidate/; done
+          done
+          cmp inputs/desktop-signed-macos-arm64/PUBLIC-KEY.sha256 inputs/desktop-signed-windows-x64/PUBLIC-KEY.sha256
+          cp inputs/desktop-signed-macos-arm64/PUBLIC-KEY.sha256 candidate/
+          cp "docs/desktop/releases/$RELEASE_TAG.md" candidate/RELEASE-NOTES.md
+          uv run --locked --python 3.12.13 --no-dev python desktop/scripts/release.py --tag "$RELEASE_TAG" --assemble candidate --notes candidate/RELEASE-NOTES.md
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: candidate/*
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-candidate-${{ needs.preflight.outputs.version }}
+          path: candidate/
+          if-no-files-found: error
+          retention-days: 14
