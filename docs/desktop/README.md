@@ -22,7 +22,11 @@ The action banner reports terminal dispatch, handoff preparation, actual provide
 
 The project library retains registered roots. Removing a library entry leaves the workspace and its history intact. Choose system, light, or dark appearance in **Settings & diagnostics**.
 
+- [Install and troubleshoot Desktop](install.md)
 - [Developer setup and troubleshooting](development.md)
 - [Architecture, IPC and lifecycle](ipc.md)
 - [Packaging and platform strategy](packaging.md)
 - [Managed provider and vendor app support](integrations.md)
+- [Release engineering](releasing.md)
+- [Clean-machine and provider qualification](qualification.md)
+- [Dependency security review](security.md)
