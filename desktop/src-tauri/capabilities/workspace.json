@@ -4,5 +4,16 @@
   "description": "Allow the local workspace window to manage Tasks and agents in registered projects",
   "local": true,
   "windows": ["main"],
-  "permissions": ["allow-library", "allow-open-project", "allow-remove-project", "allow-query", "allow-create-task", "allow-agent-control", "allow-pick-objective"]
+  "permissions": [
+    "allow-library",
+    "allow-open-project",
+    "allow-remove-project",
+    "allow-query",
+    "allow-create-task",
+    "allow-agent-control",
+    "allow-pick-objective",
+    "allow-update-info",
+    "allow-check-update",
+    "allow-install-update"
+  ]
 }

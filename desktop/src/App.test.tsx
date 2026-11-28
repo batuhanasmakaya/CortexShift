@@ -5,7 +5,10 @@ import App from './App';
 
 declare const jsdom: { window: Window };
 
-const tauri = vi.hoisted(() => ({ invoke: vi.fn() }));
+const tauri = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  Channel: class<T> { constructor(public onmessage: (value: T) => void) {} },
+}));
 vi.mock('@tauri-apps/api/core', () => tauri);
 
 const time = '2026-01-09T12:00:00Z';
@@ -55,6 +58,7 @@ beforeEach(() => {
   tauri.invoke.mockReset();
   tauri.invoke.mockImplementation(async (command: string, input?: { request?: { op: string; root?: string; offset?: number } }) => {
     if (command === 'library') return entries.slice();
+    if (command === 'update_info') return { version: '0.2.0', available: false, restart_required: false };
     if (command === 'open_project') {
       if (openChoice) entries.push(openChoice);
       return openChoice;
@@ -253,4 +257,38 @@ it('shows the objectively served prefix for a Session reached from the action re
   await user.click(await screen.findByRole('button', { name: 'View Session' }));
   expect(await screen.findByText('MCP served part of objective')).toBeTruthy();
   expect(screen.getByText('4000 of 8100 Unicode characters served')).toBeTruthy();
+});
+
+it('reports the installed version in unsigned builds', async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'Settings & diagnostics' }));
+  expect(await screen.findByText('Installed version 0.2.0')).toBeTruthy();
+  expect(screen.getByText('This build has no configured signed update channel.')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Check for updates' })).toBeNull();
+});
+
+it('shows release notes, active work deferral, and restart guidance', async () => {
+  const user = userEvent.setup();
+  const original = tauri.invoke.getMockImplementation()!;
+  let attempts = 0;
+  tauri.invoke.mockImplementation(async (command, input) => {
+    if (command === 'update_info') return { version: '0.2.0', available: true, restart_required: false };
+    if (command === 'check_update') return { version: '0.3.0', notes: '<script>Release notes</script>' };
+    if (command === 'install_update') {
+      if (++attempts === 1) throw { code: 'active_work', message: 'Finish active terminal work before installing.' };
+      return;
+    }
+    return original(command, input);
+  });
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: 'Settings & diagnostics' }));
+  await user.click(await screen.findByRole('button', { name: 'Check for updates' }));
+  expect(await screen.findByText('Version 0.3.0 available')).toBeTruthy();
+  expect(screen.getByText('<script>Release notes</script>')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Download and install' }));
+  await screen.findByRole('alert');
+  expect(screen.getByText('Finish active terminal work before installing.')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Download and install' }));
+  expect(await screen.findByText('Update installed. Quit and reopen CortexShift Desktop.')).toBeTruthy();
 });

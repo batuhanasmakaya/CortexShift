@@ -81,23 +81,62 @@ def _read_state(directory: Path) -> dict[str, Any]:
     return value
 
 
+def project_key(project_id: str) -> str:
+    return hashlib.sha256(project_id.encode()).hexdigest()
+
+
+def _current_job(root: Path) -> Path | None:
+    try:
+        identifier = (root / "current").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return None
+    if not re.fullmatch(r"job-[0-9a-f]{32}", identifier):
+        raise ValueError
+    return root / identifier
+
+
+def unresolved_jobs(directory: Path, verified_idle_projects: set[str]) -> bool:
+    """Inspect all Desktop receipts, including projects removed from the library."""
+    if not directory.is_absolute():
+        raise ValueError
+    verified_keys = {project_key(project_id) for project_id in verified_idle_projects}
+    try:
+        projects = list(directory.iterdir())
+    except FileNotFoundError:
+        return False
+    for project in projects:
+        if not re.fullmatch(r"[0-9a-f]{64}", project.name):
+            continue
+        job = _current_job(project)
+        if job is None:
+            continue
+        if is_locked(job / "worker.lock"):
+            return True
+        try:
+            (job / "request.json").lstat()
+        except FileNotFoundError:
+            # A delayed worker could have claimed the ticket during the first probe.
+            if is_locked(job / "worker.lock"):
+                return True
+        else:
+            return True
+        phase = _read_state_without_lock(job)["phase"]
+        if phase in UNFINISHED or phase == "unknown":
+            if project.name not in verified_keys:
+                return True
+        elif phase not in {status.value for status in SessionStatus} | {"cancelled"}:
+            raise ValueError
+    return False
+
+
 class Jobs:
     def __init__(self, directory: Path, project_id: str) -> None:
         if not directory.is_absolute():
             raise ValueError
-        self._root = directory / hashlib.sha256(project_id.encode()).hexdigest()
-
-    def _current(self) -> Path | None:
-        try:
-            identifier = (self._root / "current").read_text(encoding="ascii")
-        except FileNotFoundError:
-            return None
-        if not re.fullmatch(r"job-[0-9a-f]{32}", identifier):
-            raise ValueError
-        return self._root / identifier
+        self._root = directory / project_key(project_id)
 
     def status(self) -> dict[str, Any]:
-        directory = self._current()
+        directory = _current_job(self._root)
         return {"action": _read_state(directory) if directory else None}
 
     def submit(
@@ -113,7 +152,7 @@ class Jobs:
         if not re.fullmatch(r"[0-9a-f]{32}", operation_id):
             raise ValueError
         directory = self._root / f"job-{operation_id}"
-        previous = self._current()
+        previous = _current_job(self._root)
         if previous == directory:
             return {"action": _read_state(directory)}
         if previous and _read_state(previous)["phase"] in UNFINISHED:
@@ -150,7 +189,7 @@ class Jobs:
         return {"action": state}
 
     def cancel(self, identifier: str, *, failed: bool = False) -> dict[str, Any]:
-        directory = self._current()
+        directory = _current_job(self._root)
         if directory is None or directory.name != identifier:
             raise DesktopActionBlocked("The Desktop action changed. Refresh its status.")
         fd = try_lock(directory / "worker.lock", create=True)

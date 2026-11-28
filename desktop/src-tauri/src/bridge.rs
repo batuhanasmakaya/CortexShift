@@ -173,6 +173,10 @@ impl Bridge {
             worker.stop().await;
         }
     }
+
+    pub fn reopen(&self) {
+        self.closing.send_replace(false);
+    }
 }
 
 struct Worker {

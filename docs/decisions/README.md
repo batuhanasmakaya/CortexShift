@@ -19,3 +19,5 @@
 - [ADR-0017 — Managed Task startup](ADR-0017-managed-task-startup.md) — Accepted
 - [ADR-0018 — Switch and resume the active Task](ADR-0018-switch-and-resume.md) — Accepted
 - [ADR-0019 — Desktop workspace browser](ADR-0019-desktop-foundation.md) — Accepted
+- [ADR-0020 — Desktop agent control in a native terminal](ADR-0020-desktop-agent-control.md) — Accepted
+- [ADR-0021 — Desktop distribution](ADR-0021-desktop-distribution.md) — Accepted

@@ -11,6 +11,7 @@ import { desktop, errorMessage, folderName, operationId, uncertainTransport } fr
 import type { AgentAction, Project, Task } from './ipc';
 import { WorkspaceOverview } from './Overview';
 import { useRead } from './read';
+import { DesktopUpdates } from './DesktopUpdates';
 import { Tasks } from './Tasks';
 import { Details, Empty, ErrorNotice, Fact, ReadView, SectionHeading, StatusIndicator } from './ui';
 
@@ -260,7 +261,7 @@ function Welcome({ busy, open }: { busy: boolean; open: () => void }) {
     <div className="welcome-inner">
       <Mark />
       <h1>Switch agents.<br />Keep the context.</h1>
-      <p>Open a CortexShift workspace to see the Tasks, agent Sessions, and checkpoints that carry your work across providers.</p>
+      <p>Open a local workspace to view Tasks, agent Sessions, and checkpoints. Agent actions use installed provider CLIs in native terminals.</p>
       <button className="button primary" disabled={busy} onClick={open}><FolderOpen />{busy ? 'Opening project…' : 'Open Project'}<ArrowRight /></button>
       <div className="welcome-note"><TerminalSquare /><span>Choose a folder initialized with <code>cortexshift init</code>.</span></div>
     </div>
@@ -286,6 +287,7 @@ function Diagnostics({ theme, setTheme, project, schema }: {
         <option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option>
       </select>
     </section>
+    <DesktopUpdates />
     <section className="panel settings">
       <div className="panel-head"><h2>Python bridge</h2></div>
       <ReadView read={bridge}>{value => <Details>

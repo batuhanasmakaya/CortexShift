@@ -1,6 +1,14 @@
 {
   "bundle": {
     "active": true,
-    "externalBin": ["binaries/cortexshift-bridge"]
+    "externalBin": ["binaries/cortexshift-bridge"],
+    "macOS": {
+      "minimumSystemVersion": "14.0"
+    },
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": { "installMode": "currentUser" }
+    }
   }
 }

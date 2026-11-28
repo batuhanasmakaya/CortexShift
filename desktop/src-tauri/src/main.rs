@@ -6,6 +6,7 @@
 mod bridge;
 mod control;
 mod library;
+mod updates;
 
 use bridge::{Bridge, BridgeError};
 use control::{ControlRequest, CreateTask};
@@ -73,7 +74,12 @@ fn library(store: State<'_, Library>) -> Result<Vec<Project>, BridgeError> {
 }
 
 #[tauri::command]
-fn remove_project(root: String, store: State<'_, Library>) -> Result<Vec<Project>, BridgeError> {
+async fn remove_project(
+    root: String,
+    store: State<'_, Library>,
+    updates: State<'_, updates::Updates>,
+) -> Result<Vec<Project>, BridgeError> {
+    let _change = updates.workspace_changes.lock().await;
     store.remove(&root)
 }
 
@@ -83,6 +89,7 @@ async fn open_project(
     bridge: State<'_, Bridge>,
     store: State<'_, Library>,
     picker: State<'_, Picker>,
+    updates: State<'_, updates::Updates>,
 ) -> Result<Option<Project>, BridgeError> {
     let _permit = picker
         .0
@@ -101,6 +108,7 @@ async fn open_project(
     let Some(path) = picked else {
         return Ok(None);
     };
+    let _change = updates.workspace_changes.lock().await;
     let path = path.into_path().map_err(|_| invalid_path())?;
     let result = bridge
         .request(
@@ -130,7 +138,9 @@ async fn create_task(
     request: CreateTask,
     bridge: State<'_, Bridge>,
     store: State<'_, Library>,
+    updates: State<'_, updates::Updates>,
 ) -> Result<Value, BridgeError> {
+    let _change = updates.workspace_changes.lock().await;
     let project = store.get(&request.root)?;
     control::create_task(&bridge, project, request).await
 }
@@ -141,7 +151,9 @@ async fn agent_control(
     app: tauri::AppHandle,
     bridge: State<'_, Bridge>,
     store: State<'_, Library>,
+    updates: State<'_, updates::Updates>,
 ) -> Result<Value, BridgeError> {
+    let _change = updates.workspace_changes.lock().await;
     let project = store.get(request.root())?;
     let directory = app.path().app_local_data_dir().map_err(|_| {
         BridgeError::new(
@@ -252,6 +264,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Bridge::default())
         .manage(Picker(Semaphore::new(1)))
+        .manage(updates::Updates::default())
         .invoke_handler(tauri::generate_handler![
             library,
             open_project,
@@ -259,9 +272,16 @@ fn main() {
             query,
             create_task,
             agent_control,
-            pick_objective
+            pick_objective,
+            updates::update_info,
+            updates::check_update,
+            updates::install_update
         ])
         .setup(|app| {
+            if updates::configured(app.handle()) {
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
             app.manage(Library::new(
                 app.path().app_config_dir()?.join("projects.json"),
             ));
@@ -292,6 +312,8 @@ fn main() {
             api.prevent_exit();
             let handle = app.clone();
             tauri::async_runtime::spawn(async move {
+                let updates = handle.state::<updates::Updates>();
+                let _change = updates.workspace_changes.lock().await;
                 handle.state::<Bridge>().shutdown().await;
                 handle.exit(0);
             });

@@ -11,6 +11,7 @@ import pytest
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
 
+from cortexshift.adapters.advisory_lock import release_lock, try_lock
 from cortexshift.adapters.workspace_lease import FileWorkspaceLease
 from cortexshift.application.init_service import ProjectInitializationService
 from cortexshift.application.run_service import RunService
@@ -32,6 +33,36 @@ from tests.integration.test_managed_mcp_grandchild import (
 
 OBJECTIVE = "  # March 🧪\r\n" + "  Preserve whitespace and Unicode 文\r\n" * 1900
 TASK_ID = "task_" + "1" * 32
+
+
+def test_update_guard_checks_detached_and_removed_project_jobs(tmp_path: Path) -> None:
+    jobs = tmp_path / terminal.project_key("verified")
+    job = jobs / ("job-" + "b" * 32)
+    job.mkdir(parents=True)
+    (jobs / "current").write_text(job.name, encoding="ascii")
+    terminal._state(job, "pending")
+    (job / "request.json").touch()
+    assert terminal.unresolved_jobs(tmp_path, {"verified"})
+    (job / "request.json").unlink()
+    terminal._state(job, "running")
+    fd = try_lock(job / "worker.lock", create=True)
+    assert fd is not None
+    try:
+        assert terminal.unresolved_jobs(tmp_path, {"verified"})
+    finally:
+        release_lock(fd)
+    assert terminal.unresolved_jobs(tmp_path, set())
+    assert not terminal.unresolved_jobs(tmp_path, {"verified"})
+    terminal._state(job, "completed")
+    assert not terminal.unresolved_jobs(tmp_path, set())
+
+
+def test_update_guard_rejects_corrupt_action_pointer(tmp_path: Path) -> None:
+    jobs = tmp_path / ("a" * 64)
+    jobs.mkdir()
+    (jobs / "current").write_text("../other", encoding="ascii")
+    with pytest.raises(ValueError):
+        terminal.unresolved_jobs(tmp_path, set())
 
 
 class Desktop:

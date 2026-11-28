@@ -714,3 +714,9 @@ Python worker in the native terminal, where the existing application services ho
 workspace lease and manage provider lifetime. The WebView observes durable action and
 canonical Session receipts through the separate request bridge.
 [Desktop control ADR](decisions/ADR-0020-desktop-agent-control.md)
+
+Desktop uses separate version and tag metadata, native installers, and a version-bound
+Tauri update signature. The installer replaces application files after checking Desktop
+terminal receipt ownership and shutting down the supervised request bridge. Installer
+and stable feed publication require explicit release approval.
+[Desktop distribution ADR](decisions/ADR-0021-desktop-distribution.md)
