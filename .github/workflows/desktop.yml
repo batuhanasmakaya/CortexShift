@@ -84,7 +84,7 @@ jobs:
           version: '0.11.26'
           enable-cache: true
       - run: uv sync --locked --python 3.12.13 --group desktop-build
-      - run: uv run --locked pytest --no-cov tests/desktop
+      - run: uv run --locked --group desktop-build pytest --no-cov tests/desktop desktop/scripts/test_qualify.py
       - run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy
       - run: rustup default 1.92.0
       - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5

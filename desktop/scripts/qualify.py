@@ -6,11 +6,14 @@ import os
 import plistlib
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+import time
+from contextlib import ExitStack
+from io import BytesIO
+from pathlib import Path, PureWindowsPath
+from typing import BinaryIO
 
 from PyInstaller.archive.readers import CArchiveReader
 
@@ -49,38 +52,62 @@ def native_binary(path: Path, *, team: str | None) -> None:
             assert "(runtime)" in signed, f"Hardened runtime disabled: {path.name}"
     else:
         with path.open("rb") as exe:
-            assert exe.read(2) == b"MZ", f"Missing Windows executable header: {path.name}"
-            exe.seek(60)
-            offset = struct.unpack("<I", exe.read(4))[0]
-            exe.seek(offset)
-            assert exe.read(6) == b"PE\0\0\x64\x86", f"Expected x64 binary: {path.name}"
+            windows_binary(exe, path.name)
+
+
+def windows_binary(exe: BinaryIO, name: str) -> None:
+    assert exe.read(2) == b"MZ", f"Missing Windows executable header: {name}"
+    exe.seek(60)
+    offset = int.from_bytes(exe.read(4), "little")
+    assert offset >= 64, f"Invalid PE header: {name}"
+    exe.seek(offset)
+    assert exe.read(4) == b"PE\0\0", f"Invalid PE header: {name}"
+    assert exe.read(2) == b"\x64\x86", f"Expected x64 binary: {name}"
 
 
 def inspect_bridge(path: Path, *, scratch: Path, team: str | None) -> None:
     archive = CArchiveReader(str(path))
-    names = list(archive.toc)
-    assert "bridge_entry" in names and "base_library.zip" in names
-    natives = [name for name in names if archive.toc[name][-1] == "b"]
-    assert any(re.search(r"(?:libpython3\.12\.dylib|python312\.dll)$", name) for name in natives)
-    assert any(Path(name).name.startswith("_pydantic_core.") for name in natives)
-    if not MAC:
-        assert any(Path(name).name == "_sqlite3.pyd" for name in natives)
-    assert not any(
-        re.search(
+    assert {"bridge_entry", "base_library.zip"} <= archive.toc.keys(), (
+        "Missing bridge entry point or Python standard library archive"
+    )
+    for name in archive.toc:
+        assert not re.search(
             r"(^|[/\\])(?:\.env|\.cortexshift|\.git|node_modules|__tests__)([/\\]|$)|\.(p8|p12|pfx|key)$",
             name,
             re.I,
-        )
-        for name in names
-    )
-    for index, name in enumerate(natives):
-        extracted = scratch / f"binary-{index}"
-        extracted.write_bytes(archive.extract(name))
-        extracted.chmod(0o700)
-        native_binary(extracted, team=team)
-        if MAC and not team:
-            checked("codesign", "--verify", "--strict", str(extracted))
-        extracted.unlink()
+        ), f"Forbidden archive member: {name}"
+
+    natives: list[str] = []
+    for index, (name, entry) in enumerate(archive.toc.items()):
+        kind = entry[-1]
+        if MAC:
+            if kind != "b":
+                continue
+            extracted = scratch / f"binary-{index}"
+            extracted.write_bytes(archive.extract(name))
+            extracted.chmod(0o700)
+            native_binary(extracted, team=team)
+            if not team:
+                checked("codesign", "--verify", "--strict", str(extracted))
+            extracted.unlink()
+            natives.append(Path(name).name)
+        elif kind in {"b", "x"}:
+            # PyInstaller also labels Windows data as 'b'. Check PE contents and
+            # require a valid header for files named like executable modules.
+            basename = PureWindowsPath(name).name.casefold()
+            payload = archive.extract(name)
+            if payload.startswith(b"MZ") or basename.endswith((".exe", ".dll", ".pyd")):
+                windows_binary(BytesIO(payload), name)
+                natives.append(basename)
+
+    python = "libpython3.12.dylib" if MAC else "python312.dll"
+    assert python in natives, f"Missing embedded Python runtime: {python}"
+    assert any(
+        name.startswith("_pydantic_core.") and name.endswith(".so" if MAC else ".pyd")
+        for name in natives
+    ), "Missing embedded Pydantic core"
+    if not MAC:
+        assert "_sqlite3.pyd" in natives, "Missing embedded SQLite extension"
     print(f"Validated {len(natives)} embedded native runtime components", flush=True)
 
 
@@ -155,27 +182,75 @@ def frozen_roundtrip(bridge: Path, root: Path, project_id: str, env: dict[str, s
     assert "error" in missing
 
 
+def exercise_windows_window(process: subprocess.Popen[bytes]) -> None:
+    import win32con
+    import win32gui
+    import win32process
+
+    def record_window(hwnd: int, windows: list[int]) -> bool:
+        if (
+            win32gui.IsWindowVisible(hwnd)
+            and win32gui.GetWindowText(hwnd) == "CortexShift"
+            and win32process.GetWindowThreadProcessId(hwnd)[1] == process.pid
+        ):
+            windows.append(hwnd)
+        return True
+
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        status = process.poll()
+        assert status is None, f"Installed app exited during startup with status {status}"
+        windows: list[int] = []
+        win32gui.EnumWindows(record_window, windows)
+        if windows:
+            win32gui.PostMessage(windows[0], win32con.WM_CLOSE, 0, 0)
+            status = process.wait(timeout=10)
+            assert status == 0, f"Installed app exited on window close with status {status}"
+            return
+        time.sleep(0.05)
+    raise AssertionError("Installed app did not create a visible CortexShift window within 20 s")
+
+
 def launch(executable: Path, base: Path, env: dict[str, str]) -> None:
-    with (
-        tempfile.TemporaryFile() as log,
-        subprocess.Popen(
+    with tempfile.TemporaryFile() as log:
+        process = subprocess.Popen(
             [str(executable)], cwd=base, env=env, stdout=subprocess.DEVNULL, stderr=log
-        ) as process,
-    ):
+        )
         try:
-            exit_code = process.wait(timeout=6)
-        except subprocess.TimeoutExpired:
-            process.terminate()
+            if not MAC:
+                exercise_windows_window(process)
+                return
             try:
-                process.wait(timeout=10)
+                status = process.wait(timeout=6)
             except subprocess.TimeoutExpired:
-                process.kill()
-        else:
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10)
+            else:
+                raise AssertionError(f"Installed app exited during startup with status {status}")
+        except (AssertionError, OSError, subprocess.TimeoutExpired) as error:
             log.seek(0)
             details = log.read(4096).decode(errors="replace")
-            raise AssertionError(
-                f"Installed app exited during startup with status {exit_code}\n{details}"
-            )
+            raise AssertionError(f"{error}\n{details}") from error
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+
+
+def uninstall_windows(target: Path) -> None:
+    uninstaller = target / "uninstall.exe"
+    if not uninstaller.is_file():
+        return
+    # _?= runs in-place so we can wait for registry and file cleanup to finish.
+    subprocess.run(f'"{uninstaller}" /S _?={target}', check=True, timeout=120)
+    for filename in ("cortexshift-desktop.exe", "cortexshift-bridge.exe"):
+        assert not (target / filename).exists(), f"Uninstaller left {filename} behind"
+    # NSIS cannot delete its own running copy with _?=.
+    uninstaller.unlink(missing_ok=True)
 
 
 def verify_windows(path: Path, subject: str) -> None:
@@ -215,7 +290,10 @@ def main() -> None:
     version = preflight()
     if args.windows_signer_subject:
         verify_windows(installer, args.windows_signer_subject)
-    with tempfile.TemporaryDirectory(prefix="cortexshift qualification ") as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix="cortexshift qualification ") as temporary,
+        ExitStack() as cleanup,
+    ):
         base = Path(temporary).resolve()
         target = base / ("CortexShift.app" if MAC else "CortexShift")
         root = base / "fixture workspace"
@@ -256,6 +334,10 @@ def main() -> None:
             "APPDATA": str(roaming),
             "PATH": "/usr/bin:/bin" if MAC else str(Path(os.environ["SYSTEMROOT"]) / "System32"),
         }
+        if not MAC:
+            # WebView2 uses a Windows known folder unless its profile is overridden.
+            env["WEBVIEW2_USER_DATA_FOLDER"] = str(local / "WebView2")
+            cleanup.callback(uninstall_windows, target)
         if args.previous_app:
             assert MAC
             checked("ditto", str(args.previous_app.resolve(strict=True)), str(target))
@@ -268,6 +350,8 @@ def main() -> None:
         installation(installer, target, team=args.team)
         executable = verify_application(target, version, team=args.team)
         bridge = executable.parent / ("cortexshift-bridge" if MAC else "cortexshift-bridge.exe")
+        if not MAC:
+            assert (target / "uninstall.exe").is_file(), "Missing installed NSIS uninstaller"
         if args.windows_signer_subject:
             for binary in (executable, bridge, target / "uninstall.exe"):
                 verify_windows(binary, args.windows_signer_subject)
@@ -283,14 +367,10 @@ def main() -> None:
             frozen_roundtrip(bridge, root, project.id, env)
             print("Previous macOS bundle read the workspace again after rollback", flush=True)
         if not MAC:
-            try:
-                installation(installer, target, team=None)
-                frozen_roundtrip(bridge, root, project.id, env)
-            finally:
-                uninstaller = target / "uninstall.exe"
-                if uninstaller.exists():
-                    subprocess.run(f'"{uninstaller}" /S _?={target}', check=True, timeout=120)
-            assert not executable.exists() and not bridge.exists()
+            installation(installer, target, team=None)
+            frozen_roundtrip(bridge, root, project.id, env)
+            assert (target / "uninstall.exe").is_file(), "Missing NSIS uninstaller after reinstall"
+            cleanup.close()
         assert (root / ".cortexshift").is_dir()
         print("Desktop installer and isolated frozen bridge smoke passed", flush=True)
 
